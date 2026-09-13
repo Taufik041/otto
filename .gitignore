@@ -6,7 +6,7 @@ __pycache__/
 # C extensions
 *.so
 .pem
-otto-secrets
+otto-secrets/
 # Distribution / packaging
 .Python
 build/
