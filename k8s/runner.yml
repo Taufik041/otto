@@ -1,0 +1,24 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: otto-s1
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 100
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: runner
+        image: taufik041/otto-sandbox:dev
+        env:
+        - { name: BUS_URL, value: "amqp://guest:guest@rabbitmq:5672/"}
+        - { name: SESSION_ID, value: "s1"}
+        - { name: REPO_URL, value: "https://github.com/Taufik041/otto_test"}
+        resources:
+          requests:
+            cpu: 200m
+            memory: 300Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
