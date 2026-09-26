@@ -220,3 +220,89 @@ def test_resolve_allows_workspace_itself(ws):
 def test_resolve_tolerates_trailing_slash_in_workspace(ws, monkeypatch):
     monkeypatch.setattr(config, "WORKSPACE", ws + "/")
     assert _resolve("a.txt") == os.path.join(ws, "a.txt")
+
+
+def test_fs_write_path_with_space_creates_parent_dirs(ws):
+    r = call("fs.write", {"path": "my dir/sub dir/new file.txt", "content": "hi\n"})
+    assert r["exit_code"] == 0, r
+    assert open(os.path.join(ws, "my dir", "sub dir", "new file.txt")).read() == "hi\n"
+
+
+def test_fs_write_shrink_guard_path_with_space(ws):
+    p = write(ws, "a file.txt", "x" * 100)
+    r = call("fs.write", {"path": "a file.txt", "content": "y"})
+    assert r["exit_code"] == 1
+    assert "is 100 bytes" in r["stderr"]
+    assert open(p).read() == "x" * 100
+
+
+def test_fs_write_error_is_returned_not_raised(ws):
+    write(ws, "afile", "x")
+    r = call("fs.write", {"path": "afile/child.txt", "content": "hi"})
+    assert r["exit_code"] != 0
+    assert r["stderr"]
+
+
+def test_fs_read_and_replace_path_with_space(ws):
+    p = write(ws, "a file.txt", "one\ntwo\n")
+    assert call("fs.read", {"path": "a file.txt"})["stdout"] == "one\ntwo\n"
+    assert call("fs.replace", {"path": "a file.txt", "old_str": "two", "new_str": "2"})["exit_code"] == 0
+    assert open(p).read() == "one\n2\n"
+
+
+def test_non_shell_handlers_never_use_a_shell(ws, monkeypatch):
+    seen = []
+    real_run = subprocess.run
+
+    def spy(cmd, *a, **kw):
+        seen.append((cmd, kw.get("shell", False)))
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(handlers.subprocess, "run", spy)
+    subprocess.run(["git", "init", "-q", ws], check=True)
+    write(ws, "f.txt", "it's here\n")
+    call("fs.write", {"path": "g.txt", "content": "x"})
+    call("fs.read", {"path": "f.txt"})
+    call("fs.replace", {"path": "f.txt", "old_str": "here", "new_str": "there"})
+    call("code.search", {"pattern": "it's"})
+    call("git.status", {})
+    call("git.diff", {})
+    call("git.commit", {"message": "m"})
+    assert seen, "expected subprocess calls"
+    for cmd, shell in seen:
+        assert isinstance(cmd, list) and not shell, cmd
+    assert ["rg", "-n", "--", "it's"] in [c for c, _ in seen]
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+def test_code_search_pattern_with_quote(ws):
+    write(ws, "f.txt", "nothing\nit's here\n")
+    r = call("code.search", {"pattern": "it's"})
+    assert r["exit_code"] == 0, r
+    assert r["stdout"] == "f.txt:2:it's here"
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+def test_code_search_no_matches_is_not_an_error(ws):
+    write(ws, "f.txt", "nothing\n")
+    r = call("code.search", {"pattern": "zzz"})
+    assert r["exit_code"] == 0
+    assert r["stdout"] == ""
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+def test_code_search_pattern_starting_with_dash(ws):
+    write(ws, "f.txt", "a -v flag\n")
+    r = call("code.search", {"pattern": "-v"})
+    assert r["stdout"] == "f.txt:1:a -v flag"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_git_commit_message_is_not_shell_expanded(ws):
+    subprocess.run(["git", "init", "-q", ws], check=True)
+    write(ws, "f.txt", "hi\n")
+    msg = "it's $(touch pwned) `id` \"q\""
+    assert call("git.commit", {"message": msg})["exit_code"] == 0
+    log = subprocess.run(["git", "log", "--format=%s"], cwd=ws, capture_output=True, text=True).stdout
+    assert log.strip() == msg
+    assert not os.path.exists(os.path.join(ws, "pwned"))

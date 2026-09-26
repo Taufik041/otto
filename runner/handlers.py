@@ -1,10 +1,11 @@
-import os, subprocess, base64
+import os, subprocess
 
 from shared import config
 
 CAP = 10_000
 
 def _run(cmd, timeout=60) -> dict:
+    # shell=True on purpose: only shell.exec uses this
     result = subprocess.run(
         cmd,
         shell=True,
@@ -13,6 +14,26 @@ def _run(cmd, timeout=60) -> dict:
         text=True,
         timeout=timeout
     )
+    return {
+        "exit_code": result.returncode,
+        "stdout": result.stdout[:CAP],
+        "stderr": result.stderr[:CAP]
+        }
+
+
+def _run_argv(argv, timeout=60) -> dict:
+    # no shell: model text is passed as separate argv entries, never interpolated
+    try:
+        result = subprocess.run(
+            argv,
+            cwd=config.WORKSPACE,
+            stdin=subprocess.DEVNULL,  # rg would otherwise search an inherited stdin pipe
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+    except FileNotFoundError as e:
+        return {"exit_code": 127, "stdout": "", "stderr": str(e)}
     return {
         "exit_code": result.returncode,
         "stdout": result.stdout[:CAP],
@@ -85,8 +106,10 @@ def handle_fs_write(payload) -> dict:
     path = _resolve(payload["path"])
     content = payload["content"]
 
-    existing = _run(cmd=f"wc -c < {path} 2>/dev/null || echo 0")
-    old_size = int(existing["stdout"].strip() or 0)
+    try:
+        old_size = os.path.getsize(path)
+    except OSError:
+        old_size = 0
     new_size = len(content.encode())
 
     if old_size > 0 and new_size < old_size * 0.5:
@@ -95,15 +118,18 @@ def handle_fs_write(payload) -> dict:
                            f"only {new_size}. This looks like an accidental truncation. "
                            "Use fs_replace to modify an existing file.")}
 
-    b64 = base64.b64encode(content.encode()).decode()
-    w = _run(cmd=f"echo '{b64}' | base64 -d > {path}")
-    if w["exit_code"] != 0:
-        return w
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _write_text(path, content)
+    except OSError as e:
+        return _io_error(path, e)
     return {"exit_code": 0, "stdout": f"wrote {new_size} bytes to {path}", "stderr": ""}
 
 def handle_code_search(payload) -> dict:
     pattern = payload["pattern"]
-    r = _run(cmd=f"rg -n '{pattern}' | head -51")
+    r = _run_argv(["rg", "-n", "--", pattern])
+    if r["exit_code"] == 1:  # rg: no matches (the old `| head` pipeline reported 0)
+        r["exit_code"] = 0
     lines = r["stdout"].splitlines()
     truncated = len(lines) > 50
     out = "\n".join(lines[:50])
@@ -113,14 +139,20 @@ def handle_code_search(payload) -> dict:
     return {"exit_code": r["exit_code"], "stdout": out, "stderr": r["stderr"]}
 
 def handle_git_status(payload=None) -> dict:
-    return _run(cmd = "git status")
+    return _run_argv(["git", "status"])
 
 def handle_git_diff(payload=None) -> dict:
-    return _run(cmd = "git diff")
+    return _run_argv(["git", "diff"])
 
 def handle_git_commit(payload) -> dict:
-    message = payload["message"].replace("'", "'\\''")
-    return _run(cmd=f"git add -A && git -c user.email=otto@local -c user.name=Otto commit -m '{message}'")
+    add = _run_argv(["git", "add", "-A"])
+    if add["exit_code"] != 0:
+        return add
+    commit = _run_argv(["git", "-c", "user.email=otto@local", "-c", "user.name=Otto",
+                        "commit", "-m", payload["message"]])
+    commit["stdout"] = (add["stdout"] + commit["stdout"])[:CAP]
+    commit["stderr"] = (add["stderr"] + commit["stderr"])[:CAP]
+    return commit
 
 def handle_fs_replace(payload) -> dict:
     path = _resolve(payload["path"])
