@@ -21,10 +21,11 @@ def _run(cmd, timeout=60) -> dict:
 
 
 def _resolve(path):
-    ws = config.WORKSPACE
+    ws = os.path.realpath(config.WORKSPACE)
     full = os.path.realpath(os.path.join(ws, path))
 
-    if not full.startswith(ws):
+    # a plain startswith would let /workspace-evil through
+    if os.path.commonpath([ws, full]) != ws:
         raise ValueError(f"Path escapes workspace: {path}")
 
     return full

@@ -198,3 +198,25 @@ def test_fs_replace_missing_file_errors():
     r = call("fs.replace", {"path": "nope.txt", "old_str": "a", "new_str": "b"})
     assert r["exit_code"] != 0
     assert "nope.txt" in r["stderr"]
+
+
+def test_resolve_rejects_sibling_with_same_prefix(ws):
+    # e.g. /workspace-evil must not pass for workspace /workspace
+    evil = ws + "-evil"
+    os.makedirs(evil, exist_ok=True)
+    with pytest.raises(ValueError, match="escapes workspace"):
+        _resolve(f"../{os.path.basename(evil)}/secret.txt")
+
+
+def test_resolve_rejects_absolute_path_outside():
+    with pytest.raises(ValueError, match="escapes workspace"):
+        _resolve("/etc/passwd")
+
+
+def test_resolve_allows_workspace_itself(ws):
+    assert _resolve(".") == ws
+
+
+def test_resolve_tolerates_trailing_slash_in_workspace(ws, monkeypatch):
+    monkeypatch.setattr(config, "WORKSPACE", ws + "/")
+    assert _resolve("a.txt") == os.path.join(ws, "a.txt")
