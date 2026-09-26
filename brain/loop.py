@@ -1,5 +1,5 @@
 import json
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from shared import config
 from brain.tools import SYSTEM, TOOLS, KIND
@@ -8,7 +8,7 @@ from brain.bus import bus_call, start_consumer, stop_consumer
 
 async def run_session(ch, results, sid, task):
     # built per call (not at import) so importing this module needs no API key
-    client = OpenAI(
+    client = AsyncOpenAI(
         base_url=config.BASE_URL,
         api_key=config.API_KEY
     )
@@ -18,7 +18,7 @@ async def run_session(ch, results, sid, task):
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": task}]
 
         for step in range(20):
-            resp = client.chat.completions.create(model=config.MODEL, messages=messages, tools=TOOLS)
+            resp = await client.chat.completions.create(model=config.MODEL, messages=messages, tools=TOOLS)
             m = resp.choices[0].message
 
             if not m.tool_calls:
@@ -60,3 +60,4 @@ async def run_session(ch, results, sid, task):
         print("[stopped] iteration cap")
     finally:
         await stop_consumer(pending, consumer)
+        await client.close()

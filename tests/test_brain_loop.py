@@ -8,21 +8,26 @@ from brain import loop
 from tests.fakes import FakeChannel, auto_reply, llm_tool_calls, llm_final
 
 
-def fake_client(monkeypatch, responses):
-    """Patch brain.loop's OpenAI client; returns the list of create() kwargs."""
+def fake_client(monkeypatch, responses, delay=0):
+    """Patch brain.loop's AsyncOpenAI client; returns the list of messages sent per call."""
     calls = []
+    state = {"closed": False}
 
     class Completions:
-        def create(self, **kw):
+        async def create(self, **kw):
             calls.append(json.loads(json.dumps(kw["messages"], default=str)))
+            await asyncio.sleep(delay)
             return responses.pop(0)
 
     class Client:
         def __init__(self, **kw):
             self.chat = type("Chat", (), {"completions": Completions()})()
 
-    monkeypatch.setattr(loop, "OpenAI", Client)
-    return calls
+        async def close(self):
+            state["closed"] = True
+
+    monkeypatch.setattr(loop, "AsyncOpenAI", Client)
+    return calls, state
 
 
 @pytest.mark.asyncio
@@ -30,7 +35,7 @@ async def test_run_session_parallel_tool_calls(monkeypatch, capsys):
     ch = FakeChannel()
     results = ch.queue(results_queue("s1"))
     auto_reply(ch, results)
-    calls = fake_client(monkeypatch, [
+    calls, state = fake_client(monkeypatch, [
         llm_tool_calls(("git_status", {}), ("fs_read", {"path": "a.py"})),
         llm_final("done"),
     ])
@@ -46,3 +51,23 @@ async def test_run_session_parallel_tool_calls(monkeypatch, capsys):
     # the result consumer is stopped when the session ends
     others = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     assert others == []
+    assert state["closed"]
+
+
+@pytest.mark.asyncio
+async def test_llm_call_does_not_block_the_event_loop(monkeypatch):
+    ch = FakeChannel()
+    results = ch.queue(results_queue("s1"))
+    fake_client(monkeypatch, [llm_final("done")], delay=0.1)
+    ticks = 0
+
+    async def ticker():
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0.01)
+
+    t = asyncio.ensure_future(ticker())
+    await loop.run_session(ch, results, "s1", "hi")
+    t.cancel()
+    assert ticks >= 5
