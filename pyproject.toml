@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "otto"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "aio-pika",
+    "openai",
+    "python-dotenv",
+    "kubernetes",
+    "pyjwt[crypto]",
+    "requests",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[tool.setuptools]
+packages = ["shared", "runner", "brain", "orchestrator", "gateway"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

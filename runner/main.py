@@ -1,58 +1,49 @@
-import asyncio
-import json
-import os
-import traceback
+import asyncio, json, traceback
+from aio_pika import message, connect_robust
 
-from aio_pika import Message, connect_robust
+from shared import config
+from shared.bus import actions_queue, results_queue, make_result
+from runner.handlers import REGISTRY
 
-from handlers import handle_execution
 
 async def main():
-    bus_url = os.environ.get("BUS_URL", "amqp://guest:guest@localhost/")
-    sid = os.environ.get("SESSION_ID", "s1")
+    bus = config.BUS_URL
+    sid = config.SESSION_ID
 
-    connection = await connect_robust(bus_url)
-    channel = await connection.channel()
-    await channel.set_qos(prefetch_count=1)
+    conn = await connect_robust(bus)
+    ch = await conn.channel()
+    await ch.set_qos(prefetch_count=1)
 
-    actions = await channel.declare_queue(f"actions.{sid}", durable=True)
-    await channel.declare_queue(f"results.{sid}", durable=True)
-    print(f"[runner] ready, session={sid}", flush=True)
 
-    async with actions.iterator() as queue_iter:
-        async for msg in queue_iter:
-            async with msg.process():  # acks when block exits cleanly
-                try:
-                    action = json.loads(msg.body)
-                except json.JSONDecodeError:
-                    print("[runner] dropped non-JSON message", flush=True)
-                    continue
+    actions = await ch.declare_queue(actions_queue(sid), durable=True)
+    await ch.declare_queue(results_queue(sid), durable=True)
+    print(f"[runner] Listening for actions on {actions_queue(sid)}", flush=True)
 
+    async with actions.iterator() as it:
+        async for msg in it:
+            async with msg.process():
+                action = json.loads(msg.body)
                 kind = action.get("kind", "")
-                print(f"[runner] action {action.get('action_id')} kind={kind}", flush=True)
+                print(f"[runner] {kind} {action.get('action_id')}", flush=True)
+
+                fn = REGISTRY.get(kind)
 
                 try:
-                    if kind.startswith("shell."):
-                        payload = handle(action.get("payload", {}))
-                        ok = payload.get("exit_code", -1) != -1
+                    if not fn:
+                        payload, ok = {"exit_code": 1, "stdout": "", "stderr": f"Unknown action kind: {kind}"}, False
                     else:
-                        payload = {"error": f"unknown kind: {kind}"}
-                        ok = False
-                except Exception:
-                    payload = {"error": traceback.format_exc()}
-                    ok = False
+                        payload = fn(action.get("payload", {}))
+                        ok = payload.get("exit_code", 1) == 0
+                except Exception as e:
+                    payload, ok = {"exit_code": 1, "stdout": "", "stderr": f"Exception: {e}\n{traceback.format_exc()}"}, False
 
-                result = {
-                    "session_id": sid,
-                    "action_id": action.get("action_id"),
-                    "kind": f"{kind}.result",
-                    "ok": ok,
-                    "payload": payload,
-                }
-                await channel.default_exchange.publish(
-                    Message(json.dumps(result).encode()),
-                    routing_key=f"results.{sid}",
+                result = make_result(action, ok, payload)
+
+                await ch.default_exchange.publish(
+                    message.Message(body=json.dumps(result).encode()),
+                    routing_key=results_queue(sid)
                 )
+
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -1,31 +1,33 @@
 import asyncio
 from aio_pika import Message, connect, DeliveryMode
 import sys
-import json
+import json, uuid, os
 
-from shared import config
-from shared.bus import actions_queue, results_queue, make_action
 
 
 async def main():
-    connection = await connect(config.BUS_URL)
-    sid = config.SESSION_ID
+    connection = await connect("amqp://guest:guest@localhost/")
 
     async with connection:
         channel = await connection.channel()
         kind = sys.argv[1]
         payload = json.loads(sys.argv[2] if len(sys.argv) > 2 else "{}")
-        action = make_action(sid, kind, payload)
+        action = {
+            "session_id": "s1",
+            "action_id": str(uuid.uuid4()),
+            "kind": kind,
+            "payload": payload
+        }
         message= Message(
             json.dumps(action).encode(),
             delivery_mode=DeliveryMode.PERSISTENT
         )
-        await channel.declare_queue(actions_queue(sid), durable=True)
-        results = await channel.declare_queue(results_queue(sid), durable=True)
+        await channel.declare_queue("otto.s1.actions", durable=True)
+        results = await channel.declare_queue("otto.s1.results", durable=True)
 
         await channel.default_exchange.publish(
                     message,
-                    routing_key=actions_queue(sid),
+                    routing_key="otto.s1.actions",
                 )
         print(f"[poke] sent {action['action_id']}", flush=True)
 
