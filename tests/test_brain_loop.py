@@ -71,3 +71,49 @@ async def test_llm_call_does_not_block_the_event_loop(monkeypatch):
     await loop.run_session(ch, results, "s1", "hi")
     t.cancel()
     assert ticks >= 5
+
+
+def tool_contents(calls):
+    return [m["content"] for m in calls[1] if m["role"] == "tool"]
+
+
+@pytest.mark.asyncio
+async def test_big_tool_result_is_still_valid_json(monkeypatch):
+    ch = FakeChannel()
+    results = ch.queue(results_queue("s1"))
+    big = 'say "hi"\n\\ ünï ' * 3000  # quotes/newlines/backslashes/non-ascii grow when escaped
+    auto_reply(ch, results, stdout=lambda action: big)
+    calls, _ = fake_client(monkeypatch, [llm_tool_calls(("git_diff", {})), llm_final("done")])
+
+    await loop.run_session(ch, results, "s1", "diff")
+
+    [content] = tool_contents(calls)
+    assert len(content) <= 20000
+    r = json.loads(content)
+    assert r["exit_code"] == 0
+    assert r["stderr"] == ""
+    assert big.startswith(r["stdout"].split("\n[... truncated")[0])
+    assert "truncated" in r["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_small_tool_result_is_unchanged(monkeypatch):
+    ch = FakeChannel()
+    results = ch.queue(results_queue("s1"))
+    auto_reply(ch, results)
+    calls, _ = fake_client(monkeypatch, [llm_tool_calls(("git_status", {})), llm_final("done")])
+
+    await loop.run_session(ch, results, "s1", "status")
+
+    [content] = tool_contents(calls)
+    assert content == json.dumps({"exit_code": 0, "stdout": "ran git.status", "stderr": ""})
+
+
+def test_tool_content_trims_stdout_and_stderr():
+    result = {"exit_code": 1, "stdout": "o" * 15000, "stderr": "e" * 15000, "total_lines": 7}
+    content = loop.tool_content(result)
+    r = json.loads(content)
+    assert len(content) <= 20000
+    assert r["exit_code"] == 1 and r["total_lines"] == 7
+    assert r["stdout"].startswith("o" * 1000) and r["stderr"].startswith("e" * 1000)
+    assert result["stdout"] == "o" * 15000  # input not mutated
