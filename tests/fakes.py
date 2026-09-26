@@ -95,3 +95,30 @@ class FakeConnection:
 
     async def close(self):
         pass
+
+
+# --- OpenAI-shaped responses -------------------------------------------------
+
+from types import SimpleNamespace as NS
+
+
+def llm_tool_calls(*calls, content=None):
+    """calls: (name, args_dict) pairs -> a chat completion asking for those tools."""
+    tcs = [NS(id=f"call_{i}", function=NS(name=name, arguments=json.dumps(args)))
+           for i, (name, args) in enumerate(calls)]
+    return NS(choices=[NS(message=NS(content=content, tool_calls=tcs))])
+
+
+def llm_final(text):
+    return NS(choices=[NS(message=NS(content=text, tool_calls=None))])
+
+
+def auto_reply(ch, results, stdout=lambda action: f"ran {action['kind']}"):
+    """Make the fake channel answer every published action on `results`, like a runner."""
+    from shared.bus import make_result
+
+    def on_publish(routing_key, action):
+        payload = {"exit_code": 0, "stdout": stdout(action), "stderr": ""}
+        results.put(make_result(action, True, payload))
+
+    ch.default_exchange.on_publish = on_publish
