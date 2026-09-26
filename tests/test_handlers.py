@@ -145,3 +145,56 @@ def test_git_commit(ws):
                          capture_output=True, text=True).stdout.strip()
     assert log == "Otto <otto@local>|it's a test"
     assert call("git.status", {})["exit_code"] == 0
+
+
+def big_text():
+    # ~30k chars, well past the 10k output cap, with unique lines
+    return "".join(f"line {i:05d} some padding text here\n" for i in range(1, 900))
+
+
+def test_fs_replace_large_file_keeps_every_byte(ws):
+    text = big_text()
+    assert len(text) > 30_000
+    p = write(ws, "big.txt", text)
+    r = call("fs.replace", {"path": "big.txt", "old_str": "line 00500 ", "new_str": "LINE-500 "})
+    assert r["exit_code"] == 0, r
+    assert open(p).read() == text.replace("line 00500 ", "LINE-500 ")
+
+
+def test_fs_replace_finds_match_past_10k(ws):
+    write(ws, "big.txt", big_text())
+    r = call("fs.replace", {"path": "big.txt", "old_str": "line 00890 ", "new_str": "x "})
+    assert r["exit_code"] == 0, r
+
+
+def test_fs_replace_preserves_crlf(ws):
+    p = os.path.join(ws, "crlf.txt")
+    with open(p, "wb") as f:
+        f.write(b"a\r\nb\r\n")
+    call("fs.replace", {"path": "crlf.txt", "old_str": "b", "new_str": "c"})
+    assert open(p, "rb").read() == b"a\r\nc\r\n"
+
+
+def test_fs_read_range_past_10k(ws):
+    write(ws, "big.txt", big_text())
+    r = call("fs.read", {"path": "big.txt", "start_line": 850, "end_line": 851})
+    assert r["stdout"] == "line 00850 some padding text here\nline 00851 some padding text here\n"
+
+
+def test_fs_read_output_capped_at_10k(ws):
+    write(ws, "big.txt", big_text())
+    r = call("fs.read", {"path": "big.txt", "start_line": 1, "end_line": 399})
+    assert r["exit_code"] == 0
+    assert len(r["stdout"]) == 10_000
+
+
+def test_fs_read_missing_file_errors():
+    r = call("fs.read", {"path": "nope.txt"})
+    assert r["exit_code"] != 0
+    assert "nope.txt" in r["stderr"]
+
+
+def test_fs_replace_missing_file_errors():
+    r = call("fs.replace", {"path": "nope.txt", "old_str": "a", "new_str": "b"})
+    assert r["exit_code"] != 0
+    assert "nope.txt" in r["stderr"]

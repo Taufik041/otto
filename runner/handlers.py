@@ -29,6 +29,29 @@ def _resolve(path):
 
     return full
 
+def _read_text(path) -> str:
+    # newline="" keeps \r\n etc. byte-for-byte
+    with open(path, encoding="utf-8", newline="") as f:
+        return f.read()
+
+
+def _write_text(path, text):
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+
+
+def _lines(text) -> list:
+    # split on "\n" only, keeping it, like sed/wc do
+    parts = text.split("\n")
+    lines = [p + "\n" for p in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    return lines
+
+
+def _io_error(path, e) -> dict:
+    return {"exit_code": 1, "stdout": "", "stderr": f"cannot access {path}: {e}"}
+
 def handle_shell_exec(payload) -> dict:
     return _run(payload["cmd"], payload.get("timeout", 60))
 
@@ -37,18 +60,25 @@ def handle_fs_read(payload) -> dict:
     start = payload.get("start_line")
     end = payload.get("end_line")
 
+    try:
+        text = _read_text(path)
+    except (OSError, UnicodeDecodeError) as e:
+        return _io_error(path, e)
+
     if start is None:
-        n = _run(f"wc -l < {path}")
-        if n["exit_code"] != 0:
-            return n
-        total = int(n["stdout"].strip() or 0)
+        total = text.count("\n")  # same count as `wc -l`
         if total > 400:
             return {"exit_code": 1, "stdout": "",
                     "stderr": f"{path} has {total} lines; pass start_line/end_line"}
         start, end = 1, total
 
-    end = end or start + 200
-    return _run(f"sed -n '{start},{end}p' {path}")
+    start = int(start)
+    end = int(end or start + 200)
+    if start < 1:
+        return {"exit_code": 1, "stdout": "", "stderr": f"start_line must be >= 1, got {start}"}
+    # same slice as `sed -n 'start,endp'` (prints just line `start` when end < start)
+    out = "".join(_lines(text)[start - 1:max(end, start)])
+    return {"exit_code": 0, "stdout": out[:CAP], "stderr": ""}
 
 def handle_fs_write(payload) -> dict:
     path = _resolve(payload["path"])
@@ -96,11 +126,11 @@ def handle_fs_replace(payload) -> dict:
     old_str = payload["old_str"]
     new_str = payload["new_str"]
 
-    r = _run(cmd=f"cat {path}")
-    if r["exit_code"] != 0:
-        return r
+    try:
+        content = _read_text(path)
+    except (OSError, UnicodeDecodeError) as e:
+        return _io_error(path, e)
 
-    content = r["stdout"]
     count = content.count(old_str)
     if count == 0:
         return {"exit_code": 1, "stdout": "",
@@ -112,10 +142,10 @@ def handle_fs_replace(payload) -> dict:
                           "include surrounding lines to make it unique."}
 
     updated = content.replace(old_str, new_str)
-    b64 = base64.b64encode(updated.encode()).decode()
-    w = _run(cmd=f"echo '{b64}' | base64 -d > {path}")
-    if w["exit_code"] != 0:
-        return w
+    try:
+        _write_text(path, updated)
+    except OSError as e:
+        return _io_error(path, e)
     return {"exit_code": 0, "stdout": f"replaced 1 occurrence in {path}", "stderr": ""}
 
 
