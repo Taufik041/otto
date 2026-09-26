@@ -22,7 +22,15 @@ async def main():
     async with actions.iterator() as it:
         async for msg in it:
             async with msg.process():
-                action = json.loads(msg.body)
+                try:
+                    action = json.loads(msg.body)  # ValueError covers bad JSON and bad UTF-8
+                except ValueError:
+                    print(f"[runner] dropped non-JSON message: {msg.body[:200]!r}", flush=True)
+                    continue
+                if not isinstance(action, dict):
+                    print(f"[runner] dropped message that is not a JSON object: {msg.body[:200]!r}", flush=True)
+                    continue
+
                 kind = action.get("kind", "")
                 print(f"[runner] {kind} {action.get('action_id')}", flush=True)
 
