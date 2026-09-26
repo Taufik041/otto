@@ -34,3 +34,43 @@ async def test_bad_messages_are_acked_and_skipped(ch):
     assert key == results_queue("s1")
     assert result["ok"] is True
     assert result["payload"]["stdout"] == "hi\n"
+
+
+def flaky_connect(ch, failures):
+    calls = []
+
+    async def connect(url):
+        calls.append(url)
+        if len(calls) <= failures:
+            raise ConnectionError("broker not up yet")
+        return FakeConnection(ch)
+
+    return connect, calls
+
+
+@pytest.mark.asyncio
+async def test_connect_retries_until_broker_is_up(ch, monkeypatch, capsys):
+    connect, calls = flaky_connect(ch, failures=2)
+    monkeypatch.setattr(runner_main, "connect_robust", connect)
+    monkeypatch.setattr(runner_main, "CONNECT_DELAY", 0)
+    ch.queue(actions_queue("s1")).close()
+
+    await runner_main.main()
+
+    assert len(calls) == 3
+    assert capsys.readouterr().out.count("broker not up yet") == 2
+
+
+@pytest.mark.asyncio
+async def test_connect_gives_up_with_clear_error(ch, monkeypatch):
+    connect, calls = flaky_connect(ch, failures=10**6)
+    monkeypatch.setattr(runner_main, "connect_robust", connect)
+    monkeypatch.setattr(runner_main, "CONNECT_DELAY", 0)
+
+    with pytest.raises(RuntimeError, match="could not connect to the bus"):
+        await runner_main.main()
+    assert len(calls) == runner_main.CONNECT_ATTEMPTS
+
+
+def test_connect_retry_window_is_about_60s():
+    assert runner_main.CONNECT_ATTEMPTS * runner_main.CONNECT_DELAY == 60

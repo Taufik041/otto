@@ -5,12 +5,29 @@ from shared import config
 from shared.bus import actions_queue, results_queue, make_result
 from runner.handlers import REGISTRY
 
+CONNECT_ATTEMPTS = 30
+CONNECT_DELAY = 2  # seconds; ~60s in total
+
+
+async def connect_with_retry(url):
+    # connect_robust only reconnects after a first successful connect,
+    # so retry the initial one while the broker comes up
+    for attempt in range(1, CONNECT_ATTEMPTS + 1):
+        try:
+            return await connect_robust(url)
+        except Exception as e:
+            print(f"[runner] bus connect attempt {attempt}/{CONNECT_ATTEMPTS} failed: {e}", flush=True)
+            if attempt < CONNECT_ATTEMPTS:
+                await asyncio.sleep(CONNECT_DELAY)
+    raise RuntimeError(f"could not connect to the bus after {CONNECT_ATTEMPTS} attempts "
+                       f"({CONNECT_ATTEMPTS * CONNECT_DELAY}s); check BUS_URL and that RabbitMQ is up")
+
 
 async def main():
     bus = config.BUS_URL
     sid = config.SESSION_ID
 
-    conn = await connect_robust(bus)
+    conn = await connect_with_retry(bus)
     ch = await conn.channel()
     await ch.set_qos(prefetch_count=1)
 
