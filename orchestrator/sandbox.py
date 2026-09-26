@@ -1,3 +1,5 @@
+import re
+
 from kubernetes import client, config as k8s_config
 
 from shared import config
@@ -13,7 +15,17 @@ def _batch_api():
         _batch = client.BatchV1Api()
     return _batch
 
+def _job_name(session_id: str) -> str:
+    # the Job name (and the pod's job-name label) must be a DNS-1123 label:
+    # lowercase alphanumerics and '-', ending alphanumeric, at most 63 chars
+    name = f"otto-{session_id}"
+    if not re.fullmatch(r"[a-z0-9-]*[a-z0-9]", session_id) or len(name) > 63:
+        raise ValueError(f"invalid session id {session_id!r}: use lowercase letters, digits and '-', "
+                         f"ending in a letter or digit, at most {63 - len('otto-')} chars")
+    return name
+
 def create_sandbox(session_id: str, repo_url: str, token: str | None = None) -> str:
+    name = _job_name(session_id)
     env = [
         client.V1EnvVar(name="BUS_URL", value=config.SANDBOX_BUS_URL),
         client.V1EnvVar(name="SESSION_ID", value=session_id),
@@ -36,13 +48,13 @@ def create_sandbox(session_id: str, repo_url: str, token: str | None = None) -> 
 
     job = client.V1Job(
         api_version="batch/v1", kind="Job",
-        metadata=client.V1ObjectMeta(name=f"otto-{session_id}"),
+        metadata=client.V1ObjectMeta(name=name),
         spec=spec)
 
     _batch_api().create_namespaced_job(body=job, namespace=config.K8S_NAMESPACE)
-    return f"otto-{session_id}"
+    return name
 
 def destroy_sandbox(session_id: str):
     _batch_api().delete_namespaced_job(
-        name=f"otto-{session_id}", namespace=config.K8S_NAMESPACE,
+        name=_job_name(session_id), namespace=config.K8S_NAMESPACE,
         body=client.V1DeleteOptions(propagation_policy="Foreground"))
