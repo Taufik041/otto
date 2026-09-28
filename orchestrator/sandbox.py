@@ -1,4 +1,4 @@
-import re
+import re, time
 
 from kubernetes import client, config as k8s_config
 from kubernetes.client.exceptions import ApiException
@@ -51,6 +51,7 @@ def create_sandbox(session_id: str, repo_url: str, token: str | None = None) -> 
         client.V1EnvVar(name="BUS_URL", value=config.SANDBOX_BUS_URL),
         client.V1EnvVar(name="SESSION_ID", value=session_id),
         client.V1EnvVar(name="REPO_URL", value=repo_url),
+        client.V1EnvVar(name="SANDBOX_IDLE_MINUTES", value=str(config.SANDBOX_IDLE_MINUTES)),
     ]
     if token:
         env.append(client.V1EnvVar(name="GITHUB_TOKEN", value=token))
@@ -64,7 +65,9 @@ def create_sandbox(session_id: str, repo_url: str, token: str | None = None) -> 
     template = client.V1PodTemplateSpec(
         spec=client.V1PodSpec(restart_policy="Never", containers=[container]))
 
+    # the deadline keeps a pod from outliving its 1h GitHub token; ttl cleans up finished Jobs
     spec = client.V1JobSpec(template=template, backoff_limit=0,
+                            active_deadline_seconds=config.SANDBOX_MAX_AGE_SECONDS,
                             ttl_seconds_after_finished=100)
 
     job = client.V1Job(
@@ -100,3 +103,41 @@ def sandbox_pods(session_id: str) -> list[tuple[str, str]]:
 
 def pod_logs(pod_name: str) -> str:
     return _core_api().read_namespaced_pod_log(name=pod_name, namespace=config.K8S_NAMESPACE)
+
+
+def sandbox_status(session_id: str) -> str:
+    """"running" (Job alive, pod starting or up), "finished" (done, failed or going away) or "missing"."""
+    try:
+        job = _batch_api().read_namespaced_job(name=_job_name(session_id), namespace=config.K8S_NAMESPACE)
+    except ApiException as e:
+        if e.status == 404:
+            return "missing"
+        raise
+    st = job.status
+    over = (job.metadata.deletion_timestamp or st.succeeded or st.failed
+            or any(c.type in ("Complete", "Failed") and c.status == "True" for c in st.conditions or []))
+    if over:
+        return "finished"
+    phases = [phase for _, phase in sandbox_pods(session_id)]
+    if any(p in ("Succeeded", "Failed") for p in phases):
+        return "finished"
+    return "running"
+
+
+def remove_sandbox(session_id: str, timeout=120, poll=1) -> bool:
+    """Delete the session's Job if there is one and wait until it and its pods are gone.
+
+    Returns whether there was a Job. Needed before re-creating a Job with the same name.
+    """
+    try:
+        destroy_sandbox(session_id)
+    except ApiException as e:
+        if e.status != 404:
+            raise
+        return False
+    deadline = time.monotonic() + timeout
+    while job_exists(session_id) or sandbox_pods(session_id):
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"job for session {session_id} still there after {timeout}s")
+        time.sleep(poll)
+    return True
