@@ -24,6 +24,19 @@ def delete_session(sid):
         s.exec(delete(Session).where(Session.id == sid))
 
 
+def record_pr(sid, number, html_url):
+    """The session's PR is open: emit pr.opened and note the PR and branch on the Session row."""
+    with get_db() as s:
+        row = s.get(Session, sid)
+        if row is None:
+            raise LookupError(f"no session {sid!r}")
+        row.pr_url = html_url
+        row.work_branch = f"otto/{sid}"
+        row.updated_at = utcnow()
+        s.add(row)
+    append_event(sid, "pr.opened", {"number": number, "html_url": html_url})
+
+
 def set_status(sid, status):
     """Update the session's status; emits session.status only when it actually changes."""
     if status not in STATUSES:

@@ -19,7 +19,8 @@ class Session(SQLModel, table=True):
     task: str
     status: str = "pending"  # one of STATUSES
     model: str
-    work_branch: str | None = None  # for later: the branch the session pushes to
+    work_branch: str | None = None  # otto/<id>, set once the session opens a PR
+    pr_url: str | None = None
     created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
     updated_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
 

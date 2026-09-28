@@ -6,7 +6,7 @@ from brain.tools import SYSTEM, TOOLS, KIND
 from brain.bus import bus_call, start_consumer, stop_consumer
 from brain.resume import rebuild_messages
 from shared.events import append_event, load_events
-from shared.sessions import create_session, set_status
+from shared.sessions import create_session, record_pr, set_status
 
 TOOL_CONTENT_LIMIT = 20000
 TRUNCATED = "\n[... truncated]"
@@ -135,6 +135,8 @@ async def _steps(client, ch, pending, sid, messages, record):
                     result = await bus_call(ch, pending, sid, kind, args, record=record)
                 except Exception as e:
                     result = {"exit_code": 1, "stdout": "", "stderr": str(e)}
+                if kind == "git.open_pr" and result.get("exit_code") == 0 and result.get("html_url"):
+                    record_pr(sid, result.get("number"), result["html_url"])
             print(f"[exit {result.get('exit_code')}] {(result.get('stdout') or result.get('stderr') or '')[:200]}")
             add_message(sid, messages, {"role": "tool", "tool_call_id": tc.id,
                                         "content": tool_content(result)})

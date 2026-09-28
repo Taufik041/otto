@@ -56,6 +56,8 @@ def summarize(ev) -> str:
         return f"model={p.get('model')} repo={p.get('repo_url')} task={p.get('task')!r}"
     if ev.type == "session.status":
         return p.get("status", "")
+    if ev.type == "pr.opened":
+        return f"#{p.get('number')} {p.get('html_url')}"
     if ev.type == "bus.action":
         return f"{p.get('kind')} {json.dumps(p.get('payload'))}"
     if ev.type == "bus.result":
@@ -80,6 +82,7 @@ def show(sid):
     print(f"session {row.id}  status={row.status}  model={row.model}  repo={row.repo_url}")
     print(f"  created {_fmt_ts(row.created_at)}  updated {_fmt_ts(row.updated_at)} (UTC)")
     print(f"  task: {_one_line(row.task)}")
+    print(f"  branch: {row.work_branch or '-'}  pr: {row.pr_url or '-'}")
     print()
     for ev in load_events(sid):
         print(f"{ev.seq:>5}  {_fmt_ts(ev.ts)}  {ev.type:<15}  {_one_line(summarize(ev))}")

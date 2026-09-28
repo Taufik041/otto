@@ -14,7 +14,11 @@ SYSTEM = (
     "report the result. Do not finish while tests are failing.\n"
     "\n"
     "When the task is complete and tests pass, git_commit with a short message, then "
-    "summarize what you changed."
+    "summarize what you changed.\n"
+    "\n"
+    "After committing with tests passing, call git_push, then git_open_pr with a clear title "
+    "and a body explaining the root cause, the fix, and the test results. If a PR already "
+    "exists for this branch, just push: the new commits land on it."
 )
 
 TOOLS = [
@@ -131,6 +135,34 @@ TOOLS = [
             }
         }
     },
+    { # git_push
+        "type": "function",
+        "function": {
+            "name": "git_push",
+            "description": "Push the current branch (this session's otto/<id> branch) to origin",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    { # git_open_pr
+        "type": "function",
+        "function": {
+            "name": "git_open_pr",
+            "description": ("Open a pull request from the pushed current branch. Returns the existing PR "
+                            "if one is already open for this branch."),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "body": {"type": "string", "description": "root cause, fix, and test results"},
+                    "base": {"type": "string", "description": "target branch; omit to use the repo's default branch"}
+                },
+                "required": ["title", "body"]
+            }
+        }
+    },
 ]
 
 KIND = {
@@ -141,5 +173,7 @@ KIND = {
     "git_status": "git.status",
     "git_diff": "git.diff",
     "git_commit": "git.commit",
-    "fs_replace": "fs.replace",    
+    "fs_replace": "fs.replace",
+    "git_push": "git.push",
+    "git_open_pr": "git.open_pr",
 }
