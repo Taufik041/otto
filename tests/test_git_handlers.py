@@ -100,3 +100,120 @@ def test_model_commands_do_not_see_the_token(repo, monkeypatch):
     r = REGISTRY["shell.exec"]({"cmd": "env"})
     assert r["exit_code"] == 0 and TOKEN not in r["stdout"]
     assert "PATH=" in r["stdout"]
+
+
+# --- git.open_pr (urllib mocked; no network) ----------------------------------
+
+import io
+import json
+import urllib.error
+import urllib.request
+
+PR = {"number": 7, "html_url": "https://github.com/Taufik041/otto_test/pull/7"}
+
+
+class FakeResponse:
+    def __init__(self, data, status=200):
+        self._body = json.dumps(data).encode()
+        self.status = status
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def http_error(url, code, data):
+    return urllib.error.HTTPError(url, code, "err", {}, io.BytesIO(json.dumps(data).encode()))
+
+
+@pytest.fixture
+def github(repo, monkeypatch):
+    """Route urlopen through `routes`: {(method, url): response data | Exception}."""
+    monkeypatch.setattr(config, "REPO_URL", "https://github.com/Taufik041/otto_test.git")
+    routes, requests = {}, []
+
+    def urlopen(req, timeout=None):
+        body = json.loads(req.data) if req.data else None
+        requests.append({"method": req.get_method(), "url": req.full_url, "body": body,
+                         "headers": dict(req.header_items()), "timeout": timeout})
+        out = routes[(req.get_method(), req.full_url)]
+        if isinstance(out, Exception):
+            raise out
+        return FakeResponse(out)
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    return routes, requests
+
+
+PULLS = "https://api.github.com/repos/Taufik041/otto_test/pulls"
+
+
+def open_pr(**payload):
+    return REGISTRY["git.open_pr"]({"title": "Fix discount", "body": "why and how", **payload})
+
+
+def test_open_pr_success(github, repo):
+    ws, _ = repo
+    routes, requests = github
+    git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop", cwd=ws)
+    routes[("POST", PULLS)] = PR
+
+    r = open_pr()
+
+    assert r == {"exit_code": 0, "stdout": PR["html_url"], "stderr": "", **PR}
+    [req] = requests
+    assert req["body"] == {"title": "Fix discount", "body": "why and how", "head": "otto/s1", "base": "develop"}
+    assert req["headers"]["Authorization"] == f"Bearer {TOKEN}"
+    assert req["timeout"]
+
+
+def test_open_pr_base_falls_back_to_main_or_uses_the_given_one(github):
+    routes, requests = github
+    routes[("POST", PULLS)] = PR
+    open_pr()
+    open_pr(base="release")
+    assert [r["body"]["base"] for r in requests] == ["main", "release"]
+
+
+def test_open_pr_returns_the_existing_pr(github):
+    routes, requests = github
+    routes[("POST", PULLS)] = http_error(PULLS, 422, {
+        "message": "Validation Failed",
+        "errors": [{"resource": "PullRequest", "code": "custom",
+                    "message": "A pull request already exists for Taufik041:otto/s1."}]})
+    existing = f"{PULLS}?head=Taufik041%3Aotto%2Fs1&state=open"
+    routes[("GET", existing)] = [PR]
+
+    r = open_pr()
+
+    assert r["exit_code"] == 0 and r["number"] == 7 and r["html_url"] == PR["html_url"]
+    assert [q["method"] for q in requests] == ["POST", "GET"]
+
+
+@pytest.mark.parametrize("error, expected", [
+    (lambda: http_error(PULLS, 422, {"message": "Validation Failed", "errors": [
+        {"resource": "PullRequest", "code": "custom", "message": "No commits between main and otto/s1"}]}),
+     "No commits between main and otto/s1"),
+    (lambda: http_error(PULLS, 401, {"message": "Bad credentials"}), "401: Bad credentials"),
+    (lambda: urllib.error.URLError("timed out"), "timed out"),
+    (lambda: TimeoutError("The read operation timed out"), "timed out"),
+])
+def test_open_pr_errors_become_exit_code_1(github, error, expected):
+    routes, _ = github
+    routes[("POST", PULLS)] = error()
+    r = open_pr()
+    assert r["exit_code"] == 1 and expected in r["stderr"]
+    assert TOKEN not in json.dumps(r)
+
+
+def test_open_pr_without_a_token(github, monkeypatch):
+    _, requests = github
+    monkeypatch.setattr(config, "GITHUB_TOKEN", None)
+    r = open_pr()
+    assert r["exit_code"] == 1 and "GITHUB_TOKEN" in r["stderr"]
+    assert requests == []

@@ -1,9 +1,12 @@
-import base64, os, subprocess
+import base64, json, os, subprocess
+import urllib.error, urllib.parse, urllib.request
 
 from shared import config
+from shared.github import API, parse_repo
 
 CAP = 10_000
 SECRET_ENV = ("GITHUB_TOKEN",)
+GITHUB_TIMEOUT = 30  # seconds per GitHub API request
 
 
 def _child_env(extra=None) -> dict:
@@ -227,6 +230,80 @@ def handle_git_push(payload=None) -> dict:
     return r
 
 
+def _error(stderr) -> dict:
+    return {"exit_code": 1, "stdout": "", "stderr": stderr}
+
+
+def _default_branch() -> str:
+    r = _run_argv(["git", "symbolic-ref", "refs/remotes/origin/HEAD"])
+    ref = r["stdout"].strip()
+    return ref.removeprefix("refs/remotes/origin/") if r["exit_code"] == 0 and ref else "main"
+
+
+def _github(method, path, token, body=None):
+    # stdlib only: the sandbox image has no requests
+    req = urllib.request.Request(
+        API + path, method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Authorization": f"Bearer {token}",
+                 "Accept": "application/vnd.github+json",
+                 "X-GitHub-Api-Version": "2022-11-28",
+                 "Content-Type": "application/json",
+                 "User-Agent": "otto"})
+    with urllib.request.urlopen(req, timeout=GITHUB_TIMEOUT) as resp:
+        return json.loads(resp.read() or b"null")
+
+
+def _api_error(e: urllib.error.HTTPError) -> str:
+    """'GitHub API 422: Validation Failed; A pull request already exists for ...'"""
+    try:
+        data = json.loads(e.read())
+    except (ValueError, OSError):
+        data = {}
+    data = data if isinstance(data, dict) else {}
+    parts = [data.get("message") or str(e.reason)]
+    parts += [x.get("message") or x.get("code") for x in data.get("errors") or [] if isinstance(x, dict)]
+    return f"GitHub API {e.code}: " + "; ".join(p for p in parts if p)
+
+
+def handle_git_open_pr(payload) -> dict:
+    token = config.GITHUB_TOKEN
+    if not token:
+        return _error("cannot open a PR: no GITHUB_TOKEN in the sandbox (the orchestrator injects one "
+                      "when the GitHub App is configured)")
+    try:
+        owner, repo = parse_repo(config.REPO_URL)
+    except ValueError as e:
+        return _error(f"cannot open a PR: {e}")
+    branch = _current_branch()
+    if not branch:
+        return _error("not on a branch (detached HEAD); check out and push a branch first")
+    base = payload.get("base") or _default_branch()
+    pulls = f"/repos/{owner}/{repo}/pulls"
+
+    try:
+        try:
+            pr = _github("POST", pulls, token, {"title": payload["title"], "body": payload.get("body", ""),
+                                                "head": branch, "base": base})
+        except urllib.error.HTTPError as e:
+            msg = _api_error(e)
+            if e.code != 422 or "already exists" not in msg:
+                return _scrub(_error(msg), [token])
+            # a PR from this branch is already open (e.g. on resume): hand that one back
+            query = urllib.parse.urlencode({"head": f"{owner}:{branch}", "state": "open"})
+            prs = _github("GET", f"{pulls}?{query}", token)
+            if not prs:
+                return _scrub(_error(msg), [token])
+            pr = prs[0]
+    except urllib.error.HTTPError as e:
+        return _scrub(_error(_api_error(e)), [token])
+    except (urllib.error.URLError, OSError, ValueError) as e:  # timeouts are OSErrors
+        return _scrub(_error(f"GitHub API request failed: {e}"), [token])
+
+    return {"exit_code": 0, "stdout": pr["html_url"], "stderr": "",
+            "number": pr["number"], "html_url": pr["html_url"]}
+
+
 REGISTRY = {
     "shell.exec": handle_shell_exec,
     "fs.read": handle_fs_read,
@@ -237,5 +314,6 @@ REGISTRY = {
     "git.commit": handle_git_commit,
     "fs.replace": handle_fs_replace,
     "git.push": handle_git_push,
+    "git.open_pr": handle_git_open_pr,
 }
 
