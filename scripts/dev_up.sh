@@ -1,10 +1,27 @@
 #!/usr/bin/env bash
-# Bring Otto's dev stack up on kind: cluster -> rabbitmq -> image -> runner job -> port-forward.
+# Bring Otto's dev stack up: postgres -> kind cluster -> rabbitmq -> sandbox image -> port-forward.
+# Sandboxes (runner Jobs) are created per session by the gateway.
 set -euo pipefail
 
 CLUSTER=otto
 IMAGE=taufik041/otto-sandbox:dev
 RABBIT_YML=infra/k8s/rabbitmq.yml
+
+port_open() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+
+echo "== postgres"
+if docker start otto-pg >/dev/null 2>&1; then
+    echo "started otto-pg"
+elif port_open 5432; then
+    echo "no otto-pg container, but something already serves :5432; using it"
+else
+    docker run -d --name otto-pg \
+        -e POSTGRES_USER=otto -e POSTGRES_PASSWORD=otto -e POSTGRES_DB=otto \
+        -p 5432:5432 postgres:16-alpine >/dev/null
+    echo "created otto-pg"
+fi
+for _ in $(seq 30); do port_open 5432 && break; sleep 1; done
+port_open 5432 || { echo "postgres is not reachable on :5432" >&2; exit 1; }
 
 echo "== cluster"
 kind get clusters | grep -qx "$CLUSTER" || kind create cluster --name "$CLUSTER"
@@ -19,12 +36,17 @@ docker build -t "$IMAGE" --target runner -f infra/sandbox.Dockerfile .
 # kind load docker-image "$IMAGE" --name "$CLUSTER"
 docker save "$IMAGE" | docker exec -i "${CLUSTER}-control-plane" ctr -n k8s.io images import -
 
-echo "== runner job"
-# replaces any old job, injects a fresh GitHub token, and waits until the runner is listening
-python -m orchestrator.cli create "${SESSION_ID:-s1}" --repo "${REPO_URL:-https://github.com/Taufik041/otto_test}"
-
 echo "== port-forward"
 pkill -f "port-forward svc/rabbitmq" || true
 kubectl port-forward svc/rabbitmq 5672:5672 >/dev/null 2>&1 &
 sleep 2
-echo "ready: python -m brain.main \"<task>\""
+
+cat <<'EOF'
+ready. In two terminals:
+  uvicorn gateway.app:app --port 8000
+  python -m brain.worker
+(SANDBOX_IDLE_MINUTES=2 on the gateway makes new sandboxes exit after 2 idle minutes)
+Then:
+  curl -X POST localhost:8000/sessions -H 'content-type: application/json' \
+       -d '{"repo_url": "https://github.com/Taufik041/otto_test", "task": "..."}'
+EOF
