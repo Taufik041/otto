@@ -1,8 +1,17 @@
-import os, subprocess
+import base64, os, subprocess
 
 from shared import config
 
 CAP = 10_000
+SECRET_ENV = ("GITHUB_TOKEN",)
+
+
+def _child_env(extra=None) -> dict:
+    # commands never inherit the token; git.push passes it per command instead
+    env = {k: v for k, v in os.environ.items() if k not in SECRET_ENV}
+    env.update(extra or {})
+    return env
+
 
 def _run(cmd, timeout=60) -> dict:
     # shell=True on purpose: only shell.exec uses this
@@ -10,6 +19,7 @@ def _run(cmd, timeout=60) -> dict:
         cmd,
         shell=True,
         cwd=config.WORKSPACE,
+        env=_child_env(),
         capture_output=True,
         text=True,
         timeout=timeout
@@ -21,12 +31,13 @@ def _run(cmd, timeout=60) -> dict:
         }
 
 
-def _run_argv(argv, timeout=60) -> dict:
+def _run_argv(argv, timeout=60, env=None) -> dict:
     # no shell: model text is passed as separate argv entries, never interpolated
     try:
         result = subprocess.run(
             argv,
             cwd=config.WORKSPACE,
+            env=_child_env(env),
             stdin=subprocess.DEVNULL,  # rg would otherwise search an inherited stdin pipe
             capture_output=True,
             text=True,
@@ -181,6 +192,40 @@ def handle_fs_replace(payload) -> dict:
         return _io_error(path, e)
     return {"exit_code": 0, "stdout": f"replaced 1 occurrence in {path}", "stderr": ""}
 
+def _current_branch():
+    r = _run_argv(["git", "symbolic-ref", "--short", "-q", "HEAD"])
+    return r["stdout"].strip() if r["exit_code"] == 0 else None
+
+
+def _scrub(result, secrets) -> dict:
+    out = dict(result)
+    for k, v in out.items():
+        if isinstance(v, str):
+            for s in secrets:
+                v = v.replace(s, "[REDACTED]")
+            out[k] = v
+    return out
+
+
+def handle_git_push(payload=None) -> dict:
+    branch = _current_branch()
+    if not branch:
+        return {"exit_code": 1, "stdout": "", "branch": None,
+                "stderr": "not on a branch (detached HEAD); check out a branch before pushing"}
+    token = config.GITHUB_TOKEN
+    if not token:
+        return {"exit_code": 1, "stdout": "", "branch": branch,
+                "stderr": "cannot push: no GITHUB_TOKEN in the sandbox (the orchestrator injects one "
+                          "when the GitHub App is configured)"}
+    # the token rides on this one command's argv; it never lands in .git/config or the remote URL
+    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    r = _run_argv(["git", "-c", f"http.extraheader=AUTHORIZATION: basic {basic}",
+                   "push", "-u", "origin", branch],
+                  timeout=120, env={"GIT_TERMINAL_PROMPT": "0"})
+    r = _scrub(r, [token, basic])
+    r["branch"] = branch
+    return r
+
 
 REGISTRY = {
     "shell.exec": handle_shell_exec,
@@ -191,5 +236,6 @@ REGISTRY = {
     "git.diff": handle_git_diff,
     "git.commit": handle_git_commit,
     "fs.replace": handle_fs_replace,
+    "git.push": handle_git_push,
 }
 

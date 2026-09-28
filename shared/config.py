@@ -12,6 +12,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg://otto:otto@lo
 
 # runner
 WORKSPACE = os.environ.get("OTTO_WORKSPACE", "/workspace")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")  # short-lived installation token, injected by the orchestrator
 
 # brain
 BASE_URL = os.environ.get("OTTO_BASE_URL", "https://openrouter.ai/api/v1")
