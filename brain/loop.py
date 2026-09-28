@@ -1,6 +1,6 @@
-import json
+import json, asyncio
 from openai import AsyncOpenAI
-
+from openai import RateLimitError
 from shared import config
 from brain.tools import SYSTEM, TOOLS, KIND
 from brain.bus import bus_call, start_consumer, stop_consumer
@@ -27,6 +27,16 @@ def tool_content(result, limit=TOOL_CONTENT_LIMIT) -> str:
         content = json.dumps(r)
     return content
 
+async def _complete(client, **kwargs):
+    for attempt in range(6):
+        try:
+            return await client.chat.completions.create(**kwargs)
+        except RateLimitError:
+            wait = min(60, 10*(attempt + 1))
+            print(f'[brain] ratelimited, retrying in {wait}s', flush=True)
+            await asyncio.sleep(wait)
+    return await client.chat.completions.create(**kwargs)
+        
 
 async def run_session(ch, results, sid, task):
     # built per call (not at import) so importing this module needs no API key
@@ -40,7 +50,7 @@ async def run_session(ch, results, sid, task):
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": task}]
 
         for step in range(20):
-            resp = await client.chat.completions.create(model=config.MODEL, messages=messages, tools=TOOLS)
+            resp = await _complete(client, model=config.MODEL, messages=messages, tools=TOOLS)
             m = resp.choices[0].message
 
             if not m.tool_calls:
