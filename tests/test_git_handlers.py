@@ -217,3 +217,13 @@ def test_open_pr_without_a_token(github, monkeypatch):
     r = open_pr()
     assert r["exit_code"] == 1 and "GITHUB_TOKEN" in r["stderr"]
     assert requests == []
+
+
+def test_commit_uses_the_repo_identity_when_set(repo):
+    ws, _ = repo
+    git("config", "user.name", "ottoci[bot]", cwd=ws)
+    git("config", "user.email", "ottoci[bot]@users.noreply.github.com", cwd=ws)
+    open(os.path.join(ws, "b.txt"), "w").write("b\n")
+    assert REGISTRY["git.commit"]({"message": "m"})["exit_code"] == 0
+    assert git("log", "-1", "--format=%an <%ae>", cwd=ws) == \
+        "ottoci[bot] <ottoci[bot]@users.noreply.github.com>"

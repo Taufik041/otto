@@ -162,8 +162,11 @@ def handle_git_commit(payload) -> dict:
     add = _run_argv(["git", "add", "-A"])
     if add["exit_code"] != 0:
         return add
-    commit = _run_argv(["git", "-c", "user.email=otto@local", "-c", "user.name=Otto",
-                        "commit", "-m", payload["message"]])
+    # the sandbox's entrypoint sets the repo's identity; fall back to Otto elsewhere
+    has_identity = all(_run_argv(["git", "config", "--local", "--get", f"user.{k}"])["exit_code"] == 0
+                       for k in ("name", "email"))
+    identity = [] if has_identity else ["-c", "user.email=otto@local", "-c", "user.name=Otto"]
+    commit = _run_argv(["git", *identity, "commit", "-m", payload["message"]])
     commit["stdout"] = (add["stdout"] + commit["stdout"])[:CAP]
     commit["stderr"] = (add["stderr"] + commit["stderr"])[:CAP]
     return commit
