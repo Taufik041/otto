@@ -10,6 +10,9 @@ class FakeMessage:
         self.acked = False
         self.rejected = False
 
+    async def ack(self):
+        self.acked = True
+
     @asynccontextmanager
     async def process(self):
         # like aio_pika: ack on clean exit, reject and re-raise on exception
@@ -83,6 +86,9 @@ class FakeChannel:
         return self.queue(name)
 
     async def set_qos(self, prefetch_count):
+        self.prefetch = prefetch_count
+
+    async def close(self):
         pass
 
 

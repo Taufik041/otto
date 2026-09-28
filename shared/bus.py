@@ -26,3 +26,14 @@ def make_result(action: dict, ok: bool, payload: dict) -> dict:
         "ok": ok,
         "payload": payload
     }
+
+
+SESSIONS_QUEUE = "otto.sessions"  # gateway -> brain workers: which session to run next
+
+
+def start_job(sid: str) -> dict:
+    return {"type": "start", "session_id": sid}
+
+
+def resume_job(sid: str, text: str) -> dict:
+    return {"type": "resume", "session_id": sid, "text": text}
