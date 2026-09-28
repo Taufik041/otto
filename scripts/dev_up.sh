@@ -5,7 +5,6 @@ set -euo pipefail
 CLUSTER=otto
 IMAGE=taufik041/otto-sandbox:dev
 RABBIT_YML=infra/k8s/rabbitmq.yml
-RUNNER_YML=infra/k8s/runner.yml
 
 echo "== cluster"
 kind get clusters | grep -qx "$CLUSTER" || kind create cluster --name "$CLUSTER"
@@ -21,12 +20,8 @@ docker build -t "$IMAGE" --target runner -f infra/sandbox.Dockerfile .
 docker save "$IMAGE" | docker exec -i "${CLUSTER}-control-plane" ctr -n k8s.io images import -
 
 echo "== runner job"
-kubectl delete job otto-s1 --ignore-not-found --wait=true
-kubectl wait --for=delete pod -l job-name=otto-s1 --timeout=60s 2>/dev/null || true
-kubectl apply -f "$RUNNER_YML"
-kubectl wait --for=condition=Ready pod -l job-name=otto-s1 --timeout=180s
-until kubectl logs job/otto-s1 2>/dev/null | grep -q "Listening for actions"; do sleep 2; done
-echo "runner is listening"
+# replaces any old job, injects a fresh GitHub token, and waits until the runner is listening
+python -m orchestrator.cli create "${SESSION_ID:-s1}" --repo "${REPO_URL:-https://github.com/Taufik041/otto_test}"
 
 echo "== port-forward"
 pkill -f "port-forward svc/rabbitmq" || true

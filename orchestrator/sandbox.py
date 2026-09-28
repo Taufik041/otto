@@ -1,11 +1,13 @@
 import re
 
 from kubernetes import client, config as k8s_config
+from kubernetes.client.exceptions import ApiException
 
 from gateway import github_app
 from shared import config
 
 _batch = None
+_core = None
 
 
 def _batch_api():
@@ -15,6 +17,14 @@ def _batch_api():
         k8s_config.load_kube_config()          # laptop→kind for now; load_incluster_config() when deployed
         _batch = client.BatchV1Api()
     return _batch
+
+
+def _core_api():
+    global _core
+    if _core is None:
+        k8s_config.load_kube_config()
+        _core = client.CoreV1Api()
+    return _core
 
 def _job_name(session_id: str) -> str:
     # the Job name (and the pod's job-name label) must be a DNS-1123 label:
@@ -69,3 +79,24 @@ def destroy_sandbox(session_id: str):
     _batch_api().delete_namespaced_job(
         name=_job_name(session_id), namespace=config.K8S_NAMESPACE,
         body=client.V1DeleteOptions(propagation_policy="Foreground"))
+
+
+def job_exists(session_id: str) -> bool:
+    try:
+        _batch_api().read_namespaced_job(name=_job_name(session_id), namespace=config.K8S_NAMESPACE)
+        return True
+    except ApiException as e:
+        if e.status == 404:
+            return False
+        raise
+
+
+def sandbox_pods(session_id: str) -> list[tuple[str, str]]:
+    """(pod name, phase) for each pod of the session's Job."""
+    pods = _core_api().list_namespaced_pod(namespace=config.K8S_NAMESPACE,
+                                           label_selector=f"job-name={_job_name(session_id)}")
+    return [(p.metadata.name, p.status.phase) for p in pods.items]
+
+
+def pod_logs(pod_name: str) -> str:
+    return _core_api().read_namespaced_pod_log(name=pod_name, namespace=config.K8S_NAMESPACE)
