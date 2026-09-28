@@ -38,6 +38,17 @@ class FakeQueue:
         # ends any iterator once the queued messages are drained
         self._q.put_nowait(None)
 
+    def pending(self):
+        return self._q.qsize()
+
+    async def purge(self):
+        while not self._q.empty():
+            self._q.get_nowait()
+        self.purged = getattr(self, "purged", 0) + 1
+
+    async def delete(self, if_unused=True, if_empty=True):
+        self.deleted = (if_unused, if_empty)
+
     def iterator(self):
         return _FakeIterator(self._q)
 
