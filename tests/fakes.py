@@ -89,12 +89,13 @@ class FakeChannel:
 class FakeConnection:
     def __init__(self, channel):
         self._channel = channel
+        self.closed = False
 
     async def channel(self):
         return self._channel
 
     async def close(self):
-        pass
+        self.closed = True
 
 
 # --- OpenAI-shaped responses -------------------------------------------------

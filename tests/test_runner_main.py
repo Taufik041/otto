@@ -74,3 +74,77 @@ async def test_connect_gives_up_with_clear_error(ch, monkeypatch):
 
 def test_connect_retry_window_is_about_60s():
     assert runner_main.CONNECT_ATTEMPTS * runner_main.CONNECT_DELAY == 60
+
+
+# --- control actions and idle exit ------------------------------------------------
+
+import asyncio
+
+
+@pytest.fixture
+def conn(ch, monkeypatch):
+    c = FakeConnection(ch)
+
+    async def connect(url):
+        return c
+
+    monkeypatch.setattr(runner_main, "connect_robust", connect)
+    return c
+
+
+def results(ch):
+    return [r for _, r in ch.default_exchange.published]
+
+
+@pytest.mark.asyncio
+async def test_ping_replies_pong_and_keeps_serving(ch, conn):
+    q = ch.queue(actions_queue("s1"))
+    q.put(make_action("s1", "control.ping", {}))
+    q.put(make_action("s1", "shell.exec", {"cmd": "echo hi"}))
+    q.close()
+
+    await runner_main.main()
+
+    ping, echo = results(ch)
+    assert ping["ok"] is True and ping["payload"]["pong"] is True
+    assert ping["kind"] == "control.ping.result"
+    assert echo["payload"]["stdout"] == "hi\n"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_replies_then_exits(ch, conn, capsys):
+    q = ch.queue(actions_queue("s1"))
+    stop = q.put(make_action("s1", "control.shutdown", {}))
+    later = q.put(make_action("s1", "shell.exec", {"cmd": "echo never"}))
+    # no q.close(): only the shutdown can end the loop
+
+    await asyncio.wait_for(runner_main.main(), 2)
+
+    [r] = results(ch)
+    assert r["ok"] is True and r["kind"] == "control.shutdown.result"
+    assert stop.acked and not later.acked
+    assert conn.closed
+    assert "shutdown" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_idle_timeout_exits(ch, conn, monkeypatch, capsys):
+    monkeypatch.setattr(config, "SANDBOX_IDLE_MINUTES", 0.1 / 60)  # 100 ms
+    q = ch.queue(actions_queue("s1"))
+
+    async def trickle():
+        # one action every 50 ms keeps the runner alive past its 100 ms idle limit
+        for i in range(4):
+            await asyncio.sleep(0.05)
+            q.put(make_action("s1", "shell.exec", {"cmd": f"echo {i}"}))
+
+    feeder = asyncio.ensure_future(trickle())
+    t0 = asyncio.get_running_loop().time()
+    await asyncio.wait_for(runner_main.main(), 2)
+    elapsed = asyncio.get_running_loop().time() - t0
+    await feeder
+
+    assert [r["payload"]["stdout"] for r in results(ch)] == ["0\n", "1\n", "2\n", "3\n"]
+    assert elapsed >= 0.25
+    assert conn.closed
+    assert "idle" in capsys.readouterr().out
