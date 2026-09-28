@@ -13,6 +13,8 @@ dependencies = [
     "kubernetes",
     "pyjwt[crypto]",
     "requests",
+    "sqlmodel",
+    "psycopg[binary]",
 ]
 
 [project.optional-dependencies]
