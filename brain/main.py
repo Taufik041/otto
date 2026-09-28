@@ -17,8 +17,10 @@ SUMMARY_WIDTH = 110
 def parse_args(argv):
     p = argparse.ArgumentParser(
         prog="python -m brain.main",
-        description=f"Run an Otto session (id from SESSION_ID, now {config.SESSION_ID!r}).")
+        description="Run an Otto session from the command line.")
     p.add_argument("text", nargs="*", help="the task, or with --resume the follow-up message")
+    p.add_argument("--session", default=config.SESSION_ID,
+                   help=f"session id (default: SESSION_ID, now {config.SESSION_ID!r}; the runner must use the same)")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--resume", action="store_true", help="continue the stored session with a new message")
     mode.add_argument("--show", action="store_true", help="print the stored session and its event timeline")
@@ -104,7 +106,7 @@ async def run(sid, text, resume):
 
 def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
-    sid = config.SESSION_ID
+    sid = args.session
     connect_db()
 
     if args.show:

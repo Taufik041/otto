@@ -6,7 +6,7 @@ from brain.tools import SYSTEM, TOOLS, KIND
 from brain.bus import bus_call, start_consumer, stop_consumer
 from brain.resume import rebuild_messages
 from shared.events import append_event, load_events
-from shared.sessions import create_session, record_pr, set_status
+from shared.sessions import create_session, get_session, record_pr, set_status, transition
 
 TOOL_CONTENT_LIMIT = 20000
 TRUNCATED = "\n[... truncated]"
@@ -48,8 +48,13 @@ def add_message(sid, messages, message):
 
 
 async def run_session(ch, results, sid, task):
-    """Start a new session. Returns the final messages list."""
+    """Create and run a new session (the CLI path). Returns the final messages list."""
     create_session(sid, task=task, repo_url=config.REPO_URL, model=config.MODEL)
+    return await start_session(ch, results, sid, task)
+
+
+async def start_session(ch, results, sid, task):
+    """Run the first turn of a session whose row already exists. Returns the final messages list."""
     messages = []
     add_message(sid, messages, {"role": "system", "content": SYSTEM})
     add_message(sid, messages, {"role": "user", "content": task})
@@ -82,23 +87,32 @@ async def run_loop(ch, results, sid, messages):
 
     set_status(sid, "running")
     pending, consumer = start_consumer(results)
+    # final statuses only replace "running": a session stopped meanwhile stays "stopped"
     try:
         await _steps(client, ch, pending, sid, messages, record)
     except (asyncio.CancelledError, KeyboardInterrupt):
-        set_status(sid, "interrupted")
+        transition(sid, "interrupted", {"running"})
         raise
     except Exception:
-        set_status(sid, "failed")
+        transition(sid, "failed", {"running"})
         raise
     finally:
         await stop_consumer(pending, consumer)
         await client.close()
-    set_status(sid, "done")
+    transition(sid, "done", {"running"})
     return messages
+
+
+def _stopped(sid) -> bool:
+    row = get_session(sid)
+    return row is not None and row.status == "stopped"
 
 
 async def _steps(client, ch, pending, sid, messages, record):
     for step in range(20):
+        if _stopped(sid):
+            print(f"[brain] session {sid} was stopped")
+            return
         resp = await _complete(client, model=config.MODEL, messages=messages, tools=TOOLS)
         m = resp.choices[0].message
 
