@@ -10,15 +10,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 FROM full AS runner
-RUN pip install --no-cache-dir aio-pika pytest
+RUN pip install --no-cache-dir aio-pika pytest python-dotenv
 RUN useradd -m -u 1000 otto
 
-COPY scripts/step1_3_runner.py /app/runner.py
+# runner code lives in /app as packages; /workspace is the cloned repo
+COPY shared/ /app/shared/
+COPY runner/ /app/runner/
 COPY infra/entrypoint.sh /app/entrypoint.sh
+ENV PYTHONPATH=/app
 
 # root owns /app; otto can read+execute but NOT write
 RUN chown -R root:root /app && chmod -R 555 /app
-
 RUN mkdir -p /workspace && chown otto:otto /workspace
 
 USER otto

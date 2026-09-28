@@ -17,4 +17,4 @@ if [ -f /workspace/pyproject.toml ] || [ -f /workspace/setup.py ]; then
 fi
 
 # 3. Hand off to the runner (replaces this shell as PID 1).
-exec python /app/runner.py
+exec python -m runner.main
