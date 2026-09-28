@@ -4,7 +4,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
-STATUSES = ("pending", "running", "done", "failed", "interrupted")
+STATUSES = ("pending", "provisioning", "queued", "running", "done", "failed", "interrupted", "stopped")
 
 
 def utcnow():

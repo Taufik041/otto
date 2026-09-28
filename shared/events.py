@@ -47,8 +47,8 @@ def append_event(session_id, type, payload) -> int:
                 raise
 
 
-def load_events(session_id) -> list[SessionEvent]:
+def load_events(session_id, after_seq=0) -> list[SessionEvent]:
     with get_db() as s:
         return list(s.exec(select(SessionEvent)
-                           .where(SessionEvent.session_id == session_id)
+                           .where(SessionEvent.session_id == session_id, SessionEvent.seq > after_seq)
                            .order_by(SessionEvent.seq)).all())
