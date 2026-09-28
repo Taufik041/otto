@@ -2,6 +2,7 @@ import re
 
 from kubernetes import client, config as k8s_config
 
+from gateway import github_app
 from shared import config
 
 _batch = None
@@ -24,8 +25,18 @@ def _job_name(session_id: str) -> str:
                          f"ending in a letter or digit, at most {63 - len('otto-')} chars")
     return name
 
+def github_app_configured() -> bool:
+    return bool(config.GITHUB_APP_ID and config.GITHUB_INSTALLATION_ID and config.GITHUB_APP_KEY_PATH)
+
+
 def create_sandbox(session_id: str, repo_url: str, token: str | None = None) -> str:
+    """Create the runner Job. Without a token, one is minted when the GitHub App is configured.
+
+    The token is short-lived (1h) and must never be logged.
+    """
     name = _job_name(session_id)
+    if token is None and github_app_configured():
+        token = github_app.get_installation_token()
     env = [
         client.V1EnvVar(name="BUS_URL", value=config.SANDBOX_BUS_URL),
         client.V1EnvVar(name="SESSION_ID", value=session_id),
