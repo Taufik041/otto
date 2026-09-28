@@ -116,3 +116,36 @@ async def test_stop_consumer_fails_outstanding_calls(ch):
     assert consumer.done()
     with pytest.raises(asyncio.CancelledError):
         await call
+
+
+@pytest.mark.asyncio
+async def test_record_sees_action_and_result(ch):
+    results = ch.queue(results_queue("s1"))
+    seen = []
+    pending, consumer = start_consumer(results)
+    try:
+        call = asyncio.ensure_future(bus_call(ch, pending, "s1", "fs.read", {"path": "a"},
+                                              record=lambda *ev: seen.append(ev)))
+        [(_, action)] = await wait_published(ch, 1)
+        assert seen == [("bus.action", {"action_id": action["action_id"], "kind": "fs.read",
+                                        "payload": {"path": "a"}})]
+        results.put(make_result(action, False, {"exit_code": 1, "stdout": "", "stderr": "no"}))
+        r = await asyncio.wait_for(call, 1)
+    finally:
+        await stop_consumer(pending, consumer)
+
+    assert r == {"exit_code": 1, "stdout": "", "stderr": "no"}
+    assert seen[1] == ("bus.result", {"action_id": action["action_id"], "ok": False, "payload": r})
+
+
+@pytest.mark.asyncio
+async def test_record_sees_timeout_as_failed_result(ch):
+    seen = []
+    pending, consumer = start_consumer(ch.queue(results_queue("s1")))
+    try:
+        r = await bus_call(ch, pending, "s1", "git.diff", {}, timeout=0.01,
+                           record=lambda *ev: seen.append(ev))
+    finally:
+        await stop_consumer(pending, consumer)
+    assert [t for t, _ in seen] == ["bus.action", "bus.result"]
+    assert seen[1][1]["ok"] is False and seen[1][1]["payload"] == r
