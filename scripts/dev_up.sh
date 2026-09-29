@@ -47,6 +47,7 @@ ready. In two terminals:
   python -m brain.worker
 (SANDBOX_IDLE_MINUTES=2 on the gateway makes new sandboxes exit after 2 idle minutes)
 Then:
+  curl localhost:8000/models    # ids to pick from; "model" is optional (default: default_model)
   curl -X POST localhost:8000/sessions -H 'content-type: application/json' \
-       -d '{"repo_url": "https://github.com/Taufik041/otto_test", "task": "..."}'
+       -d '{"repo_url": "https://github.com/Taufik041/otto_test", "task": "...", "model": "openrouter:openrouter/free"}'
 EOF
