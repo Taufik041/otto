@@ -152,3 +152,33 @@ def use_env(monkeypatch, env):
     monkeypatch.setattr(config, "PROVIDER_KEYS", keys)
     monkeypatch.setattr(config, "MODELS", models)
     monkeypatch.setattr(config, "DEFAULT_MODEL", config.default_model(models, keys, env))
+    reset_pools()
+
+
+def reset_pools():
+    from brain import providers
+    providers.reset()
+
+
+def fake_openai(monkeypatch, script):
+    """Stand in for AsyncOpenAI in brain.providers. script: api_key -> responses (or exceptions to
+    raise), popped per call. Returns the calls made, as dicts of base_url, api_key, model, messages."""
+    from brain import providers
+
+    calls = []
+
+    class Client:
+        def __init__(self, *, api_key, base_url, max_retries=2, **kw):
+            self.api_key, self.base_url, self.max_retries = api_key, base_url, max_retries
+            self.chat = NS(completions=NS(create=self.create))
+
+        async def create(self, **kw):
+            calls.append({"base_url": self.base_url, "api_key": self.api_key, "model": kw["model"],
+                          "messages": json.loads(json.dumps(kw["messages"], default=str))})
+            r = script[self.api_key].pop(0)
+            if isinstance(r, BaseException):
+                raise r
+            return r
+
+    monkeypatch.setattr(providers, "AsyncOpenAI", Client)
+    return calls

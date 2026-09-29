@@ -1,6 +1,7 @@
 import pytest
 
 from shared import config, db as shared_db
+from brain import providers as providers_module
 from tests.fakes import use_env
 
 
@@ -29,5 +30,10 @@ TEST_ENV = {"OPENROUTER_API_KEY": "or-test-key-1"}
 
 @pytest.fixture(autouse=True)
 def providers(monkeypatch):
-    """Provider keys and models from TEST_ENV, not from .env or the real environment."""
+    """Provider keys and models from TEST_ENV, not from .env or the real environment; no real clients."""
     use_env(monkeypatch, TEST_ENV)
+
+    def no_network(**kw):
+        raise AssertionError("a test tried to build a real AsyncOpenAI client; use tests.fakes.fake_openai")
+
+    monkeypatch.setattr(providers_module, "AsyncOpenAI", no_network)
