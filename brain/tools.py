@@ -177,3 +177,15 @@ KIND = {
     "git_push": "git.push",
     "git_open_pr": "git.open_pr",
 }
+
+PARAMETERS = {t["function"]["name"]: t["function"]["parameters"] for t in TOOLS}
+
+
+def missing_args(name, args) -> str | None:
+    """A message the model can act on if args lack a required parameter of tool `name`, else None."""
+    schema = PARAMETERS[name]
+    missing = [p for p in schema.get("required", []) if p not in args]
+    if not missing:
+        return None
+    return (f"missing required parameter(s): {', '.join(missing)}. "
+            f"{name} takes: {', '.join(schema['properties'])}")

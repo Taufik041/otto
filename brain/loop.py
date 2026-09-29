@@ -2,7 +2,7 @@ import json, asyncio
 from openai import AsyncOpenAI
 from openai import RateLimitError
 from shared import config
-from brain.tools import SYSTEM, TOOLS, KIND
+from brain.tools import SYSTEM, TOOLS, KIND, missing_args
 from brain.bus import bus_call, start_consumer, stop_consumer
 from brain.resume import rebuild_messages
 from shared.events import append_event, load_events
@@ -179,7 +179,10 @@ async def _steps(client, ch, pending, sid, messages, record):
             else:
                 try:
                     args = json.loads(tc.function.arguments or "{}")
-                    result = await bus_call(ch, pending, sid, kind, args, record=record)
+                    if problem := missing_args(name, args):
+                        result = {"exit_code": 1, "stdout": "", "stderr": problem}
+                    else:
+                        result = await bus_call(ch, pending, sid, kind, args, record=record)
                 except Exception as e:
                     result = {"exit_code": 1, "stdout": "", "stderr": str(e)}
                 if kind == "git.open_pr" and result.get("exit_code") == 0 and result.get("html_url"):

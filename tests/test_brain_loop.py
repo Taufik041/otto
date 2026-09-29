@@ -174,3 +174,25 @@ async def test_session_fails_with_an_error_event_after_six_empty_responses(monke
     assert err["stage"] == "llm"
     assert "6 attempts" in err["message"] and "no capacity" in err["message"]
     assert state["closed"]
+
+
+@pytest.mark.asyncio
+async def test_missing_required_parameter_is_answered_without_the_bus(monkeypatch):
+    ch = FakeChannel()
+    results = ch.queue(results_queue("s1"))
+    auto_reply(ch, results)
+    calls, _ = fake_client(monkeypatch, [
+        llm_tool_calls(("shell_exec", {}), ("fs_replace", {"path": "a.py"}), ("git_status", {})),
+        llm_final("done"),
+    ])
+
+    await loop.run_session(ch, results, "s1", "fix it")
+
+    assert [a["kind"] for _, a in ch.default_exchange.published] == ["git.status"]
+    assert [json.loads(c) for c in tool_contents(calls)] == [
+        {"exit_code": 1, "stdout": "",
+         "stderr": "missing required parameter(s): cmd. shell_exec takes: cmd"},
+        {"exit_code": 1, "stdout": "",
+         "stderr": "missing required parameter(s): old_str, new_str. fs_replace takes: path, old_str, new_str"},
+        {"exit_code": 0, "stdout": "ran git.status", "stderr": ""},
+    ]
