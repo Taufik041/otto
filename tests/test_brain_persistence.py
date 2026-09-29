@@ -54,7 +54,7 @@ async def test_rebuild_round_trip_after_two_tool_turns(monkeypatch):
         "llm.message", "session.status"]
     evs = load_events("s1")
     assert [e.seq for e in evs] == list(range(1, len(evs) + 1))
-    assert evs[0].payload == {"task": "fix it", "repo_url": None, "model": loop.config.MODEL}
+    assert evs[0].payload == {"task": "fix it", "repo_url": None, "model": "openrouter:openrouter/free"}
     action, result = evs[5].payload, evs[6].payload
     assert action["kind"] == "git.status" and result["action_id"] == action["action_id"]
     assert result["ok"] is True and result["payload"]["stdout"] == "ran git.status"

@@ -113,6 +113,10 @@ def main(argv=None):
         show(sid)
         return
 
+    if not args.resume and not config.is_available(config.DEFAULT_MODEL):
+        sys.exit(f"[brain] no LLM model is available (default: {config.DEFAULT_MODEL!r}). Set OPENROUTER_API_KEY, "
+                 "or OPENAI_API_KEY with OTTO_OPENAI_MODELS, or OTTO_API_KEY")
+
     existing = get_session(sid)
     if args.resume:
         if existing is None:

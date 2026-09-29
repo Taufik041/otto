@@ -181,4 +181,20 @@ def fake_openai(monkeypatch, script):
             return r
 
     monkeypatch.setattr(providers, "AsyncOpenAI", Client)
+    providers.reset()  # pools cache their clients
     return calls
+
+
+def fake_clock(monkeypatch, start=1_750_000_000.0):
+    """Fake time for brain.providers: sleeping advances it. Returns the list of sleeps."""
+    from brain import providers
+
+    t, waits = [start], []
+
+    async def sleep(seconds):
+        waits.append(seconds)
+        t[0] += seconds
+
+    monkeypatch.setattr(providers, "now", lambda: t[0])
+    monkeypatch.setattr(providers, "sleep", sleep)
+    return waits

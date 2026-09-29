@@ -6,7 +6,7 @@ import pytest
 from shared.bus import SESSIONS_QUEUE, make_result, resume_job, results_queue, start_job
 from shared.events import load_events
 from shared.sessions import create_session, get_session, transition
-from brain import loop, worker
+from brain import loop, providers, worker
 from tests.fakes import FakeChannel, FakeConnection, llm_tool_calls, llm_final
 
 
@@ -30,10 +30,8 @@ def fake_llm(monkeypatch, scripts, delay=0.01):
         def __init__(self, **kw):
             self.chat = type("Chat", (), {"completions": Completions()})()
 
-        async def close(self):
-            pass
-
-    monkeypatch.setattr(loop, "AsyncOpenAI", Client)
+    monkeypatch.setattr(providers, "AsyncOpenAI", Client)
+    providers.reset()
     return state
 
 

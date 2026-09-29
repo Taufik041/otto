@@ -9,7 +9,7 @@ from openai import APIConnectionError, InternalServerError, RateLimitError
 
 from brain import providers
 from brain.providers import LLMError
-from tests.fakes import fake_openai, llm_final, use_env
+from tests.fakes import fake_clock, fake_openai, llm_final, use_env
 
 # plain strings, so these tests prove the keys are never emitted, without relying on redaction
 KEYS = {"OPENROUTER_API_KEY": "orkey-one", "OPENROUTER_API_KEY2": "orkey-two",
@@ -32,16 +32,7 @@ def openrouter_429(reset_s):
 
 @pytest.fixture
 def clock(monkeypatch):
-    """Fake time: sleeping advances it. Returns the list of sleeps."""
-    t, waits = [T0], []
-
-    async def sleep(seconds):
-        waits.append(seconds)
-        t[0] += seconds
-
-    monkeypatch.setattr(providers, "now", lambda: t[0])
-    monkeypatch.setattr(providers, "sleep", sleep)
-    return waits
+    return fake_clock(monkeypatch, start=T0)
 
 
 @pytest.fixture

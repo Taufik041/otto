@@ -5,17 +5,22 @@ from types import SimpleNamespace as NS
 
 import pytest
 
+import httpx2
+from openai import RateLimitError
+
+from shared import config
 from shared.bus import results_queue
 from shared.events import load_events
-from shared.sessions import get_session
-from brain import loop
-from tests.fakes import FakeChannel, auto_reply, llm_tool_calls, llm_final
+from shared.sessions import create_session, get_session
+from brain import loop, providers
+from tests.fakes import FakeChannel, auto_reply, fake_clock, fake_openai, llm_tool_calls, llm_final, use_env
 
 
 def fake_client(monkeypatch, responses, delay=0):
-    """Patch brain.loop's AsyncOpenAI client; returns the list of messages sent per call."""
+    """Patch the providers' AsyncOpenAI client; returns the list of messages sent per call, and
+    state["clients"]: the arguments each client was built with."""
     calls = []
-    state = {"closed": False}
+    state = {"clients": []}
 
     class Completions:
         async def create(self, **kw):
@@ -25,12 +30,11 @@ def fake_client(monkeypatch, responses, delay=0):
 
     class Client:
         def __init__(self, **kw):
+            state["clients"].append(kw)
             self.chat = type("Chat", (), {"completions": Completions()})()
 
-        async def close(self):
-            state["closed"] = True
-
-    monkeypatch.setattr(loop, "AsyncOpenAI", Client)
+    monkeypatch.setattr(providers, "AsyncOpenAI", Client)
+    providers.reset()  # pools cache their clients
     return calls, state
 
 
@@ -55,7 +59,8 @@ async def test_run_session_parallel_tool_calls(monkeypatch, capsys):
     # the result consumer is stopped when the session ends
     others = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     assert others == []
-    assert state["closed"]
+    assert state["clients"] == [{"api_key": "or-test-key-1", "base_url": "https://openrouter.ai/api/v1",
+                                 "max_retries": 0}]
 
 
 @pytest.mark.asyncio
@@ -123,26 +128,13 @@ def test_tool_content_trims_stdout_and_stderr():
     assert result["stdout"] == "o" * 15000  # input not mutated
 
 
-def no_backoff(monkeypatch):
-    """Skip the retry sleeps; returns the list of waits asked for."""
-    waits, real_sleep = [], asyncio.sleep
-
-    async def sleep(seconds):
-        if seconds:
-            waits.append(seconds)
-        await real_sleep(0)
-
-    monkeypatch.setattr(asyncio, "sleep", sleep)
-    return waits
-
-
 EMPTY = [None, NS(choices=None), NS(choices=[]),
          NS(choices=None, error={"message": "upstream 502", "code": 502})]
 
 
 @pytest.mark.asyncio
 async def test_responses_without_choices_are_retried(monkeypatch, capsys):
-    waits = no_backoff(monkeypatch)
+    waits = fake_clock(monkeypatch)
     ch = FakeChannel()
     results = ch.queue(results_queue("s1"))
     calls, _ = fake_client(monkeypatch, [*EMPTY, llm_final("done")])
@@ -150,7 +142,7 @@ async def test_responses_without_choices_are_retried(monkeypatch, capsys):
     await loop.run_session(ch, results, "s1", "hi")
 
     assert len(calls) == 5
-    assert waits == [10, 20, 30, 40]
+    assert waits == [60, 60, 60, 60]  # one key: it rests 60s after each
     out = capsys.readouterr().out
     assert "upstream 502" in out and "[otto] done" in out
     assert get_session("s1").status == "done"
@@ -158,7 +150,7 @@ async def test_responses_without_choices_are_retried(monkeypatch, capsys):
 
 @pytest.mark.asyncio
 async def test_session_fails_with_an_error_event_after_six_empty_responses(monkeypatch):
-    waits = no_backoff(monkeypatch)
+    waits = fake_clock(monkeypatch)
     ch = FakeChannel()
     results = ch.queue(results_queue("s1"))
     calls, state = fake_client(monkeypatch, [*EMPTY, NS(choices=[]),
@@ -168,12 +160,86 @@ async def test_session_fails_with_an_error_event_after_six_empty_responses(monke
         await loop.run_session(ch, results, "s1", "hi")
 
     assert len(calls) == 6
-    assert waits == [10, 20, 30, 40, 50]
+    assert waits == [60] * 5
     assert get_session("s1").status == "failed"
     [err] = [e.payload for e in load_events("s1") if e.type == "error"]
     assert err["stage"] == "llm"
     assert "6 attempts" in err["message"] and "no capacity" in err["message"]
-    assert state["closed"]
+
+
+def rate_limited():
+    req = httpx2.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    return RateLimitError("429", response=httpx2.Response(429, request=req), body=None)
+
+
+@pytest.mark.asyncio
+async def test_endless_rate_limits_fail_the_session_with_an_error_event(monkeypatch):
+    fake_clock(monkeypatch)
+    ch = FakeChannel()
+    results = ch.queue(results_queue("s1"))
+    calls = fake_openai(monkeypatch, {"or-test-key-1": [rate_limited() for _ in range(6)]})
+
+    with pytest.raises(loop.LLMError):
+        await loop.run_session(ch, results, "s1", "hi")
+
+    assert len(calls) == 6
+    assert get_session("s1").status == "failed"
+    [err] = [e.payload for e in load_events("s1") if e.type == "error"]
+    assert err == {"stage": "llm", "message": "no usable LLM response after 6 attempts; last: rate limited"}
+
+
+# --- providers -----------------------------------------------------------------
+
+TWO_PROVIDERS = {"OPENROUTER_API_KEY": "orkey-one", "OPENROUTER_API_KEY2": "orkey-two",
+                 "OPENAI_API_KEY": "oaikey-one", "OTTO_OPENAI_MODELS": "model-a"}
+
+
+@pytest.mark.asyncio
+async def test_session_runs_on_its_models_provider(monkeypatch):
+    use_env(monkeypatch, TWO_PROVIDERS)
+    create_session("s1", task="hi", repo_url=None, model="openai:model-a", status="queued")
+    ch = FakeChannel()
+    results = ch.queue(results_queue("s1"))
+    calls = fake_openai(monkeypatch, {"oaikey-one": [llm_final("done")]})
+
+    await loop.start_session(ch, results, "s1", "hi")
+
+    assert [(c["base_url"], c["api_key"], c["model"]) for c in calls] == [
+        ("https://api.openai.com/v1", "oaikey-one", "model-a")]
+
+
+@pytest.mark.asyncio
+async def test_follow_up_keeps_the_sessions_model(monkeypatch):
+    use_env(monkeypatch, TWO_PROVIDERS)
+    ch = FakeChannel()
+    results = ch.queue(results_queue("s1"))
+    calls = fake_openai(monkeypatch, {"orkey-one": [llm_final("hello"), llm_final("again")],
+                                      "oaikey-one": []})
+    await loop.run_session(ch, results, "s1", "hi")
+    assert get_session("s1").model == "openrouter:openrouter/free"
+
+    monkeypatch.setattr(config, "DEFAULT_MODEL", "openai:model-a")  # the default changed meanwhile
+    await loop.resume_session(ch, results, "s1", "more")
+
+    assert [(c["base_url"], c["model"]) for c in calls] == [("https://openrouter.ai/api/v1", "openrouter/free")] * 2
+
+
+@pytest.mark.asyncio
+async def test_key_rotation_is_in_the_session_log_without_keys(monkeypatch):
+    fake_clock(monkeypatch)
+    use_env(monkeypatch, TWO_PROVIDERS)
+    ch = FakeChannel()
+    results = ch.queue(results_queue("s1"))
+    calls = fake_openai(monkeypatch, {"orkey-one": [rate_limited()], "orkey-two": [llm_final("done")],
+                                      "oaikey-one": []})
+
+    await loop.run_session(ch, results, "s1", "hi")
+
+    [rotated] = [e.payload for e in load_events("s1") if e.type == "llm.key_rotated"]
+    assert rotated == {"provider": "openrouter", "from_index": 0, "to_index": 1, "reason": "rate_limited"}
+    log = json.dumps([e.payload for e in load_events("s1")])
+    assert "orkey-" not in log and "oaikey-" not in log
+    assert {c["base_url"] for c in calls} == {"https://openrouter.ai/api/v1"}
 
 
 @pytest.mark.asyncio

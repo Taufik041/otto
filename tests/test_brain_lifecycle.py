@@ -64,7 +64,7 @@ async def test_failure_does_not_override_stopped(monkeypatch):
         raise Boom()
 
     fake_client(monkeypatch, [])
-    monkeypatch.setattr(loop, "_complete", explode)
+    monkeypatch.setattr(loop, "complete", explode)
     with pytest.raises(Boom):
         await loop.start_session(ch, results, "abc123", "t")
     assert get_session("abc123").status == "stopped"

@@ -1,7 +1,6 @@
 import json, asyncio
-from openai import AsyncOpenAI
-from openai import RateLimitError
 from shared import config
+from brain.providers import LLMError, complete
 from brain.tools import SYSTEM, TOOLS, KIND, missing_args
 from brain.bus import bus_call, start_consumer, stop_consumer
 from brain.resume import rebuild_messages
@@ -30,46 +29,6 @@ def tool_content(result, limit=TOOL_CONTENT_LIMIT) -> str:
         content = json.dumps(r)
     return content
 
-LLM_ATTEMPTS = 6
-
-
-class LLMError(Exception):
-    """The provider kept answering without a usable choice."""
-
-
-def _no_choice(resp) -> str | None:
-    """Why resp carries no usable choice, or None when it does."""
-    if resp is None:
-        return "empty response"
-    # some providers answer 200 with {"error": ...}; the SDK keeps unknown body fields as attributes
-    error = getattr(resp, "error", None)
-    if error:
-        return f"provider error: {error}"[:1000]
-    if not getattr(resp, "choices", None):
-        return "response has no choices"
-    return None
-
-
-async def _complete(client, **kwargs):
-    """One chat completion, retried with backoff on rate limits and on responses with no choices."""
-    for attempt in range(1, LLM_ATTEMPTS + 1):
-        try:
-            resp = await client.chat.completions.create(**kwargs)
-        except RateLimitError:
-            if attempt == LLM_ATTEMPTS:
-                raise
-            problem = "ratelimited"
-        else:
-            problem = _no_choice(resp)
-            if problem is None:
-                return resp
-            if attempt == LLM_ATTEMPTS:
-                raise LLMError(f"no usable LLM response after {LLM_ATTEMPTS} attempts; last: {problem}")
-        wait = min(60, 10*attempt)
-        print(f'[brain] {problem}, retrying in {wait}s', flush=True)
-        await asyncio.sleep(wait)
-
-
 def add_message(sid, messages, message):
     """Append to the conversation and store it; every message the model sees goes through here."""
     messages.append(message)
@@ -78,7 +37,7 @@ def add_message(sid, messages, message):
 
 async def run_session(ch, results, sid, task):
     """Create and run a new session (the CLI path). Returns the final messages list."""
-    create_session(sid, task=task, repo_url=config.REPO_URL, model=config.MODEL)
+    create_session(sid, task=task, repo_url=config.REPO_URL, model=config.DEFAULT_MODEL)
     return await start_session(ch, results, sid, task)
 
 
@@ -107,18 +66,13 @@ async def resume_session(ch, results, sid, text):
 
 async def run_loop(ch, results, sid, messages):
     """Drive the model from `messages` until it answers without tool calls (or the step cap)."""
-    # built per call (not at import) so importing this module needs no API key
-    client = AsyncOpenAI(
-        base_url=config.BASE_URL,
-        api_key=config.API_KEY
-    )
     record = lambda type, payload: append_event(sid, type, payload)
 
     set_status(sid, "running")
     pending, consumer = start_consumer(results)
     # final statuses only replace "running": a session stopped meanwhile stays "stopped"
     try:
-        await _steps(client, ch, pending, sid, messages, record)
+        await _steps(ch, pending, sid, messages, record)
     except (asyncio.CancelledError, KeyboardInterrupt):
         transition(sid, "interrupted", {"running"})
         raise
@@ -131,7 +85,6 @@ async def run_loop(ch, results, sid, messages):
         raise
     finally:
         await stop_consumer(pending, consumer)
-        await client.close()
     transition(sid, "done", {"running"})
     return messages
 
@@ -141,12 +94,14 @@ def _stopped(sid) -> bool:
     return row is not None and row.status == "stopped"
 
 
-async def _steps(client, ch, pending, sid, messages, record):
+async def _steps(ch, pending, sid, messages, record):
+    # the model the session was created with, for every turn: never another provider or model
+    model = config.resolve_model(get_session(sid).model)
     for step in range(20):
         if _stopped(sid):
             print(f"[brain] session {sid} was stopped")
             return
-        resp = await _complete(client, model=config.MODEL, messages=messages, tools=TOOLS)
+        resp = await complete(model["provider"], record, model=model["model"], messages=messages, tools=TOOLS)
         m = resp.choices[0].message
 
         if not m.tool_calls:

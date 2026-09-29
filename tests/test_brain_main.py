@@ -5,7 +5,7 @@ from shared.bus import results_queue
 from shared.events import append_event, load_events
 from shared.sessions import create_session, get_session
 from brain import main as brain_main
-from tests.fakes import FakeChannel, FakeConnection, auto_reply, llm_tool_calls, llm_final
+from tests.fakes import FakeChannel, FakeConnection, auto_reply, llm_tool_calls, llm_final, use_env
 from tests.test_brain_loop import fake_client
 
 
@@ -32,6 +32,14 @@ def test_new_session(monkeypatch, fake_bus):
     brain_main.main(["fix", "the", "bug"])
     row = get_session(config.SESSION_ID)
     assert (row.task, row.status) == ("fix the bug", "done")
+
+
+def test_new_session_needs_an_available_model(monkeypatch, no_bus):
+    use_env(monkeypatch, {})  # no provider keys
+    with pytest.raises(SystemExit) as e:
+        brain_main.main(["fix it"])
+    assert "no LLM model is available" in str(e.value.code) and "OPENROUTER_API_KEY" in str(e.value.code)
+    assert get_session(config.SESSION_ID) is None
 
 
 def test_existing_session_is_refused_without_force_new(no_bus, capsys):
