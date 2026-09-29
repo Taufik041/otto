@@ -10,8 +10,8 @@ from shared.models import SessionEvent, utcnow
 SECRET = re.compile(
     r"x-access-token:[^@]+@"
     r"|ghs_[A-Za-z0-9]+"
-    r"|sk-or-[A-Za-z0-9-]+"
-    r"|sk-[A-Za-z0-9]{20,}"
+    r"|\bsk-or-[A-Za-z0-9-]+"
+    r"|\bsk-[A-Za-z0-9_-]{20,}"  # OpenAI: sk-..., sk-proj-..., sk-svcacct-..., sk-admin-...
 )
 SEQ_ATTEMPTS = 3
 CHANNEL = "otto_events"  # NOTIFY channel; the payload is "<session_id>:<seq>"

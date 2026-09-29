@@ -54,6 +54,30 @@ def test_redact_leaves_clean_values_alone():
     assert redact(v) == v
 
 
+# shaped like real provider keys (made up): OpenRouter, OpenAI legacy, project, service account, admin
+PROVIDER_KEYS = [
+    "sk-or-v1-" + "0a9f" * 16,
+    "sk-" + "Ab3" * 16,
+    "sk-proj-" + "Xy_9-" * 30,
+    "sk-svcacct-" + "Q7_w-" * 20,
+    "sk-admin-" + "Zz_8" * 10,
+]
+
+
+@pytest.mark.parametrize("key", PROVIDER_KEYS)
+def test_provider_keys_are_redacted(key):
+    text = f"Authorization: Bearer {key}\n{{\"api_key\": \"{key}\"}} key={key}."
+    out = redact({"message": text, "list": [key]})
+    assert key not in str(out)
+    assert out == {"message": 'Authorization: Bearer [REDACTED]\n{"api_key": "[REDACTED]"} key=[REDACTED].',
+                   "list": ["[REDACTED]"]}
+
+
+def test_sk_inside_a_word_is_not_a_key():
+    text = "run the task-" + "abcdefghij" * 3 + " and ask-or-anyone"
+    assert redact(text) == text
+
+
 def test_nul_characters_are_made_storable():
     # Postgres JSONB rejects \u0000; binary tool output can contain it
     assert redact({"stdout": "a\x00b"}) == {"stdout": "a�b"}
