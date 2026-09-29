@@ -17,6 +17,7 @@ dependencies = [
     "psycopg[binary]",
     "fastapi",
     "uvicorn",
+    "websockets",  # uvicorn needs a WebSocket library for the live event stream
 ]
 
 [project.optional-dependencies]

@@ -1,9 +1,10 @@
-import asyncio, json
+import asyncio, json, time
 from datetime import timedelta
 from types import SimpleNamespace as NS
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from orchestrator import sandbox
 from shared import config
@@ -307,3 +308,153 @@ def test_no_live_listener_on_sqlite(env, fake_listener):
     with TestClient(gateway_app.app):
         pass
     assert fake_listener == []
+
+
+
+# --- WS /sessions/{sid}/ws --------------------------------------------------------
+
+WS = "wsses00001"
+
+
+def ws_session(n_events):
+    """A session with events 1..n_events (1 is session.created)."""
+    create_session(WS, task="t", repo_url=REPO, model="m")
+    for i in range(2, n_events + 1):
+        append_event(WS, "note", {"i": i})
+
+
+def add(client, i, notify=True):
+    """Append an event and, like the Postgres listener, notify the gateway's subscribers."""
+    seq = append_event(WS, "note", {"i": i})
+    if notify:
+        client.portal.call(live.publish, WS, seq)
+    return seq
+
+
+def connect(client, after_seq=0, sid=WS):
+    return client.websocket_connect(f"/sessions/{sid}/ws?after_seq={after_seq}")
+
+
+def seqs(ws, n):
+    return [ws.receive_json()["seq"] for _ in range(n)]
+
+
+def test_ws_replays_events_after_after_seq_in_order(client):
+    ws_session(5)
+    with connect(client, after_seq=2) as ws:
+        got = [ws.receive_json() for _ in range(3)]
+        assert [e["seq"] for e in got] == [3, 4, 5]
+        assert got[0]["type"] == "note" and got[0]["payload"] == {"i": 3}
+        assert set(got[0]) == {"seq", "ts", "type", "payload"} and isinstance(got[0]["ts"], str)
+        add(client, 6)
+        assert ws.receive_json()["seq"] == 6
+
+
+def test_ws_streams_events_appended_after_connecting(client):
+    ws_session(1)
+    with connect(client) as ws:
+        assert ws.receive_json()["type"] == "session.created"
+        add(client, 2)
+        e = ws.receive_json()
+        assert (e["seq"], e["type"], e["payload"]) == (2, "note", {"i": 2})
+
+
+def test_ws_event_appended_between_subscribe_and_replay_is_sent_once(client, monkeypatch):
+    ws_session(1)
+    subscribe = live.subscribe
+
+    def subscribe_then_race(sid):
+        q = subscribe(sid)
+        seq = append_event(sid, "raced", {})  # committed after subscribing, before the replay reads
+        live.publish(sid, seq)
+        return q
+
+    monkeypatch.setattr(live, "subscribe", subscribe_then_race)
+    with connect(client, after_seq=1) as ws:
+        assert ws.receive_json()["type"] == "raced"
+        add(client, 3)
+        assert ws.receive_json()["seq"] == 3  # not the raced event again
+
+
+def test_ws_duplicate_notification_is_sent_once(client):
+    ws_session(1)
+    with connect(client) as ws:
+        assert seqs(ws, 1) == [1]
+        seq = add(client, 2)
+        client.portal.call(live.publish, WS, seq)
+        client.portal.call(live.publish, WS, 1)  # an old one, too
+        add(client, 3)
+        assert seqs(ws, 2) == [2, 3]
+
+
+def test_ws_gap_in_notifications_is_filled_in_order(client):
+    ws_session(3)
+    with connect(client, after_seq=2) as ws:
+        assert seqs(ws, 1) == [3]
+        add(client, 4, notify=False)  # 4 is never notified
+        add(client, 5)
+        assert seqs(ws, 2) == [4, 5]
+        add(client, 6)
+        assert seqs(ws, 1) == [6]
+
+
+def test_ws_resync_rereads_after_the_listener_reconnects(client):
+    ws_session(1)
+    with connect(client) as ws:
+        assert seqs(ws, 1) == [1]
+        add(client, 2, notify=False)  # committed while the listener was down
+        client.portal.call(live.resync)
+        assert seqs(ws, 1) == [2]
+
+
+def test_ws_unknown_session_is_closed_with_4404(client):
+    with pytest.raises(WebSocketDisconnect) as e:
+        with connect(client, sid="nosuch0001") as ws:
+            ws.receive_json()
+    assert e.value.code == 4404
+
+
+def test_ws_heartbeat(client, monkeypatch):
+    monkeypatch.setattr(gateway_app, "PING_INTERVAL", 0.05)
+    ws_session(1)
+    with connect(client, after_seq=1) as ws:
+        assert ws.receive_json() == {"type": "ping"}
+        assert ws.receive_json() == {"type": "ping"}
+
+
+def test_ws_is_read_only_and_unsubscribes_on_disconnect(client):
+    ws_session(1)
+    with connect(client) as ws:
+        assert seqs(ws, 1) == [1]
+        ws.send_text("hello")  # ignored
+        add(client, 2)
+        assert seqs(ws, 1) == [2]
+        assert WS in live._subscribers
+    for _ in range(200):
+        if WS not in live._subscribers:
+            break
+        time.sleep(0.01)
+    assert WS not in live._subscribers
+    assert types(WS) == ["session.created", "note"]
+
+
+def test_cors_allows_the_configured_origins(client):
+    headers = {"Access-Control-Request-Method": "POST"}
+    ok = client.options("/sessions", headers={**headers, "Origin": "http://localhost:5173"})
+    assert ok.headers.get("access-control-allow-origin") == "http://localhost:5173"
+    other = client.options("/sessions", headers={**headers, "Origin": "http://evil.example"})
+    assert "access-control-allow-origin" not in other.headers
+
+
+def test_ws_stream_error_closes_with_1011(client, monkeypatch):
+    ws_session(1)
+
+    def broken(*a, **kw):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(gateway_app, "load_events", broken)
+    with pytest.raises(WebSocketDisconnect) as e:
+        with connect(client) as ws:
+            ws.receive_json()
+    assert e.value.code == 1011
+    assert WS not in live._subscribers

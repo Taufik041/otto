@@ -1,4 +1,4 @@
-"""Otto's HTTP API: create sessions, follow up, watch events, stop them.
+"""Otto's HTTP API: create sessions, follow up, watch events (also live, over a WebSocket), stop them.
 
     uvicorn gateway.app:app --port 8000
 
@@ -6,10 +6,13 @@ The gateway owns sandboxes (via the orchestrator) and the session queues (via
 the bus); brain workers run the sessions it enqueues on otto.sessions.
 """
 import asyncio, json, uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
+import anyio
 from aio_pika import DeliveryMode, Message, connect_robust
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.websockets import WebSocketDisconnect
 from kubernetes.client.exceptions import ApiException
 from pydantic import BaseModel, Field, field_validator
 
@@ -25,6 +28,7 @@ from shared.sessions import (ACTIVE, count_active, create_session, get_session, 
                              set_status, sweep_stale_sessions, transition)
 
 PING_TIMEOUT = 5  # seconds to wait for a warm runner to answer control.ping / control.shutdown
+PING_INTERVAL = 20  # seconds between WebSocket heartbeats
 IDLE = ("pending", "done", "failed", "interrupted", "stopped")  # statuses that may take a follow-up
 
 
@@ -54,6 +58,8 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Otto", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS,
+                   allow_methods=["*"], allow_headers=["*"])
 
 
 class NewSession(BaseModel):
@@ -162,6 +168,73 @@ def events(sid: str, after_seq: int = Query(0, ge=0)):
     _row(sid)
     return [{"seq": e.seq, "ts": e.ts, "type": e.type, "payload": e.payload}
             for e in load_events(sid, after_seq=after_seq)]
+
+
+def _event_json(e) -> dict:
+    return {"seq": e.seq, "ts": e.ts.isoformat(), "type": e.type, "payload": e.payload}
+
+
+async def _send_after(websocket, sid, last) -> int:
+    """Send every stored event with seq > last, in order. Returns the last seq sent."""
+    for e in await asyncio.to_thread(load_events, sid, last):
+        await websocket.send_text(json.dumps(_event_json(e)))
+        last = e.seq
+    return last
+
+
+async def _stream(websocket, sid, after_seq, q):
+    """Replay events after after_seq, then send new ones as notifications arrive on q."""
+    last = await _send_after(websocket, sid, after_seq)
+    loop = asyncio.get_running_loop()
+    next_ping = loop.time() + PING_INTERVAL
+    while True:
+        try:
+            seq = await asyncio.wait_for(q.get(), max(next_ping - loop.time(), 0))
+        except TimeoutError:
+            await websocket.send_text(json.dumps({"type": "ping"}))
+            next_ping = loop.time() + PING_INTERVAL
+            continue
+        # seqs up to `last` were sent already (dedupe). Reading everything after `last` also fills
+        # gaps: notified of 5 when 4 never was sends 4, then 5. None: notifications may be lost
+        if seq is None or seq > last:
+            last = await _send_after(websocket, sid, last)
+
+
+async def _read_until_closed(websocket):
+    """The socket is read-only: drop whatever the client sends, and return once it disconnects."""
+    while (await websocket.receive())["type"] != "websocket.disconnect":
+        pass
+
+
+@app.websocket("/sessions/{sid}/ws")
+async def watch(websocket: WebSocket, sid: str, after_seq: int = Query(0, ge=0)):
+    """Events with seq > after_seq, then new ones live, as JSON {seq, ts, type, payload}.
+
+    A {"type": "ping"} goes out every PING_INTERVAL seconds. To resume after a drop, reconnect
+    with after_seq=<last seq received>. Follow-ups go through POST /sessions/{sid}/messages.
+    """
+    await websocket.accept()  # then close, so the client sees the 4404 (a refused handshake is a bare 403)
+    if get_session(sid) is None:
+        await websocket.close(code=4404, reason=f"no session {sid!r}")
+        return
+    q = live.subscribe(sid)  # before the replay, so nothing committed in between is missed
+    try:
+        async with anyio.create_task_group() as tg:
+            async def read():
+                await _read_until_closed(websocket)
+                tg.cancel_scope.cancel()  # the client went away: stop streaming
+
+            tg.start_soon(read)
+            await _stream(websocket, sid, after_seq, q)  # only ends on an error
+    except* WebSocketDisconnect:
+        pass
+    except* Exception as eg:
+        e = eg.exceptions[0]
+        print(f"[gateway] event stream for {sid} failed: {type(e).__name__}: {e}", flush=True)
+        with suppress(Exception):
+            await websocket.close(code=1011)
+    finally:
+        live.unsubscribe(sid, q)
 
 
 @app.post("/sessions/{sid}/messages", status_code=202)

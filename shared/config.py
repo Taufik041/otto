@@ -30,6 +30,8 @@ SANDBOX_BUS_URL = os.environ.get("SANDBOX_BUS_URL", "amqp://guest:guest@rabbitmq
 # gateway / worker
 MAX_ACTIVE_SESSIONS = int(os.environ.get("MAX_ACTIVE_SESSIONS", "3"))
 WORKER_CONCURRENCY = int(os.environ.get("WORKER_CONCURRENCY", "3"))
+CORS_ORIGINS = [o.strip() for o in os.environ.get(
+    "CORS_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",") if o.strip()]
 
 # github app
 GITHUB_APP_ID = os.environ.get("GITHUB_APP_ID")
