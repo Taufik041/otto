@@ -1,6 +1,6 @@
 import re
 
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
@@ -14,6 +14,7 @@ SECRET = re.compile(
     r"|sk-[A-Za-z0-9]{20,}"
 )
 SEQ_ATTEMPTS = 3
+CHANNEL = "otto_events"  # NOTIFY channel; the payload is "<session_id>:<seq>"
 
 
 def redact(value):
@@ -39,12 +40,24 @@ def append_event(session_id, type, payload) -> int:
                 seq = (last or 0) + 1
                 s.add(SessionEvent(session_id=session_id, seq=seq, ts=utcnow(),
                                    type=type, payload=payload))
+                notify(s, session_id, seq)
             return seq
         except IntegrityError:
             # a concurrent writer took this seq (the composite PK caught it); try the next one.
             # a missing session also lands here, and keeps failing
             if attempt == SEQ_ATTEMPTS:
                 raise
+
+
+def notify(s, session_id, seq):
+    """Tell listeners (the gateway) about a new event. Postgres only; SQLite has no NOTIFY.
+
+    Sent in the event's own transaction: Postgres delivers it when that commits, and drops it
+    on a rollback. The payload stays small; listeners read the row itself.
+    """
+    if s.get_bind().dialect.name == "postgresql":
+        s.execute(text("SELECT pg_notify(:channel, :payload)"),
+                  {"channel": CHANNEL, "payload": f"{session_id}:{seq}"})
 
 
 def load_events(session_id, after_seq=0) -> list[SessionEvent]:

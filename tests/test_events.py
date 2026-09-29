@@ -1,5 +1,9 @@
-import pytest
+from types import SimpleNamespace as NS
 
+import pytest
+from sqlalchemy.exc import IntegrityError
+
+from shared import events
 from shared.db import get_db
 from shared.events import append_event, load_events, redact
 from shared.models import Session
@@ -58,3 +62,39 @@ def test_nul_characters_are_made_storable():
 def test_append_to_unknown_session_fails(db):
     with pytest.raises(Exception):
         append_event("ghost", "x", {})
+
+
+class FakeDbSession:
+    def __init__(self, dialect):
+        self.dialect, self.executed = dialect, []
+
+    def get_bind(self):
+        return NS(dialect=NS(name=self.dialect))
+
+    def execute(self, stmt, params=None):
+        self.executed.append((str(stmt), params))
+
+
+def test_notify_sends_session_and_seq_on_postgres():
+    s = FakeDbSession("postgresql")
+    events.notify(s, "abc123", 7)
+    assert s.executed == [("SELECT pg_notify(:channel, :payload)",
+                           {"channel": "otto_events", "payload": "abc123:7"})]
+
+
+def test_notify_is_skipped_on_sqlite():
+    s = FakeDbSession("sqlite")
+    events.notify(s, "abc123", 7)
+    assert s.executed == []
+
+
+def test_append_event_notifies_once_per_stored_event(db, monkeypatch):
+    sent = []
+    monkeypatch.setattr(events, "notify", lambda s, sid, seq: sent.append((sid, seq)))
+    make_session("a")
+    append_event("a", "x", {})
+    append_event("a", "x", {})
+    assert sent == [("a", 1), ("a", 2)]
+    with pytest.raises(IntegrityError):
+        append_event("nope", "x", {})
+    assert load_events("nope") == []
