@@ -1,4 +1,4 @@
-"""Otto's HTTP API: create sessions, follow up, watch events (also live, over a WebSocket), stop them.
+"""Otto's HTTP API: list models, create sessions, follow up, watch events (also live, over a WebSocket), stop them.
 
     uvicorn gateway.app:app --port 8000
 
@@ -65,6 +65,7 @@ app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS,
 class NewSession(BaseModel):
     repo_url: str
     task: str = Field(min_length=1)
+    model: str | None = None  # a catalog id (GET /models); None: the default model
 
     @field_validator("repo_url")
     @classmethod
@@ -72,9 +73,24 @@ class NewSession(BaseModel):
         parse_repo(v)  # ValueError -> 422
         return v.strip()
 
+    @field_validator("model")
+    @classmethod
+    def available_model(cls, v):
+        if v is not None and not config.is_available(v):
+            raise ValueError(f"unknown or unavailable model {v!r}; see GET /models")
+        return v
+
 
 class FollowUp(BaseModel):
     text: str = Field(min_length=1)
+    model: str | None = None  # only to refuse it: a session stays on the model it was created with
+
+    @field_validator("model")
+    @classmethod
+    def no_switching(cls, v):
+        if v is not None:
+            raise ValueError("a session's model is fixed at creation; start a new session for another model")
+        return v
 
 
 def new_session_id() -> str:
@@ -132,16 +148,28 @@ async def _status(sid) -> str:
 
 def _summary(row) -> dict:
     return {"id": row.id, "repo_url": row.repo_url, "task": row.task, "status": row.status,
-            "pr_url": row.pr_url, "created_at": row.created_at}
+            "model": row.model, "pr_url": row.pr_url, "created_at": row.created_at}
+
+
+@app.get("/models")
+def models():
+    """The model catalog for the frontend's picker; available: its provider has an API key."""
+    return {"default_model": config.DEFAULT_MODEL,
+            "models": [{"id": m["id"], "label": m["label"], "provider": m["provider"],
+                        "available": config.is_available(m["id"])} for m in config.MODELS]}
 
 
 @app.post("/sessions", status_code=201)
 async def create(body: NewSession):
+    model = body.model or config.DEFAULT_MODEL
+    if not config.is_available(model):
+        raise HTTPException(503, f"default model {model!r} is not available: set OPENROUTER_API_KEY, "
+                                 "or OPENAI_API_KEY with OTTO_OPENAI_MODELS (see GET /models)")
     async with app.state.create_lock:  # count + insert as one step within this gateway
         if count_active() >= config.MAX_ACTIVE_SESSIONS:
             raise HTTPException(429, f"{config.MAX_ACTIVE_SESSIONS} sessions are already active; try again later")
         sid = new_session_id()
-        create_session(sid, task=body.task, repo_url=body.repo_url, model=config.MODEL, status="provisioning")
+        create_session(sid, task=body.task, repo_url=body.repo_url, model=model, status="provisioning")
     try:
         await asyncio.to_thread(sandbox.create_sandbox, sid, body.repo_url)
     except Exception as e:

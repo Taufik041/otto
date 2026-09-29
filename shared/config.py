@@ -19,8 +19,6 @@ REPO_URL = os.environ.get("REPO_URL")  # recorded on the session; None when not 
 
 # LLM providers. OTTO_BASE_URL/OTTO_API_KEY/OTTO_MODEL are the "custom" provider (the pre-providers setup)
 BASE_URL = os.environ.get("OTTO_BASE_URL", "https://openrouter.ai/api/v1")
-API_KEY = os.environ.get("OTTO_API_KEY") or os.environ.get("API_KEY")
-MODEL = os.environ.get("OTTO_MODEL", "openrouter/free")
 PROVIDER_URLS = {
     "openrouter": "https://openrouter.ai/api/v1",
     "openai": "https://api.openai.com/v1",

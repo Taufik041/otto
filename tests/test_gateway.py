@@ -14,7 +14,7 @@ from shared.events import append_event, load_events
 from shared.models import Session, SessionEvent, utcnow
 from shared.sessions import create_session, get_session, set_status
 from gateway import app as gateway_app, live
-from tests.fakes import FakeChannel, FakeConnection
+from tests.fakes import FakeChannel, FakeConnection, use_env
 
 REPO = "https://github.com/Taufik041/otto_test"
 
@@ -145,6 +145,83 @@ def test_bad_request_is_422(client, env):
     assert env[1].calls == []
 
 
+# --- models ----------------------------------------------------------------------
+
+BOTH = {"OPENROUTER_API_KEY": "orkey-one", "OPENAI_API_KEY": "oaikey-one", "OTTO_OPENAI_MODELS": "model-a,model-b"}
+
+
+def test_create_without_a_model_uses_the_default(client):
+    sid = client.post("/sessions", json={"repo_url": REPO, "task": "t"}).json()["id"]
+    assert get_session(sid).model == "openrouter:openrouter/free"
+    assert load_events(sid)[0].payload["model"] == "openrouter:openrouter/free"
+
+
+def test_create_with_a_model(client, monkeypatch):
+    use_env(monkeypatch, BOTH)
+    r = client.post("/sessions", json={"repo_url": REPO, "task": "t", "model": "openai:model-b"})
+
+    assert r.status_code == 201
+    sid = r.json()["id"]
+    assert get_session(sid).model == "openai:model-b"
+    assert load_events(sid)[0].payload == {"task": "t", "repo_url": REPO, "model": "openai:model-b"}
+    assert client.get(f"/sessions/{sid}").json()["model"] == "openai:model-b"
+
+
+@pytest.mark.parametrize("model", ["nope", "openai:not-in-catalog", "openai:model-a", "", 3])
+def test_unknown_or_unavailable_model_is_422(client, env, monkeypatch, model):
+    # no OpenAI key: openai:model-a is in the catalog, but unavailable
+    use_env(monkeypatch, {"OPENROUTER_API_KEY": "orkey-one", "OTTO_OPENAI_MODELS": "model-a"})
+    r = client.post("/sessions", json={"repo_url": REPO, "task": "t", "model": model})
+    assert r.status_code == 422
+    assert env[1].calls == [] and client.get("/sessions").json() == []
+
+
+def test_no_available_default_is_503(client, env, monkeypatch):
+    use_env(monkeypatch, {})
+    r = client.post("/sessions", json={"repo_url": REPO, "task": "t"})
+    assert r.status_code == 503 and "OPENROUTER_API_KEY" in r.json()["detail"]
+    assert env[1].calls == [] and client.get("/sessions").json() == []
+
+
+def test_follow_up_keeps_the_sessions_model(client, env, monkeypatch):
+    use_env(monkeypatch, BOTH)
+    sid = client.post("/sessions", json={"repo_url": REPO, "task": "t", "model": "openai:model-a"}).json()["id"]
+    set_status(sid, "done")
+    monkeypatch.setattr(config, "DEFAULT_MODEL", "openrouter:openrouter/free")
+
+    assert client.post(f"/sessions/{sid}/messages", json={"text": "more"}).status_code == 202
+    assert get_session(sid).model == "openai:model-a"
+    assert jobs(env[0])[-1] == {"type": "resume", "session_id": sid, "text": "more"}  # no model in the job
+
+
+def test_follow_up_cannot_switch_the_model(client, env, monkeypatch):
+    use_env(monkeypatch, BOTH)
+    sid = client.post("/sessions", json={"repo_url": REPO, "task": "t", "model": "openai:model-a"}).json()["id"]
+    set_status(sid, "done")
+
+    r = client.post(f"/sessions/{sid}/messages", json={"text": "more", "model": "openrouter:openrouter/free"})
+
+    assert r.status_code == 422 and "fixed" in r.text
+    assert get_session(sid).model == "openai:model-a" and get_session(sid).status == "done"
+
+
+def test_models_reflect_the_keys_present(client, monkeypatch):
+    use_env(monkeypatch, {"OPENAI_API_KEY": "oaikey-one", "OTTO_OPENAI_MODELS": "model-a"})
+    assert client.get("/models").json() == {
+        "default_model": "openai:model-a",
+        "models": [
+            {"id": "openrouter:openrouter/free", "label": "OpenRouter Free", "provider": "openrouter",
+             "available": False},
+            {"id": "openai:model-a", "label": "OpenAI model-a", "provider": "openai", "available": True},
+        ]}
+
+    use_env(monkeypatch, BOTH)
+    r = client.get("/models").json()
+    assert r["default_model"] == "openrouter:openrouter/free"
+    assert [m["available"] for m in r["models"]] == [True, True, True]
+    assert "orkey" not in json.dumps(r) and "oaikey" not in json.dumps(r)
+
+
 # --- reading ---------------------------------------------------------------------
 
 def test_list_get_and_events(client, env):
@@ -153,7 +230,7 @@ def test_list_get_and_events(client, env):
 
     listed = client.get("/sessions").json()
     assert [s["id"] for s in listed] == [b, a]
-    assert set(listed[0]) == {"id", "repo_url", "task", "status", "pr_url", "created_at"}
+    assert set(listed[0]) == {"id", "repo_url", "task", "status", "model", "pr_url", "created_at"}
 
     one = client.get(f"/sessions/{a}").json()
     assert one["id"] == a and one["sandbox_status"] == "running"
