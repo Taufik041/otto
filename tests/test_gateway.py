@@ -1,5 +1,6 @@
-import json
+import asyncio, json
 from datetime import timedelta
+from types import SimpleNamespace as NS
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,7 +12,7 @@ from shared.db import get_db
 from shared.events import append_event, load_events
 from shared.models import Session, SessionEvent, utcnow
 from shared.sessions import create_session, get_session, set_status
-from gateway import app as gateway_app
+from gateway import app as gateway_app, live
 from tests.fakes import FakeChannel, FakeConnection
 
 REPO = "https://github.com/Taufik041/otto_test"
@@ -276,3 +277,33 @@ def test_startup_sweeps_crashed_sessions(env):
         pass
 
     assert get_session("stale00001").status == "interrupted"
+
+
+@pytest.fixture
+def fake_listener(monkeypatch):
+    calls = []
+
+    def start(url):
+        calls.append(("start", url))
+        return asyncio.create_task(asyncio.Event().wait())
+
+    async def stop(task):
+        calls.append(("stop", task.cancel()))
+
+    monkeypatch.setattr(live, "start", start)
+    monkeypatch.setattr(live, "stop", stop)
+    return calls
+
+
+def test_live_listener_runs_for_the_gateway_lifetime_on_postgres(env, fake_listener, monkeypatch):
+    pg = NS(dialect=NS(name="postgresql"), url="postgresql+psycopg://otto:pw@db:5432/otto")
+    monkeypatch.setattr(gateway_app, "get_engine", lambda: pg)
+    with TestClient(gateway_app.app):
+        assert fake_listener == [("start", "postgresql://otto:pw@db:5432/otto")]
+    assert fake_listener[1:] == [("stop", True)]
+
+
+def test_no_live_listener_on_sqlite(env, fake_listener):
+    with TestClient(gateway_app.app):
+        pass
+    assert fake_listener == []

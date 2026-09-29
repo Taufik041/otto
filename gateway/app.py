@@ -14,10 +14,11 @@ from kubernetes.client.exceptions import ApiException
 from pydantic import BaseModel, Field, field_validator
 
 from brain.bus import bus_call, start_consumer, stop_consumer
+from gateway import live
 from orchestrator import sandbox
 from shared import config
 from shared.bus import SESSIONS_QUEUE, actions_queue, resume_job, results_queue, start_job
-from shared.db import init_db
+from shared.db import get_engine, init_db
 from shared.events import append_event, load_events, redact
 from shared.github import parse_repo
 from shared.sessions import (ACTIVE, count_active, create_session, get_session, list_sessions,
@@ -34,13 +35,21 @@ async def lifespan(app):
     if swept:
         print(f"[gateway] marked {len(swept)} stale session(s) interrupted: {', '.join(swept)}", flush=True)
     conn = await connect_robust(config.BUS_URL)
+    listener = None
     try:
+        engine = get_engine()
+        if engine.dialect.name == "postgresql":
+            listener = live.start(live.pg_url(engine.url))
+        else:
+            print("[gateway] not on Postgres: WebSockets replay events but get no live ones", flush=True)
         ch = await conn.channel()
         await ch.declare_queue(SESSIONS_QUEUE, durable=True)
         app.state.ch = ch
         app.state.create_lock = asyncio.Lock()
         yield
     finally:
+        if listener:
+            await live.stop(listener)
         await conn.close()
 
 
