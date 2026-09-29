@@ -140,3 +140,15 @@ def auto_reply(ch, results, stdout=lambda action: f"ran {action['kind']}"):
         results.put(make_result(action, True, payload))
 
     ch.default_exchange.on_publish = on_publish
+
+
+# --- providers -----------------------------------------------------------------
+
+def use_env(monkeypatch, env):
+    """Configure providers and the model catalog as if `env` were the environment."""
+    from shared import config
+
+    keys, models = config.provider_keys(env), config.model_catalog(env)
+    monkeypatch.setattr(config, "PROVIDER_KEYS", keys)
+    monkeypatch.setattr(config, "MODELS", models)
+    monkeypatch.setattr(config, "DEFAULT_MODEL", config.default_model(models, keys, env))
