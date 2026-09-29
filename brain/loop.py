@@ -30,15 +30,44 @@ def tool_content(result, limit=TOOL_CONTENT_LIMIT) -> str:
         content = json.dumps(r)
     return content
 
+LLM_ATTEMPTS = 6
+
+
+class LLMError(Exception):
+    """The provider kept answering without a usable choice."""
+
+
+def _no_choice(resp) -> str | None:
+    """Why resp carries no usable choice, or None when it does."""
+    if resp is None:
+        return "empty response"
+    # some providers answer 200 with {"error": ...}; the SDK keeps unknown body fields as attributes
+    error = getattr(resp, "error", None)
+    if error:
+        return f"provider error: {error}"[:1000]
+    if not getattr(resp, "choices", None):
+        return "response has no choices"
+    return None
+
+
 async def _complete(client, **kwargs):
-    for attempt in range(6):
+    """One chat completion, retried with backoff on rate limits and on responses with no choices."""
+    for attempt in range(1, LLM_ATTEMPTS + 1):
         try:
-            return await client.chat.completions.create(**kwargs)
+            resp = await client.chat.completions.create(**kwargs)
         except RateLimitError:
-            wait = min(60, 10*(attempt + 1))
-            print(f'[brain] ratelimited, retrying in {wait}s', flush=True)
-            await asyncio.sleep(wait)
-    return await client.chat.completions.create(**kwargs)
+            if attempt == LLM_ATTEMPTS:
+                raise
+            problem = "ratelimited"
+        else:
+            problem = _no_choice(resp)
+            if problem is None:
+                return resp
+            if attempt == LLM_ATTEMPTS:
+                raise LLMError(f"no usable LLM response after {LLM_ATTEMPTS} attempts; last: {problem}")
+        wait = min(60, 10*attempt)
+        print(f'[brain] {problem}, retrying in {wait}s', flush=True)
+        await asyncio.sleep(wait)
 
 
 def add_message(sid, messages, message):
@@ -92,6 +121,10 @@ async def run_loop(ch, results, sid, messages):
         await _steps(client, ch, pending, sid, messages, record)
     except (asyncio.CancelledError, KeyboardInterrupt):
         transition(sid, "interrupted", {"running"})
+        raise
+    except LLMError as e:
+        record("error", {"stage": "llm", "message": str(e)})
+        transition(sid, "failed", {"running"})
         raise
     except Exception:
         transition(sid, "failed", {"running"})

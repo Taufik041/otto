@@ -1,9 +1,13 @@
 import asyncio
 import json
 
+from types import SimpleNamespace as NS
+
 import pytest
 
 from shared.bus import results_queue
+from shared.events import load_events
+from shared.sessions import get_session
 from brain import loop
 from tests.fakes import FakeChannel, auto_reply, llm_tool_calls, llm_final
 
@@ -117,3 +121,56 @@ def test_tool_content_trims_stdout_and_stderr():
     assert r["exit_code"] == 1 and r["total_lines"] == 7
     assert r["stdout"].startswith("o" * 1000) and r["stderr"].startswith("e" * 1000)
     assert result["stdout"] == "o" * 15000  # input not mutated
+
+
+def no_backoff(monkeypatch):
+    """Skip the retry sleeps; returns the list of waits asked for."""
+    waits, real_sleep = [], asyncio.sleep
+
+    async def sleep(seconds):
+        if seconds:
+            waits.append(seconds)
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    return waits
+
+
+EMPTY = [None, NS(choices=None), NS(choices=[]),
+         NS(choices=None, error={"message": "upstream 502", "code": 502})]
+
+
+@pytest.mark.asyncio
+async def test_responses_without_choices_are_retried(monkeypatch, capsys):
+    waits = no_backoff(monkeypatch)
+    ch = FakeChannel()
+    results = ch.queue(results_queue("s1"))
+    calls, _ = fake_client(monkeypatch, [*EMPTY, llm_final("done")])
+
+    await loop.run_session(ch, results, "s1", "hi")
+
+    assert len(calls) == 5
+    assert waits == [10, 20, 30, 40]
+    out = capsys.readouterr().out
+    assert "upstream 502" in out and "[otto] done" in out
+    assert get_session("s1").status == "done"
+
+
+@pytest.mark.asyncio
+async def test_session_fails_with_an_error_event_after_six_empty_responses(monkeypatch):
+    waits = no_backoff(monkeypatch)
+    ch = FakeChannel()
+    results = ch.queue(results_queue("s1"))
+    calls, state = fake_client(monkeypatch, [*EMPTY, NS(choices=[]),
+                                             NS(choices=None, error={"message": "no capacity"})])
+
+    with pytest.raises(loop.LLMError):
+        await loop.run_session(ch, results, "s1", "hi")
+
+    assert len(calls) == 6
+    assert waits == [10, 20, 30, 40, 50]
+    assert get_session("s1").status == "failed"
+    [err] = [e.payload for e in load_events("s1") if e.type == "error"]
+    assert err["stage"] == "llm"
+    assert "6 attempts" in err["message"] and "no capacity" in err["message"]
+    assert state["closed"]
