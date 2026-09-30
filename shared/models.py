@@ -67,3 +67,13 @@ class PasswordReset(SQLModel, table=True):
     expires_at: datetime = Field(sa_type=sa.DateTime(timezone=True))
     used_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
     created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
+
+
+class Installation(SQLModel, table=True):
+    """A GitHub App installation a user connected to Otto: its repos are theirs to work on."""
+    __tablename__ = "installations"
+
+    id: int = Field(primary_key=True, sa_type=sa.BigInteger, sa_column_kwargs={"autoincrement": False})  # GitHub's
+    user_id: str = Field(foreign_key="users.id", index=True)
+    account_login: str  # the user or organization it is installed on
+    created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
