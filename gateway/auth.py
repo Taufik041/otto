@@ -3,7 +3,7 @@
 The login session is a signed JWT (HS256, AUTH_SECRET) in an httpOnly, SameSite=Lax cookie.
 SameSite=Lax plus JSON-only writes (see app.py) keep other sites from acting as the user.
 """
-import re, uuid
+import hashlib, re, secrets, uuid
 from datetime import timedelta
 
 import jwt
@@ -16,10 +16,11 @@ from sqlmodel import select, update
 
 from shared import config
 from shared.db import get_db
-from shared.models import User, as_utc, utcnow
+from shared.models import PasswordReset, User, as_utc, utcnow
 
 COOKIE = "otto_session"
 SESSION_TTL = timedelta(days=7)
+RESET_TTL = timedelta(hours=1)
 MIN_PASSWORD = 8
 MIN_SECRET = 32
 EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
@@ -182,3 +183,50 @@ def logout(response: Response):
 @router.get("/me")
 def me(user: User = Depends(current_user)):
     return me_json(user)
+
+
+# --- forgot / reset password -----------------------------------------------------------
+
+class Forgot(BaseModel):
+    email: str = Field(max_length=320)
+
+
+class Reset(BaseModel):
+    token: str = Field(max_length=200)
+    password: str = Field(max_length=1024)
+
+    _password = field_validator("password")(strong_password)
+
+
+def token_hash(token) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+@router.post("/auth/forgot")
+def forgot(body: Forgot):
+    """Always 200, so this can't be used to find out who has an account."""
+    user = user_by_email(body.email)
+    if user is not None:
+        token = secrets.token_urlsafe(32)
+        with get_db() as s:
+            s.add(PasswordReset(token_hash=token_hash(token), user_id=user.id, expires_at=utcnow() + RESET_TTL))
+        # no email yet: the link goes to the server console
+        print(f"[auth] password reset for {user.email}: {config.FRONTEND_URL}/reset-password?token={token}",
+              flush=True)
+    return {"ok": True}
+
+
+@router.post("/auth/reset")
+def reset(body: Reset, response: Response):
+    now = utcnow()
+    with get_db() as s:
+        row = s.get(PasswordReset, token_hash(body.token))
+        if row is None or row.used_at is not None or as_utc(row.expires_at) <= now:
+            raise HTTPException(400, "this reset link is invalid or has expired; ask for a new one")
+        # single use, and it uses up the user's other outstanding links too
+        s.exec(update(PasswordReset).where(PasswordReset.user_id == row.user_id, PasswordReset.used_at.is_(None))
+               .values(used_at=now))
+        s.exec(update(User).where(User.id == row.user_id).values(password_hash=hash_password(body.password)))
+        user_id = row.user_id
+    set_login(response, user_id)
+    return {"ok": True}
