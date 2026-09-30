@@ -1,3 +1,5 @@
+import shutil
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -46,14 +48,24 @@ def fake_github(monkeypatch):
     return gh
 
 
+@pytest.fixture(scope="session")
+def migrated(tmp_path_factory):
+    """An SQLite database migrated to head, made once: each test gets a copy (migrating costs ~20ms)."""
+    path = tmp_path_factory.mktemp("template") / "otto.db"
+    shared_db.init_db(f"sqlite:///{path}")
+    shared_db.get_engine().dispose()
+    shared_db._engine = None
+    return path
+
+
 @pytest.fixture(autouse=True)
-def db(tmp_path, monkeypatch):
+def db(tmp_path, monkeypatch, migrated):
     """A fresh SQLite database standing in for Postgres, for every test."""
-    monkeypatch.setattr(shared_db, "_engine", None)
-    shared_db.init_db(f"sqlite:///{tmp_path / 'otto.db'}")
-    engine = shared_db.get_engine()  # a test may swap it out; still close this one
+    shutil.copy(migrated, tmp_path / "otto.db")
+    engine = shared_db._make_engine(f"sqlite:///{tmp_path / 'otto.db'}")
+    monkeypatch.setattr(shared_db, "_engine", engine)
     yield
-    engine.dispose()
+    engine.dispose()  # a test may swap the engine out; still close this one
 
 
 TEST_ENV = {"OPENROUTER_API_KEY": "or-test-key-1"}
