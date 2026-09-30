@@ -96,9 +96,14 @@ def transition(sid, status, allowed_from) -> bool:
     return moved
 
 
-def count_active() -> int:
+def count_active_agents(user_id=None) -> int:
+    """Active sessions with a repo (each has a sandbox), everyone's or one user's. Plain chats
+    don't count."""
+    q = select(func.count()).select_from(Session).where(Session.status.in_(ACTIVE), Session.repo.is_not(None))
+    if user_id is not None:
+        q = q.where(Session.user_id == user_id)
     with get_db() as s:
-        return s.exec(select(func.count()).select_from(Session).where(Session.status.in_(ACTIVE))).one()
+        return s.exec(q).one()
 
 
 def list_sessions(user_id) -> list[Session]:

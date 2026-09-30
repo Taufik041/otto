@@ -41,6 +41,8 @@ Stop the gateway and workers first, since they hold connections.
 | `FRONTEND_URL` | `http://localhost:5173` | Where the GitHub callback sends the browser afterwards, and the base of password-reset links. An `https://` URL also makes the login cookie `Secure`. |
 | `DAILY_TOKEN_LIMIT` | `50000` | A new user's daily token limit (UTC days). Existing users keep theirs (`users.daily_token_limit`). |
 | `MODEL_PRICES` | `{}` | JSON `{"<model id>": {"input_per_1m": 0.15, "output_per_1m": 0.6}}` in USD, keyed by catalog id (`GET /models`). Unlisted models count as free. |
+| `MAX_ACTIVE_SESSIONS` | `3` | Agent sessions (chats with a repo) one user may have at work at once (provisioning, queued or running). Plain chats don't count. |
+| `MAX_ACTIVE_SANDBOXES` | `3` | The same, for everyone together: protects the cluster. Sandboxes kept warm between turns don't count; they exit after `SANDBOX_IDLE_MINUTES`. |
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Origins allowed to call the API with credentials, and to open the WebSocket. |
 
 `GITHUB_APP_ID` and `GITHUB_APP_KEY_PATH` are as before. `GITHUB_INSTALLATION_ID` is now only the

@@ -16,7 +16,7 @@ from shared.models import Session, SessionEvent, Usage, utcnow
 from shared.sessions import create_session, get_session, set_status
 from gateway import app as gateway_app, live
 from tests.conftest import ORIGIN
-from tests.fakes import FakeChannel, connect_github, signup, use_env
+from tests.fakes import FakeChannel, connect_github, make_user, signup, use_env
 
 REPO = "Taufik041/otto_test"
 REPO_URL = "https://github.com/Taufik041/otto_test"
@@ -81,14 +81,53 @@ def test_create_sandbox_failure_is_502_and_failed(client, env):
     assert jobs(ch) == []
 
 
-def test_too_many_active_sessions_is_429(client, env, monkeypatch):
+def test_too_many_active_agent_sessions_is_429_per_user(client, env, monkeypatch):
     monkeypatch.setattr(config, "MAX_ACTIVE_SESSIONS", 2)
+    monkeypatch.setattr(config, "MAX_ACTIVE_SANDBOXES", 10)
     create_session("old1", task="t", repo=REPO, model="m", status="done", user_id=client.user_id)  # not active
+    create_session("theirs0001", task="t", repo=REPO, model="m", status="running", user_id=make_user("u2").id)
     assert client.post("/sessions", json={"repo": REPO, "message": "a"}).status_code == 201
     assert client.post("/sessions", json={"repo": REPO, "message": "b"}).status_code == 201
+
     r = client.post("/sessions", json={"repo": REPO, "message": "c"})
-    assert r.status_code == 429
+
+    assert r.status_code == 429 and "2 agent sessions" in r.json()["detail"]
     assert len(env[1].calls) == 2
+    # plain chats neither count nor are capped
+    for _ in range(3):
+        assert client.post("/sessions", json={"message": "hi"}).status_code == 201
+
+
+def test_the_cluster_wide_sandbox_cap_is_429(client, env, monkeypatch):
+    monkeypatch.setattr(config, "MAX_ACTIVE_SESSIONS", 10)
+    monkeypatch.setattr(config, "MAX_ACTIVE_SANDBOXES", 2)
+    create_session("theirs0001", task="t", repo=REPO, model="m", status="running", user_id=make_user("u2").id)
+    create_session("chat000001", task="t", repo=None, model="m", status="running", user_id="u2")  # no sandbox
+    assert client.post("/sessions", json={"repo": REPO, "message": "a"}).status_code == 201
+
+    r = client.post("/sessions", json={"repo": REPO, "message": "b"})
+
+    assert r.status_code == 429 and "sandboxes" in r.json()["detail"]
+    assert len(env[1].calls) == 1
+    assert client.post("/sessions", json={"message": "hi"}).status_code == 201
+
+
+def test_the_caps_apply_to_follow_ups_that_need_a_sandbox(client, env, monkeypatch):
+    ch, orch, _ = env
+    monkeypatch.setattr(config, "MAX_ACTIVE_SESSIONS", 1)
+    chat_id = client.post("/sessions", json={"message": "hi"}).json()["id"]
+    agent = finished_session(client.user_id)
+    set_status(chat_id, "done")
+    assert client.post("/sessions", json={"repo": REPO, "message": "busy"}).status_code == 201
+    orch.calls.clear()
+
+    for sid, body in [(chat_id, {"text": "now fix it", "repo": REPO}), (agent, {"text": "go on"})]:
+        r = client.post(f"/sessions/{sid}/messages", json=body)
+        assert r.status_code == 429, sid
+        assert get_session(sid).status == "done"
+    assert get_session(chat_id).repo is None and orch.calls == []
+    # a plain chat's follow-up needs no sandbox
+    assert client.post(f"/sessions/{chat_id}/messages", json={"text": "just chatting"}).status_code == 202
 
 
 def test_bad_request_is_422(client, env):

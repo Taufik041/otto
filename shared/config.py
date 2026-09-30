@@ -116,7 +116,8 @@ K8S_NAMESPACE = os.environ.get("K8S_NAMESPACE", "default")
 SANDBOX_BUS_URL = os.environ.get("SANDBOX_BUS_URL", "amqp://guest:guest@rabbitmq:5672/")  # bus URL as seen from inside the pod
 
 # gateway / worker
-MAX_ACTIVE_SESSIONS = int(os.environ.get("MAX_ACTIVE_SESSIONS", "3"))
+MAX_ACTIVE_SESSIONS = int(os.environ.get("MAX_ACTIVE_SESSIONS", "3"))    # agent sessions at work, per user
+MAX_ACTIVE_SANDBOXES = int(os.environ.get("MAX_ACTIVE_SANDBOXES", "3"))  # agent sessions at work, everyone's
 WORKER_CONCURRENCY = int(os.environ.get("WORKER_CONCURRENCY", "3"))
 CORS_ORIGINS = [o.strip() for o in os.environ.get(
     "CORS_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",") if o.strip()]

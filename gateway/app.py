@@ -30,7 +30,7 @@ from shared.bus import SESSIONS_QUEUE, actions_queue, chat_job, resume_job, resu
 from shared.db import get_engine, init_db
 from shared.events import append_event, load_events, redact
 from shared.models import User, as_utc, utcnow
-from shared.sessions import (ACTIVE, attach_repo, count_active, create_session, delete_session, get_session,
+from shared.sessions import (ACTIVE, attach_repo, count_active_agents, create_session, delete_session, get_session,
                              list_sessions, repo_sessions_since, set_status, set_title, sweep_stale_sessions,
                              transition)
 
@@ -238,6 +238,16 @@ async def _repo_for(user, name) -> dict:
     return found
 
 
+def _room_for_an_agent(user):
+    """429 unless the user, and the cluster, can take one more agent session at work. Plain chats
+    have no sandbox and don't count. Call it under app.state.create_lock, with the claim."""
+    if count_active_agents(user.id) >= config.MAX_ACTIVE_SESSIONS:
+        raise HTTPException(429, f"you have {config.MAX_ACTIVE_SESSIONS} agent sessions at work already; "
+                                 "wait for one to finish, or stop one")
+    if count_active_agents() >= config.MAX_ACTIVE_SANDBOXES:
+        raise HTTPException(429, f"all {config.MAX_ACTIVE_SANDBOXES} sandboxes are busy; try again in a few minutes")
+
+
 async def _create_sandbox(sid, repo):
     await asyncio.to_thread(sandbox.create_sandbox, sid, f"https://github.com/{repo['full_name']}",
                             installation_id=repo["installation_id"])
@@ -258,8 +268,8 @@ async def create(body: NewSession, user: User = Depends(auth.current_user)):
     model = _model_for(user, body.model)
     repo = await _repo_for(user, body.repo) if body.repo else None
     async with app.state.create_lock:  # count + insert as one step within this gateway
-        if count_active() >= config.MAX_ACTIVE_SESSIONS:
-            raise HTTPException(429, f"{config.MAX_ACTIVE_SESSIONS} sessions are already active; try again later")
+        if repo:
+            _room_for_an_agent(user)
         sid = new_session_id()
         row = create_session(sid, task=body.message, repo=repo["full_name"] if repo else None, model=model,
                              status="provisioning", user_id=user.id)
@@ -388,9 +398,12 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_
     if body.repo and row.repo and body.repo.lower() != row.repo.lower():
         raise HTTPException(409, NEW_REPO)
     repo = await _repo_for(user, row.repo or body.repo) if row.repo or body.repo else None
-    # claim the session atomically; a busy one (or a concurrent follow-up) gets 409
-    if not transition(sid, "provisioning", IDLE):
-        raise HTTPException(409, f"session {sid} is {_row(sid, user).status}; wait until it finishes")
+    async with app.state.create_lock:  # count + claim as one step within this gateway
+        if repo and row.status in IDLE:
+            _room_for_an_agent(user)
+        # claim the session atomically; a busy one (or a concurrent follow-up) gets 409
+        if not transition(sid, "provisioning", IDLE):
+            raise HTTPException(409, f"session {sid} is {_row(sid, user).status}; wait until it finishes")
     if repo is None:
         await _enqueue(ch, sid, chat_job(sid, body.text))
         return {"id": sid, "status": "queued", "repo": None}

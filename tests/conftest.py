@@ -114,6 +114,7 @@ def env(monkeypatch):
     monkeypatch.setattr(gateway_app, "connect_robust", connect)
     monkeypatch.setattr(gateway_app, "PING_TIMEOUT", 0.2)
     monkeypatch.setattr(config, "MAX_ACTIVE_SESSIONS", 3)
+    monkeypatch.setattr(config, "MAX_ACTIVE_SANDBOXES", 3)
     return ch, orch, FakeRunners(ch)
 
 
