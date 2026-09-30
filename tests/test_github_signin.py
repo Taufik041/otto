@@ -23,6 +23,10 @@ def callback(client, **params):
     return client.get("/auth/github/callback", params=params, follow_redirects=False)
 
 
+def nonce_cookies(client) -> list[str]:
+    return [c.name for c in client.cookies.jar if c.name.startswith("gh_nonce_")]
+
+
 def users() -> list[User]:
     with get_db() as s:
         return list(s.exec(select(User).order_by(User.created_at)).all())
@@ -37,8 +41,10 @@ def test_start_redirects_to_github_with_a_signed_state(client, fake_github):
     assert q["client_id"] == ["Iv1.testclient"]
     claims = auth.verify(q["state"][0], "github-state")
     assert claims["flow"] == "signin" and claims["uid"] is None
-    assert client.cookies[github_app.NONCE_COOKIE] == claims["nonce"]
-    assert "httponly" in r.headers["set-cookie"].lower()
+    header = r.headers["set-cookie"].lower()
+    assert header.startswith(github_app.nonce_cookie(claims["nonce"]) + "=")
+    assert "httponly" in header and "max-age=600" in header and "path=/auth/github" in header
+    assert client.cookies[github_app.nonce_cookie(claims["nonce"])] == claims["nonce"]
 
 
 def test_sign_in_creates_a_user(client, fake_github):
@@ -52,7 +58,7 @@ def test_sign_in_creates_a_user(client, fake_github):
         "Taufik Khan", "Taufik041", "https://avatars.githubusercontent.com/u/101")
     assert me["email"] is None and me["has_password"] is False  # GitHub's email is never used
     assert [u.github_id for u in users()] == [101]
-    assert github_app.NONCE_COOKIE not in client.cookies  # the state is single-use
+    assert nonce_cookies(client) == []  # the state is single-use
 
 
 def test_signing_in_again_finds_the_same_user_and_refreshes_the_profile(client, fake_github):
@@ -117,8 +123,7 @@ def test_an_account_linked_to_a_different_github_is_409(client, fake_github):
 
 
 def expired_state(client):
-    start(client)  # sets the nonce cookie
-    nonce = client.cookies[github_app.NONCE_COOKIE]
+    nonce = auth.verify(start(client), "github-state")["nonce"]  # sets its nonce cookie
     return auth.sign({"flow": "signin", "uid": None, "nonce": nonce}, "github-state", timedelta(seconds=-1))
 
 
@@ -157,6 +162,31 @@ def test_a_state_started_by_someone_else_is_400(client, fake_github):
     fake_github.add_user("c1", gid=101, login="Taufik041")
     assert callback(client, code="c1", state=state).status_code == 400
     assert all(u.github_id is None for u in users()) and a
+
+
+def test_each_start_keeps_its_own_nonce_so_duplicate_starts_dont_break_sign_in(client, fake_github):
+    """Prefetches, double clicks and reloads can hit /start more than once before GitHub answers."""
+    first, second = start(client), start(client)
+    assert len(nonce_cookies(client)) == 2
+    fake_github.add_user("c1", gid=101, login="Taufik041")
+    fake_github.add_user("c2", gid=101, login="Taufik041")
+
+    assert callback(client, code="c1", state=first).status_code in (302, 307)
+    me = client.get("/me").json()["id"]
+    client.cookies.delete(auth.COOKIE)  # signed out again, as when second was started
+    assert callback(client, code="c2", state=second).status_code in (302, 307)
+
+    assert client.get("/me").json()["id"] == me and len(users()) == 1
+    assert nonce_cookies(client) == []
+
+
+def test_a_used_state_cant_be_used_again(client, fake_github):
+    fake_github.add_user("c1", gid=101, login="Taufik041")
+    fake_github.add_user("c2", gid=101, login="Taufik041")
+    state = start(client)
+    assert callback(client, code="c1", state=state).status_code in (302, 307)
+    client.cookies.delete(auth.COOKIE)
+    assert callback(client, code="c2", state=state).status_code == 400
 
 
 def test_a_bad_code_is_400(client, fake_github):

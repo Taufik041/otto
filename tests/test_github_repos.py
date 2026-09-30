@@ -9,7 +9,7 @@ from shared import config
 from shared.db import get_db
 from shared.models import Installation, User
 from tests.fakes import log_in_as, repo, signup
-from tests.test_github_signin import callback, start
+from tests.test_github_signin import callback, nonce_cookies, start
 
 INST = 555
 
@@ -68,6 +68,22 @@ def test_a_valid_installation_is_saved(client, fake_github, me):
     assert client.get("/github").json() == {
         "connected": True, "login": "Taufik041", "avatar_url": "https://avatars.githubusercontent.com/u/101",
         "installations": [{"id": INST, "account_login": "Taufik041"}]}
+
+
+def test_duplicate_install_starts_both_work(client, fake_github, me):
+    token = fake_github.add_user("c1", gid=101, login="Taufik041")
+    fake_github.add_user("c2", gid=101, login="Taufik041")
+    fake_github.codes["c2"] = token
+    fake_github.add_installation(INST, "Taufik041", users=[token])
+    fake_github.add_installation(777, "some-org", users=[token])
+    first, second = start(client, "/github/install"), start(client, "/github/install")
+
+    assert install(client, fake_github, state=first).status_code in (302, 307)
+    assert install(client, fake_github, iid=777, code="c2", state=second).status_code in (302, 307)
+    assert install(client, fake_github, iid=777, code="c2", state=second).status_code == 400  # used up
+
+    assert sorted(i for i, _, _ in links()) == [INST, 777]
+    assert nonce_cookies(client) == []
 
 
 def test_an_installation_that_isnt_the_users_is_refused(client, fake_github, me):

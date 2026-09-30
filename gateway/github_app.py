@@ -8,11 +8,12 @@ flows. An installation_id from the query is never trusted on its own: it must sh
 GET /user/installations for the user who just authorized.
 
 The OAuth state is a signed token (auth.sign, audience "github-state") holding the flow, the user
-signed in when it started, and a nonce that must match the NONCE_COOKIE set in this browser. So
-a state (and code) started by someone else can't be replayed in a victim's browser to link the
-attacker's GitHub account to the victim's Otto account.
+signed in when it started, and a nonce that must match a cookie set in this browser. So a state
+(and code) started by someone else can't be replayed in a victim's browser to link the
+attacker's GitHub account to the victim's Otto account. Each state has its own cookie
+(nonce_cookie), so a second /start (a prefetch, a double click, a reload) doesn't void the first.
 """
-import jwt, secrets, time, uuid
+import hashlib, jwt, secrets, time, uuid
 from datetime import timedelta
 from urllib.parse import quote, urlencode
 
@@ -31,7 +32,6 @@ API = "https://api.github.com"
 WEB = "https://github.com"
 TIMEOUT = 15  # seconds per GitHub request
 STATE_TTL = timedelta(minutes=10)
-NONCE_COOKIE = "otto_oauth"
 NONCE_PATH = "/auth/github"  # sent to the callback only
 TOKEN_REUSE = 50 * 60  # seconds to reuse an installation token (they last an hour)
 REPOS_TTL = 60         # seconds to reuse a user's repo list
@@ -164,21 +164,27 @@ def _need_oauth():
         raise HTTPException(503, "GitHub sign-in is not configured: set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET")
 
 
+def nonce_cookie(nonce) -> str:
+    """The name of the cookie that remembers one state's nonce in the browser that started it."""
+    return "gh_nonce_" + hashlib.sha256(nonce.encode()).hexdigest()[:12]
+
+
 def _redirect_with_state(url, params, flow, user) -> RedirectResponse:
     """Redirect to GitHub with a new state for `flow`, and remember its nonce in this browser."""
     nonce = secrets.token_urlsafe(24)
     state = auth.sign({"flow": flow, "uid": user.id if user else None, "nonce": nonce}, "github-state", STATE_TTL)
     r = RedirectResponse(f"{url}?{urlencode({**params, 'state': state})}", 302)
-    r.set_cookie(NONCE_COOKIE, nonce, max_age=int(STATE_TTL.total_seconds()), httponly=True, samesite="lax",
-                 secure=config.COOKIE_SECURE, path=NONCE_PATH)
+    r.set_cookie(nonce_cookie(nonce), nonce, max_age=int(STATE_TTL.total_seconds()), httponly=True,
+                 samesite="lax", secure=config.COOKIE_SECURE, path=NONCE_PATH)
     return r
 
 
 def _check_state(request: Request, state) -> dict:
     """The state's claims if it is valid, was started in this browser, by whoever is signed in now."""
     claims = auth.verify(state, "github-state") if state else None
-    nonce = request.cookies.get(NONCE_COOKIE)
-    if not claims or not nonce or not secrets.compare_digest(str(claims.get("nonce", "")), nonce):
+    nonce = str((claims or {}).get("nonce", ""))
+    cookie = request.cookies.get(nonce_cookie(nonce)) if nonce else None
+    if not cookie or not secrets.compare_digest(nonce, cookie):
         raise HTTPException(400, "invalid or expired GitHub state; start again")
     user = auth.optional_user(request)
     if claims.get("uid") != (user.id if user else None):
@@ -186,9 +192,11 @@ def _check_state(request: Request, state) -> dict:
     return claims
 
 
-def _finish(url) -> RedirectResponse:
+def _finish(url, claims) -> RedirectResponse:
+    """Redirect to the frontend, dropping the state's nonce cookie: a state works once."""
     r = RedirectResponse(url, 302)
-    r.delete_cookie(NONCE_COOKIE, httponly=True, samesite="lax", secure=config.COOKIE_SECURE, path=NONCE_PATH)
+    r.delete_cookie(nonce_cookie(claims["nonce"]), httponly=True, samesite="lax", secure=config.COOKIE_SECURE,
+                    path=NONCE_PATH)
     return r
 
 
@@ -231,12 +239,12 @@ def github_callback(request: Request, state: str | None = None, code: str | None
     query), or a sign-in / account link."""
     claims = _check_state(request, state)
     if error:  # the user cancelled on GitHub
-        return _finish(f"{config.FRONTEND_URL}/?github_error={quote(error)}")
+        return _finish(f"{config.FRONTEND_URL}/?github_error={quote(error)}", claims)
     installing = installation_id is not None and setup_action is not None
     if installing != (claims["flow"] == "install"):
         raise HTTPException(400, "unexpected GitHub callback; start again")
     if installing:
-        return _installed(auth.optional_user(request), installation_id, setup_action, code)
+        return _installed(auth.optional_user(request), installation_id, setup_action, code, claims)
     if not code:
         raise HTTPException(400, "unexpected GitHub callback; start again")
     try:
@@ -245,7 +253,7 @@ def github_callback(request: Request, state: str | None = None, code: str | None
         print(f"[github] sign-in failed: {e}", flush=True)
         raise HTTPException(400, "GitHub sign-in failed; try again") from None
     user = _sign_in(auth.optional_user(request), gh)
-    r = _finish(config.FRONTEND_URL)
+    r = _finish(config.FRONTEND_URL, claims)
     auth.set_login(r, user.id)
     return r
 
@@ -272,8 +280,8 @@ def _sign_in(current: User | None, gh: dict) -> User:
     return user
 
 
-def _installed(user: User, installation_id: int, setup_action: str, code: str | None):
-    done = _finish(f"{config.FRONTEND_URL}/settings/github")
+def _installed(user: User, installation_id: int, setup_action: str, code: str | None, claims):
+    done = _finish(f"{config.FRONTEND_URL}/settings/github", claims)
     with get_db() as s:
         linked = s.get(Installation, installation_id)
     if setup_action == "update" and linked is not None and linked.user_id == user.id:
