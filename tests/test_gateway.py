@@ -15,15 +15,19 @@ from shared.models import Session, SessionEvent, utcnow
 from shared.sessions import create_session, get_session, set_status
 from gateway import app as gateway_app, live
 from tests.conftest import ORIGIN
-from tests.fakes import FakeChannel, signup, use_env
+from tests.fakes import FakeChannel, connect_github, signup, use_env
 
-REPO = "https://github.com/Taufik041/otto_test"
+REPO = "Taufik041/otto_test"
+REPO_URL = "https://github.com/Taufik041/otto_test"
+INST = 555
 
 
 @pytest.fixture
-def client(client):
-    """Every test here acts as one signed-in user, client.user_id."""
+def client(client, fake_github):
+    """Every test here acts as one signed-in user, client.user_id, whose installation INST can
+    see REPO."""
     client.user_id = signup(client)["id"]
+    connect_github(fake_github, client.user_id, INST, [REPO])
     return client
 
 
@@ -43,21 +47,21 @@ def types(sid):
 
 def test_create_session(client, env):
     ch, orch, _ = env
-    r = client.post("/sessions", json={"repo_url": REPO, "task": "fix the tests"})
+    r = client.post("/sessions", json={"repo": REPO, "message": "fix the tests"})
 
     assert r.status_code == 201
     sid = r.json()["id"]
-    assert r.json() == {"id": sid, "status": "queued"}
+    assert r.json() == {"id": sid, "status": "queued", "title": "fix the tests", "repo": REPO}
     assert len(sid) == 10 and sid.isalnum() and sid == sid.lower()
     row = get_session(sid)
-    assert (row.status, row.repo_url, row.task) == ("queued", REPO, "fix the tests")
-    assert orch.calls == [("create", sid, REPO)]
+    assert (row.status, row.repo, row.task, row.user_id) == ("queued", REPO, "fix the tests", client.user_id)
+    assert orch.calls == [("create", sid, REPO_URL, INST)]
     assert jobs(ch) == [{"type": "start", "session_id": sid}]
     assert types(sid) == ["session.created", "session.status"]
 
 
 def test_ids_are_unique(client):
-    ids = {client.post("/sessions", json={"repo_url": REPO, "task": "t"}).json()["id"] for _ in range(3)}
+    ids = {client.post("/sessions", json={"repo": REPO, "message": "t"}).json()["id"] for _ in range(3)}
     assert len(ids) == 3
 
 
@@ -65,7 +69,7 @@ def test_create_sandbox_failure_is_502_and_failed(client, env):
     ch, orch, _ = env
     orch.fail_create = RuntimeError("k8s says no; token ghs_abcdef123")
 
-    r = client.post("/sessions", json={"repo_url": REPO, "task": "t"})
+    r = client.post("/sessions", json={"repo": REPO, "message": "t"})
 
     assert r.status_code == 502
     assert "ghs_" not in r.text
@@ -78,17 +82,18 @@ def test_create_sandbox_failure_is_502_and_failed(client, env):
 
 def test_too_many_active_sessions_is_429(client, env, monkeypatch):
     monkeypatch.setattr(config, "MAX_ACTIVE_SESSIONS", 2)
-    create_session("old1", task="t", repo_url=REPO, model="m", status="done", user_id=client.user_id)  # not active
-    assert client.post("/sessions", json={"repo_url": REPO, "task": "a"}).status_code == 201
-    assert client.post("/sessions", json={"repo_url": REPO, "task": "b"}).status_code == 201
-    r = client.post("/sessions", json={"repo_url": REPO, "task": "c"})
+    create_session("old1", task="t", repo=REPO, model="m", status="done", user_id=client.user_id)  # not active
+    assert client.post("/sessions", json={"repo": REPO, "message": "a"}).status_code == 201
+    assert client.post("/sessions", json={"repo": REPO, "message": "b"}).status_code == 201
+    r = client.post("/sessions", json={"repo": REPO, "message": "c"})
     assert r.status_code == 429
     assert len(env[1].calls) == 2
 
 
 def test_bad_request_is_422(client, env):
-    assert client.post("/sessions", json={"repo_url": "not a repo", "task": "t"}).status_code == 422
-    assert client.post("/sessions", json={"repo_url": REPO, "task": ""}).status_code == 422
+    assert client.post("/sessions", json={"repo": "not a repo", "message": "t"}).status_code == 422
+    assert client.post("/sessions", json={"repo": "https://github.com/o/r", "message": "t"}).status_code == 422
+    assert client.post("/sessions", json={"repo": REPO, "message": ""}).status_code == 422
     assert env[1].calls == []
 
 
@@ -98,19 +103,19 @@ BOTH = {"OPENROUTER_API_KEY": "orkey-one", "OPENAI_API_KEY": "oaikey-one", "OTTO
 
 
 def test_create_without_a_model_uses_the_default(client):
-    sid = client.post("/sessions", json={"repo_url": REPO, "task": "t"}).json()["id"]
+    sid = client.post("/sessions", json={"repo": REPO, "message": "t"}).json()["id"]
     assert get_session(sid).model == "openrouter:openrouter/free"
     assert load_events(sid)[0].payload["model"] == "openrouter:openrouter/free"
 
 
 def test_create_with_a_model(client, monkeypatch):
     use_env(monkeypatch, BOTH)
-    r = client.post("/sessions", json={"repo_url": REPO, "task": "t", "model": "openai:model-b"})
+    r = client.post("/sessions", json={"repo": REPO, "message": "t", "model": "openai:model-b"})
 
     assert r.status_code == 201
     sid = r.json()["id"]
     assert get_session(sid).model == "openai:model-b"
-    assert load_events(sid)[0].payload == {"task": "t", "repo_url": REPO, "model": "openai:model-b"}
+    assert load_events(sid)[0].payload == {"task": "t", "repo": REPO, "model": "openai:model-b"}
     assert client.get(f"/sessions/{sid}").json()["model"] == "openai:model-b"
 
 
@@ -118,21 +123,21 @@ def test_create_with_a_model(client, monkeypatch):
 def test_unknown_or_unavailable_model_is_422(client, env, monkeypatch, model):
     # no OpenAI key: openai:model-a is in the catalog, but unavailable
     use_env(monkeypatch, {"OPENROUTER_API_KEY": "orkey-one", "OTTO_OPENAI_MODELS": "model-a"})
-    r = client.post("/sessions", json={"repo_url": REPO, "task": "t", "model": model})
+    r = client.post("/sessions", json={"repo": REPO, "message": "t", "model": model})
     assert r.status_code == 422
     assert env[1].calls == [] and client.get("/sessions").json() == []
 
 
 def test_no_available_default_is_503(client, env, monkeypatch):
     use_env(monkeypatch, {})
-    r = client.post("/sessions", json={"repo_url": REPO, "task": "t"})
+    r = client.post("/sessions", json={"repo": REPO, "message": "t"})
     assert r.status_code == 503 and "OPENROUTER_API_KEY" in r.json()["detail"]
     assert env[1].calls == [] and client.get("/sessions").json() == []
 
 
 def test_follow_up_keeps_the_sessions_model(client, env, monkeypatch):
     use_env(monkeypatch, BOTH)
-    sid = client.post("/sessions", json={"repo_url": REPO, "task": "t", "model": "openai:model-a"}).json()["id"]
+    sid = client.post("/sessions", json={"repo": REPO, "message": "t", "model": "openai:model-a"}).json()["id"]
     set_status(sid, "done")
     monkeypatch.setattr(config, "DEFAULT_MODEL", "openrouter:openrouter/free")
 
@@ -143,7 +148,7 @@ def test_follow_up_keeps_the_sessions_model(client, env, monkeypatch):
 
 def test_follow_up_cannot_switch_the_model(client, env, monkeypatch):
     use_env(monkeypatch, BOTH)
-    sid = client.post("/sessions", json={"repo_url": REPO, "task": "t", "model": "openai:model-a"}).json()["id"]
+    sid = client.post("/sessions", json={"repo": REPO, "message": "t", "model": "openai:model-a"}).json()["id"]
     set_status(sid, "done")
 
     r = client.post(f"/sessions/{sid}/messages", json={"text": "more", "model": "openrouter:openrouter/free"})
@@ -172,15 +177,17 @@ def test_models_reflect_the_keys_present(client, monkeypatch):
 # --- reading ---------------------------------------------------------------------
 
 def test_list_get_and_events(client, env):
-    a = client.post("/sessions", json={"repo_url": REPO, "task": "first"}).json()["id"]
-    b = client.post("/sessions", json={"repo_url": REPO, "task": "second"}).json()["id"]
+    a = client.post("/sessions", json={"repo": REPO, "message": "first"}).json()["id"]
+    b = client.post("/sessions", json={"repo": REPO, "message": "second"}).json()["id"]
 
     listed = client.get("/sessions").json()
     assert [s["id"] for s in listed] == [b, a]
-    assert set(listed[0]) == {"id", "repo_url", "task", "status", "model", "pr_url", "created_at"}
+    assert set(listed[0]) == {"id", "title", "status", "repo", "model", "pr_url", "updated_at"}
+    assert (listed[0]["title"], listed[0]["repo"]) == ("second", REPO)
 
     one = client.get(f"/sessions/{a}").json()
     assert one["id"] == a and one["sandbox_status"] == "running"
+    assert (one["task"], one["repo_url"]) == ("first", REPO_URL)
     assert one["work_branch"] is None and one["pr_url"] is None
     assert client.get("/sessions/nope").status_code == 404
 
@@ -193,7 +200,7 @@ def test_list_get_and_events(client, env):
 # --- follow-ups ------------------------------------------------------------------
 
 def finished_session(user_id, sid="abcdef0123", status="done"):
-    create_session(sid, task="t", repo_url=REPO, model="m", status=status, user_id=user_id)
+    create_session(sid, task="t", repo=REPO, model="m", status=status, user_id=user_id)
     return sid
 
 
@@ -205,7 +212,7 @@ def test_follow_up_reuses_a_warm_sandbox(client, env):
 
     r = client.post(f"/sessions/{sid}/messages", json={"text": "also add a test"})
 
-    assert r.status_code == 202 and r.json() == {"id": sid, "status": "queued"}
+    assert r.status_code == 202 and r.json() == {"id": sid, "status": "queued", "repo": REPO}
     assert orch.calls == []
     assert actions(ch, sid) == ["control.ping"]
     assert "sandbox.reused" in types(sid) and "sandbox.recreated" not in types(sid)
@@ -225,7 +232,7 @@ def test_follow_up_recreates_a_dead_sandbox(client, env, state):
 
     assert r.status_code == 202
     assert actions(ch, sid) == (["control.ping"] if state == "running" else [])
-    assert orch.calls == [("remove", sid), ("create", sid, REPO)]
+    assert orch.calls == [("remove", sid), ("create", sid, REPO_URL, INST)]
     for q in (actions_queue(sid), results_queue(sid)):
         assert ch.queues[q].purged >= 1
     assert ch.queues[actions_queue(sid)].pending() == 0  # nothing stale left for the new pod
@@ -289,7 +296,7 @@ def test_delete_without_a_sandbox(client, env):
 # --- startup ---------------------------------------------------------------------
 
 def test_startup_sweeps_crashed_sessions(env):
-    create_session("stale00001", task="t", repo_url=REPO, model="m", status="running")
+    create_session("stale00001", task="t", repo=REPO, model="m", status="running")
     with get_db() as s:
         row = s.get(Session, "stale00001")
         row.created_at = utcnow() - timedelta(hours=1)
@@ -342,7 +349,7 @@ WS = "wsses00001"
 
 def ws_session(user_id, n_events):
     """A session with events 1..n_events (1 is session.created)."""
-    create_session(WS, task="t", repo_url=REPO, model="m", user_id=user_id)
+    create_session(WS, task="t", repo=REPO, model="m", user_id=user_id)
     for i in range(2, n_events + 1):
         append_event(WS, "note", {"i": i})
 

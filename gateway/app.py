@@ -1,11 +1,14 @@
-"""Otto's HTTP API: list models, create sessions, follow up, watch events (also live, over a WebSocket), stop them.
+"""Otto's HTTP API: accounts, GitHub, models, and chats (sessions): create, follow up, watch
+events (also live, over a WebSocket), rename, stop.
 
     uvicorn gateway.app:app --port 8000
 
-The gateway owns sandboxes (via the orchestrator) and the session queues (via
-the bus); brain workers run the sessions it enqueues on otto.sessions.
+A chat with a repo ("owner/name", one of GET /repos) runs the agent in a sandbox; without one it
+is a plain chat: no sandbox, and the model answers without tools. The gateway owns sandboxes (via
+the orchestrator) and the session queues (via the bus); brain workers run the sessions it
+enqueues on otto.sessions.
 """
-import asyncio, json, uuid
+import asyncio, json, re, uuid
 from contextlib import asynccontextmanager, suppress
 
 import anyio
@@ -21,17 +24,18 @@ from brain.bus import bus_call, start_consumer, stop_consumer
 from gateway import auth, github_app, live
 from orchestrator import sandbox
 from shared import config
-from shared.bus import SESSIONS_QUEUE, actions_queue, resume_job, results_queue, start_job
+from shared.bus import SESSIONS_QUEUE, actions_queue, chat_job, resume_job, results_queue, start_job
 from shared.db import get_engine, init_db
 from shared.events import append_event, load_events, redact
-from shared.github import parse_repo
-from shared.models import User
-from shared.sessions import (ACTIVE, count_active, create_session, get_session, list_sessions,
-                             set_status, sweep_stale_sessions, transition)
+from shared.models import User, as_utc
+from shared.sessions import (ACTIVE, attach_repo, count_active, create_session, get_session, list_sessions,
+                             set_status, set_title, sweep_stale_sessions, transition)
 
 PING_TIMEOUT = 5  # seconds to wait for a warm runner to answer control.ping / control.shutdown
 PING_INTERVAL = 20  # seconds between WebSocket heartbeats
 IDLE = ("pending", "done", "failed", "interrupted", "stopped")  # statuses that may take a follow-up
+REPO_NAME = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
+NEW_REPO = "Start a new chat for a different repo."
 
 
 @asynccontextmanager
@@ -81,16 +85,22 @@ app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_cred
                    allow_methods=["*"], allow_headers=["*"])
 
 
-class NewSession(BaseModel):
-    repo_url: str
-    task: str = Field(min_length=1)
-    model: str | None = None  # a catalog id (GET /models); None: the default model
+def repo_name(v):
+    """"owner/name" (a leading @ is fine); ValueError (422) for anything else."""
+    if v is None:
+        return None
+    v = v.strip().removeprefix("@")
+    if not REPO_NAME.fullmatch(v):
+        raise ValueError('repo must be "owner/name", as GET /repos lists it')
+    return v
 
-    @field_validator("repo_url")
-    @classmethod
-    def github_repo(cls, v):
-        parse_repo(v)  # ValueError -> 422
-        return v.strip()
+
+class NewSession(BaseModel):
+    message: str = Field(min_length=1)
+    repo: str | None = None  # "owner/name" from GET /repos; None: a plain chat
+    model: str | None = None  # a catalog id (GET /models); None: the user's default, else the server's
+
+    _repo = field_validator("repo")(repo_name)
 
     @field_validator("model")
     @classmethod
@@ -102,7 +112,10 @@ class NewSession(BaseModel):
 
 class FollowUp(BaseModel):
     text: str = Field(min_length=1)
+    repo: str | None = None  # attaches a repo to a plain chat; the chat's own repo is fine too
     model: str | None = None  # only to refuse it: a session stays on the model it was created with
+
+    _repo = field_validator("repo")(repo_name)
 
     @field_validator("model")
     @classmethod
@@ -110,6 +123,17 @@ class FollowUp(BaseModel):
         if v is not None:
             raise ValueError("a session's model is fixed at creation; start a new session for another model")
         return v
+
+
+class Rename(BaseModel):
+    title: str = Field(max_length=200)
+
+    @field_validator("title")
+    @classmethod
+    def not_blank(cls, v):
+        if not v.strip():
+            raise ValueError("a title is required")
+        return " ".join(v.split())
 
 
 def new_session_id() -> str:
@@ -171,8 +195,33 @@ async def _status(sid) -> str:
 
 
 def _summary(row) -> dict:
-    return {"id": row.id, "repo_url": row.repo_url, "task": row.task, "status": row.status,
-            "model": row.model, "pr_url": row.pr_url, "created_at": row.created_at}
+    return {"id": row.id, "title": row.title, "status": row.status, "repo": row.repo, "model": row.model,
+            "pr_url": row.pr_url, "updated_at": as_utc(row.updated_at)}
+
+
+def _model_for(user, asked) -> str:
+    """The model a new session runs on: the one asked for, else the user's default (while it's
+    available), else the server's."""
+    mine = user.default_model if user.default_model and config.is_available(user.default_model) else None
+    model = asked or mine or config.DEFAULT_MODEL
+    if not config.is_available(model):
+        raise HTTPException(503, f"default model {model!r} is not available: set OPENROUTER_API_KEY, "
+                                 "or OPENAI_API_KEY with OTTO_OPENAI_MODELS (see GET /models)")
+    return model
+
+
+async def _repo_for(user, name) -> dict:
+    """The user's repo called name, with its installation; 403 unless one of their installations
+    can reach it."""
+    found = await asyncio.to_thread(github_app.repo_access, user.id, name)
+    if found is None:
+        raise HTTPException(403, f"{name} isn't one of your repos: connect it on GitHub (GET /repos lists yours)")
+    return found
+
+
+async def _create_sandbox(sid, repo):
+    await asyncio.to_thread(sandbox.create_sandbox, sid, f"https://github.com/{repo['full_name']}",
+                            installation_id=repo["installation_id"])
 
 
 @app.get("/models")
@@ -185,35 +234,43 @@ def models():
 
 @app.post("/sessions", status_code=201)
 async def create(body: NewSession, user: User = Depends(auth.current_user)):
-    model = body.model or config.DEFAULT_MODEL
-    if not config.is_available(model):
-        raise HTTPException(503, f"default model {model!r} is not available: set OPENROUTER_API_KEY, "
-                                 "or OPENAI_API_KEY with OTTO_OPENAI_MODELS (see GET /models)")
+    """A new chat. With a repo, Otto works on it in a sandbox; without one, it just answers."""
+    model = _model_for(user, body.model)
+    repo = await _repo_for(user, body.repo) if body.repo else None
     async with app.state.create_lock:  # count + insert as one step within this gateway
         if count_active() >= config.MAX_ACTIVE_SESSIONS:
             raise HTTPException(429, f"{config.MAX_ACTIVE_SESSIONS} sessions are already active; try again later")
         sid = new_session_id()
-        create_session(sid, task=body.task, repo_url=body.repo_url, model=model, status="provisioning",
-                       user_id=user.id)
-    try:
-        await asyncio.to_thread(sandbox.create_sandbox, sid, body.repo_url)
-    except Exception as e:
-        _fail(sid, "create_sandbox", e)
+        row = create_session(sid, task=body.message, repo=repo["full_name"] if repo else None, model=model,
+                             status="provisioning", user_id=user.id)
+    if repo:
+        try:
+            await _create_sandbox(sid, repo)
+        except Exception as e:
+            _fail(sid, "create_sandbox", e)
     # the runner needn't be up yet: its actions wait in the durable queue
-    await _enqueue(app.state.ch, sid, start_job(sid))
-    return {"id": sid, "status": "queued"}
+    await _enqueue(app.state.ch, sid, start_job(sid) if repo else chat_job(sid))
+    return {"id": sid, "status": "queued", "title": row.title, "repo": row.repo}
 
 
 @app.get("/sessions")
 def sessions(user: User = Depends(auth.current_user)):
+    """The user's chats for the sidebar, most recently active first."""
     return [_summary(r) for r in list_sessions(user.id)]
 
 
 @app.get("/sessions/{sid}")
 async def session(sid: str, user: User = Depends(auth.current_user)):
     row = _row(sid, user)
-    return {**_summary(row), "model": row.model, "work_branch": row.work_branch,
-            "updated_at": row.updated_at, "sandbox_status": await _status(sid)}
+    return {**_summary(row), "task": row.task, "repo_url": row.repo_url, "work_branch": row.work_branch,
+            "created_at": as_utc(row.created_at), "sandbox_status": await _status(sid) if row.repo else None}
+
+
+@app.patch("/sessions/{sid}")
+def rename(sid: str, body: Rename, user: User = Depends(auth.current_user)):
+    _row(sid, user)
+    set_title(sid, body.title)
+    return _summary(get_session(sid))
 
 
 @app.get("/sessions/{sid}/events")
@@ -303,38 +360,62 @@ async def watch(websocket: WebSocket, sid: str, after_seq: int = Query(0, ge=0))
 
 @app.post("/sessions/{sid}/messages", status_code=202)
 async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_user)):
+    """The next message. A repo given to a plain chat attaches it: the chat gets a sandbox and
+    the agent takes over. A chat keeps its first repo: another one is 409."""
     ch = app.state.ch
     row = _row(sid, user)
+    if body.repo and row.repo and body.repo.lower() != row.repo.lower():
+        raise HTTPException(409, NEW_REPO)
+    repo = await _repo_for(user, row.repo or body.repo) if row.repo or body.repo else None
     # claim the session atomically; a busy one (or a concurrent follow-up) gets 409
     if not transition(sid, "provisioning", IDLE):
         raise HTTPException(409, f"session {sid} is {_row(sid, user).status}; wait until it finishes")
+    if repo is None:
+        await _enqueue(ch, sid, chat_job(sid, body.text))
+        return {"id": sid, "status": "queued", "repo": None}
+    attaching = row.repo is None
+    if attaching and not attach_repo(sid, repo["full_name"]):
+        # another follow-up attached a repo between our read and our claim
+        if get_session(sid).repo.lower() != repo["full_name"].lower():
+            transition(sid, row.status, {"provisioning"})
+            raise HTTPException(409, NEW_REPO)
     try:
-        state = await asyncio.to_thread(sandbox.sandbox_status, sid)
-        warm = state == "running" and (await _control(ch, sid, "control.ping")).get("pong") is True
-        if warm:
-            append_event(sid, "sandbox.reused", {})
+        if attaching:
+            await _create_sandbox(sid, repo)
         else:
-            # clear the old Job (its name is reused) before the queues, so nothing requeues stale work
-            await asyncio.to_thread(sandbox.remove_sandbox, sid)
-            for q in await _queues(ch, sid):
-                await q.purge()
-            # the entrypoint checks out otto/<sid>, so pushed work carries over
-            await asyncio.to_thread(sandbox.create_sandbox, sid, row.repo_url)
-            append_event(sid, "sandbox.recreated", {"previous": state})
+            await _wake_sandbox(ch, sid, repo)
     except HTTPException:
         raise
     except Exception as e:
         _fail(sid, "sandbox", e)
     await _enqueue(ch, sid, resume_job(sid, body.text))
-    return {"id": sid, "status": "queued"}
+    return {"id": sid, "status": "queued", "repo": repo["full_name"]}
+
+
+async def _wake_sandbox(ch, sid, repo):
+    """Reuse the session's sandbox if its runner answers; otherwise start a new one."""
+    state = await asyncio.to_thread(sandbox.sandbox_status, sid)
+    warm = state == "running" and (await _control(ch, sid, "control.ping")).get("pong") is True
+    if warm:
+        append_event(sid, "sandbox.reused", {})
+        return
+    # clear the old Job (its name is reused) before the queues, so nothing requeues stale work
+    await asyncio.to_thread(sandbox.remove_sandbox, sid)
+    for q in await _queues(ch, sid):
+        await q.purge()
+    # the entrypoint checks out otto/<sid>, so pushed work carries over
+    await _create_sandbox(sid, repo)
+    append_event(sid, "sandbox.recreated", {"previous": state})
 
 
 @app.delete("/sessions/{sid}")
 async def stop(sid: str, user: User = Depends(auth.current_user)):
     ch = app.state.ch
-    _row(sid, user)
+    row = _row(sid, user)
     # stopped first: a worker still running this session ends after its current step
     set_status(sid, "stopped")
+    if row.repo is None:  # a plain chat has no sandbox
+        return {"id": sid, "status": "stopped"}
     if await _status(sid) == "running":
         try:
             await _control(ch, sid, "control.shutdown")  # best effort

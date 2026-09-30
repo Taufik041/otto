@@ -7,6 +7,7 @@ from sqlmodel import Field, SQLModel
 from shared import config
 
 STATUSES = ("pending", "provisioning", "queued", "running", "done", "failed", "interrupted", "stopped")
+TITLE_LENGTH = 60
 
 
 def utcnow():
@@ -23,14 +24,24 @@ class Session(SQLModel, table=True):
 
     id: str = Field(primary_key=True)
     user_id: str | None = Field(default=None, foreign_key="users.id", index=True)  # None: made by the brain CLI
-    repo_url: str | None = None
-    task: str
+    title: str = ""
+    repo: str | None = None  # "owner/name"; None: a plain chat, with no sandbox
+    task: str  # the first message
     status: str = "pending"  # one of STATUSES
     model: str
     work_branch: str | None = None  # otto/<id>, set once the session opens a PR
     pr_url: str | None = None
     created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
     updated_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
+
+    @property
+    def repo_url(self) -> str | None:
+        return f"https://github.com/{self.repo}" if self.repo else None
+
+
+def make_title(text) -> str:
+    """A chat's title: its first message on one line, trimmed to TITLE_LENGTH characters."""
+    return " ".join(str(text).split())[:TITLE_LENGTH].rstrip() or "New chat"
 
 
 class SessionEvent(SQLModel, table=True):

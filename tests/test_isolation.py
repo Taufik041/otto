@@ -6,7 +6,7 @@ from shared.sessions import create_session, get_session
 from tests.conftest import ORIGIN
 from tests.fakes import log_in_as, signup
 
-REPO = "https://github.com/Taufik041/otto_test"
+REPO = "Taufik041/otto_test"
 SID = "aaaa000001"
 
 
@@ -16,7 +16,7 @@ def users(client):
     a = signup(client, email="a@example.com")["id"]
     client.cookies.clear()
     b = signup(client, email="b@example.com")["id"]
-    create_session(SID, task="A's secret task", repo_url=REPO, model="m", status="done", user_id=a)
+    create_session(SID, task="A's secret task", repo=REPO, model="m", status="done", user_id=a)
     return a, b
 
 
@@ -36,6 +36,7 @@ def test_another_users_session_is_404_everywhere(client, users, env):
     assert client.get(f"/sessions/{SID}/events").status_code == 404
     assert client.post(f"/sessions/{SID}/messages", json={"text": "hi"}).status_code == 404
     assert client.delete(f"/sessions/{SID}").status_code == 404
+    assert client.patch(f"/sessions/{SID}", json={"title": "mine now"}).status_code == 404
     assert "secret" not in client.get("/sessions").text
     assert env[1].calls == []
     assert get_session(SID).status == "done"
@@ -43,8 +44,8 @@ def test_another_users_session_is_404_everywhere(client, users, env):
 
 def test_each_user_lists_only_their_own_sessions(client, users):
     a, b = users
-    create_session("bbbb000001", task="B's task", repo_url=REPO, model="m", user_id=b)
-    create_session("cli0000001", task="from the CLI", repo_url=REPO, model="m")  # no owner
+    create_session("bbbb000001", task="B's task", repo=REPO, model="m", user_id=b)
+    create_session("cli0000001", task="from the CLI", repo=REPO, model="m")  # no owner
     assert [s["id"] for s in client.get("/sessions").json()] == ["bbbb000001"]
     log_in_as(client, a)
     assert [s["id"] for s in client.get("/sessions").json()] == [SID]
@@ -62,7 +63,8 @@ def test_session_routes_need_a_login(client, users):
                          ("post", f"/sessions/{SID}/messages"), ("delete", f"/sessions/{SID}")]:
         r = getattr(client, method)(path, **({"json": {"text": "x"}} if method == "post" else {}))
         assert r.status_code == 401, (method, path)
-    assert client.post("/sessions", json={"repo_url": REPO, "task": "t"}).status_code == 401
+    assert client.post("/sessions", json={"repo": REPO, "message": "t"}).status_code == 401
+    assert client.patch(f"/sessions/{SID}", json={"title": "x"}).status_code == 401
 
 
 def test_the_owner_can_open_the_websocket(client, users):

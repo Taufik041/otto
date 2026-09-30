@@ -208,8 +208,8 @@ class FakeOrchestrator:
         self.status = {}          # sid -> sandbox_status
         self.fail_create = None   # exception to raise from create_sandbox
 
-    def create_sandbox(self, sid, repo_url, token=None):
-        self.calls.append(("create", sid, repo_url))
+    def create_sandbox(self, sid, repo_url, installation_id=None, token=None):
+        self.calls.append(("create", sid, repo_url, installation_id))
         if self.fail_create:
             raise self.fail_create
         self.status[sid] = "running"
@@ -357,6 +357,16 @@ class FakeGitHub:
                 return FakeResponse(401, {"message": "Bad credentials"})
             return self._page(url, self.repos[iid], "repositories", params)
         return FakeResponse(404, {"message": f"FakeGitHub has no {method} {path}"})
+
+
+def connect_github(fake_github, user_id, iid=555, repos=("Taufik041/otto_test",), account="Taufik041"):
+    """user_id has installation iid (on account), which GitHub says can see repos."""
+    from shared.db import get_db
+    from shared.models import Installation
+
+    fake_github.add_installation(iid, account, repos=repos)
+    with get_db() as s:
+        s.add(Installation(id=iid, user_id=user_id, account_login=account))
 
 
 def repo(full_name, private=True, updated_at="2026-09-01T00:00:00Z", default_branch="main"):

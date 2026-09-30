@@ -5,18 +5,21 @@ from sqlmodel import delete, select, update
 
 from shared.db import get_db
 from shared.events import append_event, redact
-from shared.models import STATUSES, Session, SessionEvent, as_utc, utcnow
+from shared.models import STATUSES, Session, SessionEvent, as_utc, make_title, utcnow
 
 ACTIVE = ("provisioning", "queued", "running")  # a sandbox or a worker is (about to be) busy with it
 STALE_AGE = timedelta(minutes=30)     # crash sweep: only sessions older than this...
 STALE_QUIET = timedelta(minutes=10)   # ...with no events for this long
 
 
-def create_session(sid, task, repo_url, model, status="pending", user_id=None) -> Session:
-    row = Session(id=sid, task=redact(task), repo_url=repo_url, model=model, status=status, user_id=user_id)
+def create_session(sid, task, repo, model, status="pending", user_id=None) -> Session:
+    """A new session. repo is "owner/name", or None for a plain chat; the title comes from task."""
+    task = redact(task)
+    row = Session(id=sid, task=task, title=make_title(task), repo=repo, model=model, status=status,
+                  user_id=user_id)
     with get_db() as s:
         s.add(row)
-    append_event(sid, "session.created", {"task": task, "repo_url": repo_url, "model": model})
+    append_event(sid, "session.created", {"task": task, "repo": repo, "model": model})
     return row
 
 
@@ -29,6 +32,22 @@ def delete_session(sid):
     with get_db() as s:
         s.exec(delete(SessionEvent).where(SessionEvent.session_id == sid))
         s.exec(delete(Session).where(Session.id == sid))
+
+
+def attach_repo(sid, repo) -> bool:
+    """Give a plain chat its repo, turning it into an agent session. False if it has one already."""
+    with get_db() as s:
+        moved = s.exec(update(Session).where(Session.id == sid, Session.repo.is_(None))
+                       .values(repo=repo, updated_at=utcnow())).rowcount == 1
+    if moved:
+        append_event(sid, "repo.attached", {"repo": repo})
+    return moved
+
+
+def set_title(sid, title):
+    """Rename; doesn't count as activity, so the chat keeps its place in the list."""
+    with get_db() as s:
+        s.exec(update(Session).where(Session.id == sid).values(title=title))
 
 
 def record_pr(sid, number, html_url):
@@ -80,10 +99,10 @@ def count_active() -> int:
 
 
 def list_sessions(user_id) -> list[Session]:
-    """The user's sessions, newest first."""
+    """The user's sessions, most recently active first."""
     with get_db() as s:
         return list(s.exec(select(Session).where(Session.user_id == user_id)
-                           .order_by(Session.created_at.desc())).all())
+                           .order_by(Session.updated_at.desc(), Session.created_at.desc())).all())
 
 
 def sweep_stale_sessions() -> list[str]:

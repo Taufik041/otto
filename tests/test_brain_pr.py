@@ -82,7 +82,7 @@ async def test_token_never_reaches_stored_events(monkeypatch):
 
 def test_show_prints_branch_and_pr(monkeypatch, capsys):
     from shared.sessions import create_session, record_pr
-    create_session(config.SESSION_ID, task="t", repo_url=None, model="m")
+    create_session(config.SESSION_ID, task="t", repo=None, model="m")
     record_pr(config.SESSION_ID, PR["number"], PR["html_url"])
 
     brain_main.main(["--show"])

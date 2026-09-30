@@ -35,7 +35,7 @@ def test_the_migrated_schema_matches_the_models(db):
 
 
 def test_init_db_on_a_migrated_database_keeps_the_data(db):
-    create_session("s1", task="t", repo_url=None, model="m")
+    create_session("s1", task="t", repo=None, model="m")
     init_db()
     assert get_session("s1").task == "t"
 
@@ -77,3 +77,26 @@ def test_postgres_upgrade_head_from_scratch(monkeypatch):
     assert version(pg) == head_revision()
     pg.dispose()
     engine.dispose()
+
+
+def test_0005_turns_repo_urls_into_repos_and_titles_old_sessions(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'old.db'}"
+    monkeypatch.setattr(shared_db, "_engine", None)
+    engine = shared_db._make_engine(url)
+    cfg = alembic_config()
+    with engine.begin() as conn:
+        cfg.attributes["connection"] = conn
+        command.upgrade(cfg, "0004")
+        for sid, repo_url in [("a", "https://github.com/Taufik041/otto_test.git"), ("b", None)]:
+            conn.execute(text("INSERT INTO sessions (id, repo_url, task, status, model, created_at, updated_at) "
+                              "VALUES (:id, :url, :task, 'done', 'm', '2026-01-01', '2026-01-01')"),
+                         {"id": sid, "url": repo_url, "task": "  fix\nthe   tests " + "x" * 80})
+    engine.dispose()
+
+    init_db(url)
+
+    a, b = get_session("a"), get_session("b")
+    assert (a.repo, a.repo_url) == ("Taufik041/otto_test", "https://github.com/Taufik041/otto_test")
+    assert b.repo is None
+    assert a.title == ("fix the tests " + "x" * 80)[:60] and len(a.title) == 60
+    get_engine().dispose()

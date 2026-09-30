@@ -55,7 +55,7 @@ def _one_line(text, width=SUMMARY_WIDTH):
 def summarize(ev) -> str:
     p = ev.payload
     if ev.type == "session.created":
-        return f"model={p.get('model')} repo={p.get('repo_url')} task={p.get('task')!r}"
+        return f"model={p.get('model')} repo={p.get('repo')} task={p.get('task')!r}"
     if ev.type == "session.status":
         return p.get("status", "")
     if ev.type == "pr.opened":
@@ -81,7 +81,8 @@ def show(sid):
     if row is None:
         print(f"no session {sid!r}")
         return
-    print(f"session {row.id}  status={row.status}  model={row.model}  repo={row.repo_url}")
+    print(f"session {row.id}  status={row.status}  model={row.model}  repo={row.repo or '-'}")
+    print(f"  title: {row.title}")
     print(f"  created {_fmt_ts(row.created_at)}  updated {_fmt_ts(row.updated_at)} (UTC)")
     print(f"  task: {_one_line(row.task)}")
     print(f"  branch: {row.work_branch or '-'}  pr: {row.pr_url or '-'}")

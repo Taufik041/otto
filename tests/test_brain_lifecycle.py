@@ -19,7 +19,7 @@ def bus(sid):
 
 @pytest.mark.asyncio
 async def test_start_session_runs_an_existing_row(monkeypatch):
-    create_session("abc123", task="fix it", repo_url="https://github.com/o/r", model="m", status="running")
+    create_session("abc123", task="fix it", repo="o/r", model="m", status="running")
     ch, results = bus("abc123")
     fake_client(monkeypatch, [llm_final("done")])
 
@@ -34,7 +34,7 @@ async def test_start_session_runs_an_existing_row(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_stopped_session_ends_after_the_current_step(monkeypatch):
-    create_session("abc123", task="t", repo_url=None, model="m", status="running")
+    create_session("abc123", task="t", repo=None, model="m", status="running")
     ch, results = bus("abc123")
     replied = ch.default_exchange.on_publish
 
@@ -53,7 +53,7 @@ async def test_a_stopped_session_ends_after_the_current_step(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_failure_does_not_override_stopped(monkeypatch):
-    create_session("abc123", task="t", repo_url=None, model="m", status="running")
+    create_session("abc123", task="t", repo=None, model="m", status="running")
     ch, results = bus("abc123")
 
     class Boom(Exception):
@@ -71,7 +71,7 @@ async def test_failure_does_not_override_stopped(monkeypatch):
 
 
 def test_cli_session_flag(monkeypatch, capsys):
-    create_session("other1", task="t", repo_url=None, model="m")
+    create_session("other1", task="t", repo=None, model="m")
     brain_main.main(["--show", "--session", "other1"])
     assert capsys.readouterr().out.startswith("session other1")
     brain_main.main(["--show"])

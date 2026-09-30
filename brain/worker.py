@@ -5,19 +5,22 @@ from aio_pika import connect_robust
 from shared import config
 from shared.bus import SESSIONS_QUEUE, actions_queue, results_queue
 from shared.sessions import get_session, transition
-from brain.loop import resume_session, start_session
+from brain.loop import chat_session, resume_session, start_session
 from brain.main import connect_db
 
 
 def parse_job(body) -> dict | None:
-    """{"type": "start"|"resume", "session_id": ..., "text": ... (resume)} or None if malformed."""
+    """{"type": "start"|"resume"|"chat", "session_id": ..., "text": ... (resume; chat follow-ups)},
+    or None if malformed."""
     try:
         job = json.loads(body)
     except ValueError:
         return None
     if not isinstance(job, dict) or not isinstance(job.get("session_id"), str):
         return None
-    if job.get("type") == "start" or (job.get("type") == "resume" and isinstance(job.get("text"), str)):
+    kind, text = job.get("type"), job.get("text")
+    if kind == "start" or (kind == "resume" and isinstance(text, str)) \
+            or (kind == "chat" and (text is None or isinstance(text, str))):
         return job
     return None
 
@@ -25,6 +28,9 @@ def parse_job(body) -> dict | None:
 async def run_job(conn, job):
     """Run one session turn on its own channel, with the same loop functions as the CLI."""
     sid = job["session_id"]
+    if job["type"] == "chat":  # no sandbox, so no bus
+        await chat_session(sid, job.get("text"))
+        return
     ch = await conn.channel()
     try:
         await ch.declare_queue(actions_queue(sid), durable=True)

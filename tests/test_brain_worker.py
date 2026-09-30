@@ -59,7 +59,7 @@ async def run_worker(ch, conn, jobs, concurrency=3):
 
 
 def session(sid, task, status="queued"):
-    create_session(sid, task=task, repo_url="https://github.com/o/r", model="m", status=status)
+    create_session(sid, task=task, repo="o/r", model="m", status=status)
 
 
 @pytest.mark.asyncio

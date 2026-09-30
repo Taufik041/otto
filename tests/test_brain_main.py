@@ -43,7 +43,7 @@ def test_new_session_needs_an_available_model(monkeypatch, no_bus):
 
 
 def test_existing_session_is_refused_without_force_new(no_bus, capsys):
-    create_session(config.SESSION_ID, task="old", repo_url=None, model="m")
+    create_session(config.SESSION_ID, task="old", repo=None, model="m")
     with pytest.raises(SystemExit) as e:
         brain_main.main(["new task"])
     assert "--force-new" in str(e.value.code) and "--resume" in str(e.value.code)
@@ -52,7 +52,7 @@ def test_existing_session_is_refused_without_force_new(no_bus, capsys):
 
 def test_force_new_discards_the_old_session(monkeypatch, fake_bus):
     sid = config.SESSION_ID
-    create_session(sid, task="old", repo_url=None, model="m")
+    create_session(sid, task="old", repo=None, model="m")
     for _ in range(5):
         append_event(sid, "x", {})
     fake_client(monkeypatch, [llm_final("done")])
