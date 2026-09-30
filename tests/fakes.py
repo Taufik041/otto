@@ -120,15 +120,15 @@ class FakeConnection:
 from types import SimpleNamespace as NS
 
 
-def llm_tool_calls(*calls, content=None):
+def llm_tool_calls(*calls, content=None, usage=None):
     """calls: (name, args_dict) pairs -> a chat completion asking for those tools."""
     tcs = [NS(id=f"call_{i}", function=NS(name=name, arguments=json.dumps(args)))
            for i, (name, args) in enumerate(calls)]
-    return NS(choices=[NS(message=NS(content=content, tool_calls=tcs))])
+    return NS(choices=[NS(message=NS(content=content, tool_calls=tcs))], usage=usage)
 
 
-def llm_final(text):
-    return NS(choices=[NS(message=NS(content=text, tool_calls=None))])
+def llm_final(text, usage=None):
+    return NS(choices=[NS(message=NS(content=text, tool_calls=None))], usage=usage)
 
 
 def auto_reply(ch, results, stdout=lambda action: f"ran {action['kind']}"):

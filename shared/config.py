@@ -127,6 +127,31 @@ FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173").rstrip("/
 COOKIE_SECURE = FRONTEND_URL.startswith("https://")
 DAILY_TOKEN_LIMIT = int(os.environ.get("DAILY_TOKEN_LIMIT", "50000"))  # a new user's limit
 
+
+def model_prices(env) -> dict[str, dict[str, float]]:
+    """MODEL_PRICES: JSON {model_id: {"input_per_1m": USD, "output_per_1m": USD}}. Unlisted models,
+    and missing fields, cost 0."""
+    if not env.get("MODEL_PRICES"):
+        return {}
+    try:
+        raw = json.loads(env["MODEL_PRICES"])
+    except ValueError as e:
+        raise ValueError(f"MODEL_PRICES is not valid JSON: {e}") from None
+    if not isinstance(raw, dict):
+        raise ValueError('MODEL_PRICES must be a JSON object: {"<model id>": {"input_per_1m": 0.15, '
+                         '"output_per_1m": 0.6}}')
+    prices = {}
+    for model, p in raw.items():
+        entry = {k: (p.get(k, 0) if isinstance(p, dict) else None) for k in ("input_per_1m", "output_per_1m")}
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 for v in entry.values()):
+            raise ValueError(f"MODEL_PRICES[{model!r}] needs non-negative numbers input_per_1m and "
+                             f"output_per_1m; got {p!r}")
+        prices[model] = {k: float(v) for k, v in entry.items()}
+    return prices
+
+
+MODEL_PRICES = model_prices(os.environ)
+
 # github app
 GITHUB_APP_ID = os.environ.get("GITHUB_APP_ID")
 GITHUB_INSTALLATION_ID = os.environ.get("GITHUB_INSTALLATION_ID")

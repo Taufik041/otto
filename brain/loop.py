@@ -1,5 +1,5 @@
 import json, asyncio
-from shared import config
+from shared import config, usage
 from brain.providers import LLMError, complete
 from brain.tools import CHAT_SYSTEM, SYSTEM, TOOLS, KIND, missing_args
 from brain.bus import bus_call, start_consumer, stop_consumer
@@ -10,6 +10,14 @@ from shared.sessions import create_session, get_session, record_pr, set_status, 
 
 TOOL_CONTENT_LIMIT = 20000
 TRUNCATED = "\n[... truncated]"
+
+
+class LimitReached(Exception):
+    """The session's user is at their daily token limit."""
+
+    def __init__(self, info):
+        super().__init__(f"daily token limit reached: {info}")
+        self.info = info
 
 
 def tool_content(result, limit=TOOL_CONTENT_LIMIT) -> str:
@@ -124,6 +132,11 @@ async def _turn(sid, messages, steps):
     # final statuses only replace "running": a session stopped meanwhile stays "stopped"
     try:
         await steps(record)
+    except LimitReached as e:
+        # a clean stop between calls: every tool call is answered, and the sandbox stays warm
+        record("usage.limit_reached", e.info)
+        transition(sid, "limited", {"running"})
+        return messages
     except (asyncio.CancelledError, KeyboardInterrupt):
         transition(sid, "interrupted", {"running"})
         raise
@@ -138,9 +151,23 @@ async def _turn(sid, messages, steps):
     return messages
 
 
+async def _complete(sid, record, messages, **kw):
+    """One LLM call on the session's model, within the user's daily token limit, and recorded."""
+    row = get_session(sid)
+    if row.user_id and (info := usage.limit_status(row.user_id)):
+        raise LimitReached(info)
+    # the model the session was created with, for every turn: never another provider or model
+    model = config.resolve_model(row.model)
+    resp = await complete(model["provider"], record, model=model["model"], messages=messages, **kw)
+    counts = getattr(resp, "usage", None)
+    tokens = {k: int(getattr(counts, k, 0) or 0) for k in ("prompt_tokens", "completion_tokens")}
+    usage.record(sid, row.user_id, model["provider"], row.model, **tokens)
+    record("llm.usage", {"provider": model["provider"], "model": row.model, **tokens})
+    return resp
+
+
 async def _chat_step(sid, messages, record):
-    model = config.resolve_model(get_session(sid).model)
-    resp = await complete(model["provider"], record, model=model["model"], messages=messages)
+    resp = await _complete(sid, record, messages)
     add_message(sid, messages, {"role": "assistant", "content": resp.choices[0].message.content or ""})
 
 
@@ -150,13 +177,11 @@ def _stopped(sid) -> bool:
 
 
 async def _steps(ch, pending, sid, messages, record):
-    # the model the session was created with, for every turn: never another provider or model
-    model = config.resolve_model(get_session(sid).model)
     for step in range(20):
         if _stopped(sid):
             print(f"[brain] session {sid} was stopped")
             return
-        resp = await complete(model["provider"], record, model=model["model"], messages=messages, tools=TOOLS)
+        resp = await _complete(sid, record, messages, tools=TOOLS)
         m = resp.choices[0].message
 
         if not m.tool_calls:

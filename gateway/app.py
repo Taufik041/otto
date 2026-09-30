@@ -10,6 +10,7 @@ enqueues on otto.sessions.
 """
 import asyncio, json, re, uuid
 from contextlib import asynccontextmanager, suppress
+from datetime import timedelta
 
 import anyio
 from aio_pika import DeliveryMode, Message, connect_robust
@@ -23,17 +24,17 @@ from pydantic import BaseModel, Field, field_validator
 from brain.bus import bus_call, start_consumer, stop_consumer
 from gateway import auth, github_app, live
 from orchestrator import sandbox
-from shared import config
+from shared import config, usage
 from shared.bus import SESSIONS_QUEUE, actions_queue, chat_job, resume_job, results_queue, start_job
 from shared.db import get_engine, init_db
 from shared.events import append_event, load_events, redact
-from shared.models import User, as_utc
+from shared.models import User, as_utc, utcnow
 from shared.sessions import (ACTIVE, attach_repo, count_active, create_session, get_session, list_sessions,
-                             set_status, set_title, sweep_stale_sessions, transition)
+                             repo_sessions_since, set_status, set_title, sweep_stale_sessions, transition)
 
 PING_TIMEOUT = 5  # seconds to wait for a warm runner to answer control.ping / control.shutdown
 PING_INTERVAL = 20  # seconds between WebSocket heartbeats
-IDLE = ("pending", "done", "failed", "interrupted", "stopped")  # statuses that may take a follow-up
+IDLE = ("pending", "done", "failed", "interrupted", "stopped", "limited")  # statuses that may take a follow-up
 REPO_NAME = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
 NEW_REPO = "Start a new chat for a different repo."
 
@@ -78,6 +79,16 @@ async def json_only_writes(request: Request, call_next):
         if ctype != "application/json":
             return JSONResponse({"detail": "send state-changing requests as application/json"}, 415)
     return await call_next(request)
+
+
+class DailyLimit(Exception):
+    def __init__(self, info):
+        self.info = info
+
+
+@app.exception_handler(DailyLimit)
+async def daily_limit(request: Request, e: DailyLimit):
+    return JSONResponse({"code": "daily_limit", **e.info}, 429)
 
 
 # added last, so it wraps everything above: refusals still carry CORS headers
@@ -199,6 +210,12 @@ def _summary(row) -> dict:
             "pr_url": row.pr_url, "updated_at": as_utc(row.updated_at)}
 
 
+def _within_limit(user):
+    """429 {"code": "daily_limit", "resets_at", "used", "limit"} once the user used today's tokens."""
+    if info := usage.limit_status(user.id):
+        raise DailyLimit(info)
+
+
 def _model_for(user, asked) -> str:
     """The model a new session runs on: the one asked for, else the user's default (while it's
     available), else the server's."""
@@ -235,6 +252,7 @@ def models():
 @app.post("/sessions", status_code=201)
 async def create(body: NewSession, user: User = Depends(auth.current_user)):
     """A new chat. With a repo, Otto works on it in a sandbox; without one, it just answers."""
+    _within_limit(user)
     model = _model_for(user, body.model)
     repo = await _repo_for(user, body.repo) if body.repo else None
     async with app.state.create_lock:  # count + insert as one step within this gateway
@@ -364,6 +382,7 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_
     the agent takes over. A chat keeps its first repo: another one is 409."""
     ch = app.state.ch
     row = _row(sid, user)
+    _within_limit(user)
     if body.repo and row.repo and body.repo.lower() != row.repo.lower():
         raise HTTPException(409, NEW_REPO)
     repo = await _repo_for(user, row.repo or body.repo) if row.repo or body.repo else None
@@ -410,12 +429,41 @@ async def _wake_sandbox(ch, sid, repo):
 
 @app.delete("/sessions/{sid}")
 async def stop(sid: str, user: User = Depends(auth.current_user)):
-    ch = app.state.ch
     row = _row(sid, user)
     # stopped first: a worker still running this session ends after its current step
     set_status(sid, "stopped")
-    if row.repo is None:  # a plain chat has no sandbox
-        return {"id": sid, "status": "stopped"}
+    if row.repo:  # a plain chat has no sandbox
+        await _destroy_sandbox(app.state.ch, sid)
+    return {"id": sid, "status": "stopped"}
+
+
+@app.post("/sessions/{sid}/sandbox/stop")
+async def stop_sandbox(sid: str, user: User = Depends(auth.current_user)):
+    """Stop just the sandbox. A session between turns keeps its status (a follow-up starts a new
+    sandbox); one that is working can't go on without it, so it is stopped too."""
+    row = _row(sid, user)
+    if row.status in ACTIVE:
+        set_status(sid, "stopped")
+    if row.repo:
+        await _destroy_sandbox(app.state.ch, sid)
+    return {"id": sid, "status": get_session(sid).status, "sandbox_status": "missing"}
+
+
+@app.get("/usage")
+async def usage_summary(user: User = Depends(auth.current_user)):
+    """Tokens today (against the daily limit), this month, per day and per model; live sandboxes."""
+    out = await asyncio.to_thread(usage.summary, user.id)
+    # a sandbox lives at most SANDBOX_MAX_AGE_SECONDS, and creating one updates its session
+    since = utcnow() - timedelta(seconds=config.SANDBOX_MAX_AGE_SECONDS + 60)
+    live = []
+    for row in await asyncio.to_thread(repo_sessions_since, user.id, since):
+        if (state := await _status(row.id)) == "running":
+            live.append({"session_id": row.id, "title": row.title, "repo": row.repo, "sandbox_status": state})
+    return {**out, "active_sandboxes": live}
+
+
+async def _destroy_sandbox(ch, sid):
+    """Shut the session's runner down (best effort), delete its Job and its queues."""
     if await _status(sid) == "running":
         try:
             await _control(ch, sid, "control.shutdown")  # best effort
@@ -432,4 +480,3 @@ async def stop(sid: str, user: User = Depends(auth.current_user)):
         raise HTTPException(502, f"destroy_sandbox failed: {redact(str(e))[:500]}")
     for q in await _queues(ch, sid):
         await q.delete(if_unused=False, if_empty=False)
-    return {"id": sid, "status": "stopped"}

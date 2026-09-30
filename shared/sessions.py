@@ -5,7 +5,7 @@ from sqlmodel import delete, select, update
 
 from shared.db import get_db
 from shared.events import append_event, redact
-from shared.models import STATUSES, Session, SessionEvent, as_utc, make_title, utcnow
+from shared.models import STATUSES, Session, SessionEvent, Usage, as_utc, make_title, utcnow
 
 ACTIVE = ("provisioning", "queued", "running")  # a sandbox or a worker is (about to be) busy with it
 STALE_AGE = timedelta(minutes=30)     # crash sweep: only sessions older than this...
@@ -30,6 +30,7 @@ def get_session(sid) -> Session | None:
 
 def delete_session(sid):
     with get_db() as s:
+        s.exec(delete(Usage).where(Usage.session_id == sid))
         s.exec(delete(SessionEvent).where(SessionEvent.session_id == sid))
         s.exec(delete(Session).where(Session.id == sid))
 
@@ -103,6 +104,14 @@ def list_sessions(user_id) -> list[Session]:
     with get_db() as s:
         return list(s.exec(select(Session).where(Session.user_id == user_id)
                            .order_by(Session.updated_at.desc(), Session.created_at.desc())).all())
+
+
+def repo_sessions_since(user_id, since) -> list[Session]:
+    """The user's sessions with a repo that changed since `since`, newest first."""
+    with get_db() as s:
+        return list(s.exec(select(Session).where(Session.user_id == user_id, Session.repo.is_not(None),
+                                                 Session.updated_at >= since)
+                           .order_by(Session.updated_at.desc())).all())
 
 
 def sweep_stale_sessions() -> list[str]:

@@ -6,7 +6,8 @@ from sqlmodel import Field, SQLModel
 
 from shared import config
 
-STATUSES = ("pending", "provisioning", "queued", "running", "done", "failed", "interrupted", "stopped")
+STATUSES = ("pending", "provisioning", "queued", "running", "done", "failed", "interrupted", "stopped",
+            "limited")  # limited: stopped at the user's daily token limit; it can go on tomorrow
 TITLE_LENGTH = 60
 
 
@@ -87,4 +88,19 @@ class Installation(SQLModel, table=True):
     id: int = Field(primary_key=True, sa_type=sa.BigInteger, sa_column_kwargs={"autoincrement": False})  # GitHub's
     user_id: str = Field(foreign_key="users.id", index=True)
     account_login: str  # the user or organization it is installed on
+    created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
+
+
+class Usage(SQLModel, table=True):
+    """One LLM call's tokens."""
+    __tablename__ = "usage"
+    __table_args__ = (sa.Index("ix_usage_user_id_created_at", "user_id", "created_at"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: str | None = Field(default=None, foreign_key="users.id")  # None: a session from the brain CLI
+    session_id: str = Field(foreign_key="sessions.id", index=True)
+    provider: str
+    model: str  # the session's catalog id, e.g. "openai:gpt-4o-mini"
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
     created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
