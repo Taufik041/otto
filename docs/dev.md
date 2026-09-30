@@ -57,6 +57,8 @@ In the App's settings on GitHub:
 - **Request user authorization (OAuth) during installation:** on. GitHub then sends installs and
   updates to the callback URL, with a `code`; the **Setup URL** is disabled, and there is none.
 - **Redirect on update:** on, if GitHub offers it, so changes to the repo selection come back.
+  Changes made on github.com arrive without Otto's state: the gateway accepts them only for a
+  signed-in user whose GitHub account can access the installation, and only refreshes its caches.
 - **Expire user authorization tokens:** either; Otto uses the user token once and doesn't keep it.
 - **Client secret:** generate one for `GITHUB_CLIENT_SECRET`.
 - **Permissions:** as before (repository contents and pull requests read & write, metadata read).

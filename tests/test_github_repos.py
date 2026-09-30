@@ -176,6 +176,54 @@ def test_setup_action_update_for_an_unknown_installation_is_checked_like_an_inst
     assert links() == []
 
 
+def update_from_github(client, iid=INST, code="c2"):
+    """Repos changed on github.com: GitHub comes back with a code, but without Otto's state."""
+    params = {"installation_id": iid, "setup_action": "update"}
+    return callback(client, **({"code": code, **params} if code else params))
+
+
+@pytest.fixture
+def installed(client, fake_github, me, clock):
+    """me has INST (repo otto_test), and the repo list is cached; code c2 is my GitHub again."""
+    token = fake_github.add_user("c1", gid=101, login="Taufik041")
+    fake_github.add_installation(INST, "Taufik041", repos=["Taufik041/otto_test"], users=[token])
+    fake_github.codes["c2"] = token
+    install(client, fake_github)
+    assert len(client.get("/repos").json()) == 1
+    fake_github.repos[INST].append(repo("Taufik041/portfolio"))  # picked on github.com
+    return fake_github
+
+
+def test_a_repo_change_made_on_github_refreshes_the_caches(client, installed):
+    r = update_from_github(client)
+
+    assert r.status_code in (302, 307)
+    assert r.headers["location"] == "http://localhost:5173/settings/github"
+    assert "/user/installations" in installed.paths("GET")[-1:]
+    assert len(client.get("/repos").json()) == 2
+
+
+def test_a_repo_change_made_on_github_needs_a_login(client, installed):
+    client.cookies.delete(auth.COOKIE)
+    before = list(installed.calls)
+    assert update_from_github(client).status_code == 400
+    assert installed.calls == before
+
+
+def test_a_repo_change_made_on_github_needs_githubs_confirmation(client, installed):
+    installed.add_user("c3", gid=303, login="stranger")
+    assert update_from_github(client, code="c3").status_code == 400  # not an installation of theirs
+    assert update_from_github(client, code=None).status_code == 400
+    assert update_from_github(client, code="bad-code").status_code == 400
+    assert len(client.get("/repos").json()) == 1  # still the cached list
+
+
+def test_a_stateless_install_is_still_400(client, installed):
+    r = callback(client, code="c2", installation_id=777, setup_action="install")
+    assert r.status_code == 400
+    assert [i for i, _, _ in links()] == [INST]
+
+
 # --- GET /github, DELETE /github/installations/{id} ---------------------------------------
 
 def test_github_when_not_connected(client, me):

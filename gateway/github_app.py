@@ -5,7 +5,9 @@ Every call to GitHub goes through request(), which the tests replace.
 There is no separate setup URL: with "Request user authorization (OAuth) during installation" on,
 GitHub sends installs and updates to the callback URL too, so /auth/github/callback handles both
 flows. An installation_id from the query is never trusted on its own: it must show up in
-GET /user/installations for the user who just authorized.
+GET /user/installations for the user who just authorized. Repos picked on github.com come back
+as setup_action=update without Otto's state: that only refreshes caches, for a signed-in user
+whose GitHub confirms the installation, and never links anything.
 
 The OAuth state is a signed token (auth.sign, audience "github-state") holding the flow, the user
 signed in when it started, and a nonce that must match a cookie set in this browser. So a state
@@ -258,6 +260,8 @@ def github_callback(request: Request, state: str | None = None, code: str | None
                     setup_action: str | None = None, user: User | None = Depends(auth.optional_user)):
     """Both flows come back here: an install or update (installation_id and setup_action in the
     query), or a sign-in / account link."""
+    if state is None and setup_action == "update" and installation_id is not None:
+        return _updated_on_github(user, installation_id, code)
     claims = _check_state(request, state, user)
     if error:  # the user cancelled on GitHub
         return _finish(f"{config.FRONTEND_URL}/?github_error={quote(error)}", claims)
@@ -301,6 +305,30 @@ def _sign_in(current: User | None, gh: dict) -> User:
     return user
 
 
+def _confirmed(code) -> tuple[str, dict[int, dict]]:
+    """Exchange the code; the user token and the installations that GitHub user can access."""
+    if not code:
+        raise HTTPException(400, "GitHub sent no authorization code; start again")
+    try:
+        token = exchange_code(code)
+        return token, {i["id"]: i for i in _pages(f"{API}/user/installations", token, "installations")}
+    except GitHubError as e:
+        print(f"[github] install check failed: {e}", flush=True)
+        raise _refused(e, "GitHub didn't confirm the installation; try again") from None
+
+
+def _updated_on_github(user: User | None, installation_id: int, code: str | None):
+    """Repos picked on github.com (no state of ours): refresh the caches, if the user is signed in
+    and GitHub says the one who authorized can access the installation. Links nothing."""
+    if user is None:
+        raise HTTPException(400, "sign in to Otto, then change the repos from Settings")
+    _, mine = _confirmed(code)
+    if installation_id not in mine:
+        raise HTTPException(400, "that installation isn't one your GitHub account can access")
+    forget(user.id, installation_id)
+    return RedirectResponse(f"{config.FRONTEND_URL}/settings/github", 302)
+
+
 def _installed(user: User, installation_id: int, setup_action: str, code: str | None, claims):
     done = _finish(f"{config.FRONTEND_URL}/settings/github", claims)
     with get_db() as s:
@@ -308,11 +336,8 @@ def _installed(user: User, installation_id: int, setup_action: str, code: str | 
     if setup_action == "update" and linked is not None and linked.user_id == user.id:
         forget(user.id, installation_id)  # the user changed which repos the App sees
         return done
-    if not code:
-        raise HTTPException(400, "GitHub sent no authorization code; start again")
+    token, mine = _confirmed(code)
     try:
-        token = exchange_code(code)
-        mine = {i["id"]: i for i in _pages(f"{API}/user/installations", token, "installations")}
         gh = github_user(token)
     except GitHubError as e:
         print(f"[github] install check failed: {e}", flush=True)
