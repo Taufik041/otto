@@ -79,11 +79,11 @@ def user_from_token(token) -> User | None:
 
 
 def optional_user(request: Request) -> User | None:
+    """The signed-in user, or None; routes that work either way depend on this."""
     return user_from_token(request.cookies.get(COOKIE))
 
 
-def current_user(request: Request) -> User:
-    user = optional_user(request)
+def current_user(user: User | None = Depends(optional_user)) -> User:
     if user is None:
         raise HTTPException(401, "sign in first")
     return user

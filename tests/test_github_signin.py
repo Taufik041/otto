@@ -87,6 +87,37 @@ def test_a_logged_in_user_links_github_to_their_account(client, fake_github):
     assert [(u.id, u.github_id) for u in users()] == [(me["id"], 101)]
 
 
+def test_start_reads_the_login_cookie(client, fake_github):
+    me = signup(client)
+    claims = auth.verify(start(client), "github-state")
+    assert claims["uid"] == me["id"]
+
+
+def test_a_state_started_signed_out_links_to_whoever_is_signed_in_at_the_callback(client, fake_github):
+    """E.g. a prefetch of /start sent without cookies: never make a second account for a signed-in user."""
+    state = start(client)  # uid null
+    me = signup(client, email="taufik@example.com")
+    fake_github.add_user("c1", gid=101, login="Taufik041")
+
+    r = callback(client, code="c1", state=state)
+
+    assert r.status_code in (302, 307)
+    assert client.get("/me").json()["id"] == me["id"]
+    assert [(u.id, u.github_id) for u in users()] == [(me["id"], 101)]
+
+
+def test_a_signed_out_state_never_takes_over_github_linked_elsewhere(client, fake_github):
+    fake_github.add_user("c0", gid=101, login="Taufik041")
+    callback(client, code="c0", state=start(client))  # 101 has an account of its own
+    client.cookies.clear()
+    state = start(client)
+    other = signup(client, email="other@example.com")
+    fake_github.add_user("c1", gid=101, login="Taufik041")
+
+    assert callback(client, code="c1", state=state).status_code == 409
+    assert client.get("/me").json()["id"] == other["id"] and len(users()) == 2
+
+
 def test_accounts_are_never_merged_by_email(client, fake_github):
     email_user = signup(client, email="taufik@example.com")
     client.cookies.clear()

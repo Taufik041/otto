@@ -179,15 +179,16 @@ def _redirect_with_state(url, params, flow, user) -> RedirectResponse:
     return r
 
 
-def _check_state(request: Request, state) -> dict:
-    """The state's claims if it is valid, was started in this browser, by whoever is signed in now."""
+def _check_state(request: Request, state, user: User | None) -> dict:
+    """The state's claims if it is valid and was started in this browser, by whoever is signed in
+    now. A state started signed out is fine for a signed-in user (a prefetch of /start may come
+    without cookies): the callback then links GitHub to them, and never makes a second account."""
     claims = auth.verify(state, "github-state") if state else None
     nonce = str((claims or {}).get("nonce", ""))
     cookie = request.cookies.get(nonce_cookie(nonce)) if nonce else None
     if not cookie or not secrets.compare_digest(nonce, cookie):
         raise HTTPException(400, "invalid or expired GitHub state; start again")
-    user = auth.optional_user(request)
-    if claims.get("uid") != (user.id if user else None):
+    if claims.get("uid") is not None and claims["uid"] != (user.id if user else None):
         raise HTTPException(400, "you signed in or out since this started; start again")
     return claims
 
@@ -215,11 +216,11 @@ def github_user(user_token) -> dict:
 
 
 @router.get("/auth/github/start")
-def github_start(request: Request):
+def github_start(user: User | None = Depends(auth.optional_user)):
     """Sign in with GitHub; when signed in already, link GitHub to this account."""
     _need_oauth()
     return _redirect_with_state(f"{WEB}/login/oauth/authorize", {"client_id": config.GITHUB_CLIENT_ID},
-                                "signin", auth.optional_user(request))
+                                "signin", user)
 
 
 @router.get("/github/install")
@@ -234,17 +235,17 @@ def github_install(user: User = Depends(auth.current_user)):
 @router.get("/auth/github/callback")
 def github_callback(request: Request, state: str | None = None, code: str | None = None,
                     error: str | None = None, installation_id: int | None = None,
-                    setup_action: str | None = None):
+                    setup_action: str | None = None, user: User | None = Depends(auth.optional_user)):
     """Both flows come back here: an install or update (installation_id and setup_action in the
     query), or a sign-in / account link."""
-    claims = _check_state(request, state)
+    claims = _check_state(request, state, user)
     if error:  # the user cancelled on GitHub
         return _finish(f"{config.FRONTEND_URL}/?github_error={quote(error)}", claims)
     installing = installation_id is not None and setup_action is not None
     if installing != (claims["flow"] == "install"):
         raise HTTPException(400, "unexpected GitHub callback; start again")
     if installing:
-        return _installed(auth.optional_user(request), installation_id, setup_action, code, claims)
+        return _installed(user, installation_id, setup_action, code, claims)
     if not code:
         raise HTTPException(400, "unexpected GitHub callback; start again")
     try:
@@ -252,7 +253,7 @@ def github_callback(request: Request, state: str | None = None, code: str | None
     except GitHubError as e:
         print(f"[github] sign-in failed: {e}", flush=True)
         raise HTTPException(400, "GitHub sign-in failed; try again") from None
-    user = _sign_in(auth.optional_user(request), gh)
+    user = _sign_in(user, gh)
     r = _finish(config.FRONTEND_URL, claims)
     auth.set_login(r, user.id)
     return r
