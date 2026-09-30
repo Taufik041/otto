@@ -14,7 +14,7 @@ from datetime import timedelta
 
 import anyio
 from aio_pika import DeliveryMode, Message, connect_robust
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.websockets import WebSocketDisconnect
@@ -25,6 +25,7 @@ from brain.bus import bus_call, start_consumer, stop_consumer
 from gateway import auth, github_app, live
 from orchestrator import sandbox
 from shared import config, usage
+from shared.accounts import delete_account
 from shared.bus import SESSIONS_QUEUE, actions_queue, chat_job, resume_job, results_queue, start_job
 from shared.db import get_engine, init_db
 from shared.events import append_event, load_events, redact
@@ -447,6 +448,23 @@ async def stop_sandbox(sid: str, user: User = Depends(auth.current_user)):
     if row.repo:
         await _destroy_sandbox(app.state.ch, sid)
     return {"id": sid, "status": get_session(sid).status, "sandbox_status": "missing"}
+
+
+@app.delete("/me")
+async def delete_me(response: Response, user: User = Depends(auth.current_user)):
+    """Delete the account: stop the user's sessions and sandboxes, then delete everything of theirs."""
+    for row in await asyncio.to_thread(list_sessions, user.id):
+        if row.status in ACTIVE:
+            set_status(row.id, "stopped")  # a worker on it ends after its current step
+        if row.repo:
+            try:
+                await _destroy_sandbox(app.state.ch, row.id)
+            except Exception as e:  # best effort: a sandbox ends by itself within SANDBOX_MAX_AGE_SECONDS
+                print(f"[gateway] deleting user {user.id}: sandbox of {row.id}: {e}", flush=True)
+    await asyncio.to_thread(delete_account, user.id)
+    github_app.forget(user.id)
+    auth.clear_login(response)
+    return {"ok": True}
 
 
 @app.get("/usage")

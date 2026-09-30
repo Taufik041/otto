@@ -185,6 +185,54 @@ def me(user: User = Depends(current_user)):
     return me_json(user)
 
 
+class MeUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=100)
+    default_model: str | None = None  # a catalog id; null: the server's default
+
+    @field_validator("name")
+    @classmethod
+    def named(cls, v):
+        if v is None or not v.strip():
+            raise ValueError("a name is required")
+        return v.strip()
+
+    @field_validator("default_model")
+    @classmethod
+    def available_model(cls, v):
+        if v is not None and not config.is_available(v):
+            raise ValueError(f"unknown or unavailable model {v!r}; see GET /models")
+        return v
+
+
+@router.patch("/me")
+def update_me(body: MeUpdate, user: User = Depends(current_user)):
+    """Change only the fields given."""
+    with get_db() as s:
+        row = s.get(User, user.id)
+        for field in body.model_fields_set:
+            setattr(row, field, getattr(body, field))
+        s.add(row)
+    return me_json(row)
+
+
+class PasswordChange(BaseModel):
+    current: str = Field(max_length=1024)
+    new: str = Field(max_length=1024)
+
+    _new = field_validator("new")(strong_password)
+
+
+@router.post("/me/password")
+def change_password(body: PasswordChange, user: User = Depends(current_user)):
+    if user.password_hash is None:
+        raise HTTPException(400, "this account signs in with GitHub and has no password")
+    if not password_ok(user, body.current):
+        raise HTTPException(403, "the current password is wrong")
+    with get_db() as s:
+        s.exec(update(User).where(User.id == user.id).values(password_hash=hash_password(body.new)))
+    return {"ok": True}
+
+
 # --- forgot / reset password -----------------------------------------------------------
 
 class Forgot(BaseModel):
