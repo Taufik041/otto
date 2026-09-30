@@ -267,3 +267,11 @@ def test_repo_access_is_case_insensitive_and_says_which_installation(client, con
     assert github_app.repo_access(me["id"], "taufik041/OTTO_TEST")["full_name"] == "Taufik041/otto_test"
     assert github_app.repo_access(me["id"], "some-org/api")["installation_id"] == 777
     assert github_app.repo_access(me["id"], "Taufik041/nope") is None
+
+
+@pytest.mark.parametrize("app_id, key_path", [(None, "/keys/app.pem"), ("123", ""), ("123", "/no/such/key.pem")])
+def test_an_unconfigured_app_is_a_clear_github_error(monkeypatch, app_id, key_path):
+    monkeypatch.setattr(config, "GITHUB_APP_ID", app_id)
+    monkeypatch.setattr(config, "GITHUB_APP_KEY_PATH", key_path)
+    with pytest.raises(github_app.GitHubError, match="GITHUB_APP"):
+        github_app.make_jwt()

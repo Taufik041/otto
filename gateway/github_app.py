@@ -86,7 +86,12 @@ def _headers(token) -> dict:
 # --- the App itself -------------------------------------------------------------------
 
 def make_jwt():
-    key = open(config.GITHUB_APP_KEY_PATH).read()
+    if not (config.GITHUB_APP_ID and config.GITHUB_APP_KEY_PATH):
+        raise GitHubError("the GitHub App isn't configured: set GITHUB_APP_ID and GITHUB_APP_KEY_PATH")
+    try:
+        key = open(config.GITHUB_APP_KEY_PATH).read()
+    except OSError as e:
+        raise GitHubError(f"can't read GITHUB_APP_KEY_PATH: {e}") from None
     now = int(time.time())
     payload = {"iat": now - 60, "exp": now + 600, "iss": config.GITHUB_APP_ID}
     return jwt.encode(payload, key, algorithm="RS256")
