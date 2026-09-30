@@ -29,8 +29,10 @@ def get_session(sid) -> Session | None:
 
 
 def delete_session(sid):
+    """Delete the session and its events. Its usage stays (without the session): it still counts
+    against the user's daily limit."""
     with get_db() as s:
-        s.exec(delete(Usage).where(Usage.session_id == sid))
+        s.exec(update(Usage).where(Usage.session_id == sid).values(session_id=None))
         s.exec(delete(SessionEvent).where(SessionEvent.session_id == sid))
         s.exec(delete(Session).where(Session.id == sid))
 

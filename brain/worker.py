@@ -67,9 +67,13 @@ async def handle(conn, msg, slots):
         except asyncio.CancelledError:
             raise
         except Exception:
+            if get_session(sid) is None:  # deleted mid-turn: its events had nowhere to go
+                print(f"[worker] session {sid} was deleted", flush=True)
+                return
             traceback.print_exc()
             transition(sid, "failed", {"running"})  # the loop has usually done this already
-        print(f"[worker] session {sid} is {get_session(sid).status}", flush=True)
+        row = get_session(sid)
+        print(f"[worker] session {sid} {'was deleted' if row is None else 'is ' + row.status}", flush=True)
     finally:
         slots.release()
 

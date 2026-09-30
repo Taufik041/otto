@@ -11,7 +11,8 @@ from shared import config
 from shared.bus import SESSIONS_QUEUE, actions_queue, make_result, results_queue
 from shared.db import get_db
 from shared.events import append_event, load_events
-from shared.models import Session, SessionEvent, utcnow
+from shared import usage
+from shared.models import Session, SessionEvent, Usage, utcnow
 from shared.sessions import create_session, get_session, set_status
 from gateway import app as gateway_app, live
 from tests.conftest import ORIGIN
@@ -266,15 +267,15 @@ def test_follow_up_recreate_failure_is_502(client, env):
     assert jobs(ch) == []
 
 
-# --- DELETE ----------------------------------------------------------------------
+# --- stop -----------------------------------------------------------------------
 
-def test_delete_session(client, env):
+def test_stop_session(client, env):
     ch, orch, runners = env
     sid = finished_session(client.user_id)
     orch.status[sid] = "running"
     runners.alive.add(sid)
 
-    r = client.delete(f"/sessions/{sid}")
+    r = client.post(f"/sessions/{sid}/stop")
 
     assert r.status_code == 200 and r.json() == {"id": sid, "status": "stopped"}
     assert actions(ch, sid) == ["control.shutdown"]
@@ -284,13 +285,62 @@ def test_delete_session(client, env):
     assert get_session(sid).status == "stopped"
 
 
-def test_delete_without_a_sandbox(client, env):
+def test_stop_without_a_sandbox(client, env):
     ch, orch, _ = env
     sid = finished_session(client.user_id)
-    assert client.delete(f"/sessions/{sid}").status_code == 200
+    assert client.post(f"/sessions/{sid}/stop").status_code == 200
     assert actions(ch, sid) == []  # nothing to shut down
     assert get_session(sid).status == "stopped"
+    assert client.post("/sessions/nope/stop").status_code == 404
+
+
+# --- DELETE ----------------------------------------------------------------------
+
+def test_delete_session_stops_its_sandbox_and_deletes_it_all(client, env):
+    ch, orch, runners = env
+    sid = finished_session(client.user_id, status="running")
+    orch.status[sid] = "running"
+    runners.alive.add(sid)
+    append_event(sid, "note", {})
+    with get_db() as s:
+        s.add(Usage(user_id=client.user_id, session_id=sid, provider="openrouter", model="m",
+                    prompt_tokens=10, completion_tokens=5))
+
+    r = client.delete(f"/sessions/{sid}")
+
+    assert r.status_code == 200 and r.json() == {"id": sid, "deleted": True}
+    assert actions(ch, sid) == ["control.shutdown"]
+    assert orch.calls == [("destroy", sid)]
+    for q in (actions_queue(sid), results_queue(sid)):
+        assert ch.queues[q].deleted == (False, False)
+    assert get_session(sid) is None and load_events(sid) == []
+    assert client.get(f"/sessions/{sid}").status_code == 404
+    assert [s["id"] for s in client.get("/sessions").json()] == []
+    # its tokens still count against the day's limit
+    assert usage.used_today(client.user_id) == 15
+
+
+def test_delete_a_plain_chat(client, env):
+    ch, orch, _ = env
+    sid = client.post("/sessions", json={"message": "hi"}).json()["id"]
+    orch.calls.clear()
+    assert client.delete(f"/sessions/{sid}").status_code == 200
+    assert orch.calls == [] and actions(ch, sid) == []
+    assert get_session(sid) is None
+    assert client.delete(f"/sessions/{sid}").status_code == 404
     assert client.delete("/sessions/nope").status_code == 404
+
+
+def test_a_sandbox_that_wont_stop_keeps_the_session(client, env, monkeypatch):
+    ch, orch, _ = env
+    sid = finished_session(client.user_id)
+
+    def fail(sid):
+        raise RuntimeError("k8s is down")
+
+    monkeypatch.setattr(sandbox, "destroy_sandbox", fail)
+    assert client.delete(f"/sessions/{sid}").status_code == 502
+    assert get_session(sid) is not None
 
 
 # --- startup ---------------------------------------------------------------------

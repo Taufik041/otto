@@ -30,8 +30,9 @@ from shared.bus import SESSIONS_QUEUE, actions_queue, chat_job, resume_job, resu
 from shared.db import get_engine, init_db
 from shared.events import append_event, load_events, redact
 from shared.models import User, as_utc, utcnow
-from shared.sessions import (ACTIVE, attach_repo, count_active, create_session, get_session, list_sessions,
-                             repo_sessions_since, set_status, set_title, sweep_stale_sessions, transition)
+from shared.sessions import (ACTIVE, attach_repo, count_active, create_session, delete_session, get_session,
+                             list_sessions, repo_sessions_since, set_status, set_title, sweep_stale_sessions,
+                             transition)
 
 PING_TIMEOUT = 5  # seconds to wait for a warm runner to answer control.ping / control.shutdown
 PING_INTERVAL = 20  # seconds between WebSocket heartbeats
@@ -428,14 +429,28 @@ async def _wake_sandbox(ch, sid, repo):
     append_event(sid, "sandbox.recreated", {"previous": state})
 
 
-@app.delete("/sessions/{sid}")
+@app.post("/sessions/{sid}/stop")
 async def stop(sid: str, user: User = Depends(auth.current_user)):
+    """Stop the session and its sandbox; it stays in the list, and a follow-up starts it again."""
     row = _row(sid, user)
     # stopped first: a worker still running this session ends after its current step
     set_status(sid, "stopped")
     if row.repo:  # a plain chat has no sandbox
         await _destroy_sandbox(app.state.ch, sid)
     return {"id": sid, "status": "stopped"}
+
+
+@app.delete("/sessions/{sid}")
+async def delete_chat(sid: str, user: User = Depends(auth.current_user)):
+    """Delete the chat: stop its sandbox (and its queues), then delete its events and the session.
+    Its token usage stays on the user's account."""
+    row = _row(sid, user)
+    if row.status in ACTIVE:
+        set_status(sid, "stopped")  # a worker on it ends after its current step
+    if row.repo:  # a plain chat has no sandbox or queues
+        await _destroy_sandbox(app.state.ch, sid)
+    await asyncio.to_thread(delete_session, sid)
+    return {"id": sid, "deleted": True}
 
 
 @app.post("/sessions/{sid}/sandbox/stop")

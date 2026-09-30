@@ -1,7 +1,9 @@
 import pytest
+from sqlmodel import select
 
+from shared.db import get_db
 from shared.events import append_event, load_events
-from shared.models import make_title
+from shared.models import Usage, make_title
 from shared.sessions import attach_repo, create_session, delete_session, get_session, set_status
 
 
@@ -39,12 +41,16 @@ def test_set_status_rejects_unknown_status(db):
         set_status("s1", "exploded")
 
 
-def test_delete_session_removes_row_and_events(db):
+def test_delete_session_removes_row_and_events_but_keeps_the_usage(db):
     create_session("s1", task="t", repo=None, model="m")
     append_event("s1", "x", {})
+    with get_db() as s:
+        s.add(Usage(session_id="s1", provider="openrouter", model="m", prompt_tokens=3, completion_tokens=4))
     delete_session("s1")
     assert get_session("s1") is None
     assert load_events("s1") == []
+    with get_db() as s:
+        assert [(u.session_id, u.prompt_tokens) for u in s.exec(select(Usage)).all()] == [(None, 3)]
     # the id can be reused, and seq starts over
     create_session("s1", task="t2", repo=None, model="m")
     assert [e.seq for e in load_events("s1")] == [1]

@@ -98,7 +98,7 @@ class Usage(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     user_id: str | None = Field(default=None, foreign_key="users.id")  # None: a session from the brain CLI
-    session_id: str = Field(foreign_key="sessions.id", index=True)
+    session_id: str | None = Field(default=None, foreign_key="sessions.id", index=True)  # None: since deleted
     provider: str
     model: str  # the session's catalog id, e.g. "openai:gpt-4o-mini"
     prompt_tokens: int = 0

@@ -79,7 +79,7 @@ def test_a_plain_chat_has_no_sandbox_to_ask_about_or_stop(client, env):
     ch, orch, _ = env
     sid = chat(client)
     assert client.get(f"/sessions/{sid}").json()["sandbox_status"] is None
-    assert client.delete(f"/sessions/{sid}").status_code == 200
+    assert client.post(f"/sessions/{sid}/stop").status_code == 200
     assert orch.calls == [] and get_session(sid).status == "stopped"
 
 

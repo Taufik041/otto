@@ -36,6 +36,7 @@ def test_another_users_session_is_404_everywhere(client, users, env):
     assert client.get(f"/sessions/{SID}/events").status_code == 404
     assert client.post(f"/sessions/{SID}/messages", json={"text": "hi"}).status_code == 404
     assert client.delete(f"/sessions/{SID}").status_code == 404
+    assert client.post(f"/sessions/{SID}/stop").status_code == 404
     assert client.patch(f"/sessions/{SID}", json={"title": "mine now"}).status_code == 404
     assert "secret" not in client.get("/sessions").text
     assert env[1].calls == []

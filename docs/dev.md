@@ -79,6 +79,9 @@ JSON content type whenever there is a body.
 6. `POST /sessions/{id}/messages` with `{"text": "fix the failing tests", "repo": "Taufik041/otto_test"}`
    attaches the repo; the agent works in a sandbox and opens a PR (`pr.opened` in the events).
 7. `GET /usage` shows the tokens.
+   `POST /sessions/{id}/stop` stops a chat (and its sandbox); `POST /sessions/{id}/sandbox/stop`
+   stops just the sandbox; `DELETE /sessions/{id}` deletes the chat and its events (its tokens
+   still count toward the day).
 8. Lower your limit, and the next message is a 429 `{"code": "daily_limit", ...}`:
 
        docker exec otto-pg psql -U otto -c "UPDATE users SET daily_token_limit = 100 WHERE email = 'you@example.com'"
