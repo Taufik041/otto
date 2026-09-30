@@ -1,10 +1,15 @@
 from contextlib import contextmanager
+from pathlib import Path
 
-from sqlalchemy import event, inspect, text
-from sqlmodel import SQLModel, Session as DbSession, create_engine
+from alembic import command
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+from sqlalchemy import event, inspect
+from sqlmodel import Session as DbSession, create_engine
 
 from shared import config
 
+MIGRATIONS = Path(__file__).resolve().parent / "migrations"
 _engine = None
 
 
@@ -25,33 +30,32 @@ def get_engine():
     return _engine
 
 
-def _add_missing_columns(engine):
-    """Stand-in for migrations: add new nullable columns to tables that already exist."""
-    existing = inspect(engine)
-    q = engine.dialect.identifier_preparer.quote
-    with engine.begin() as conn:
-        for table in SQLModel.metadata.sorted_tables:
-            if not existing.has_table(table.name):
-                continue
-            have = {c["name"] for c in existing.get_columns(table.name)}
-            for col in table.columns:
-                if col.name in have:
-                    continue
-                if not col.nullable:
-                    raise RuntimeError(f"{table.name}.{col.name} is new and NOT NULL; "
-                                       "recreate the dev database (no migrations yet)")
-                conn.execute(text(f"ALTER TABLE {q(table.name)} ADD COLUMN {q(col.name)} "
-                                  f"{col.type.compile(dialect=engine.dialect)}"))
+def alembic_config() -> Config:
+    cfg = Config()  # alembic.ini is for the CLI; this works wherever the package is installed
+    cfg.set_main_option("script_location", str(MIGRATIONS))
+    return cfg
+
+
+def head_revision() -> str:
+    return ScriptDirectory.from_config(alembic_config()).get_current_head()
 
 
 def init_db(url=None):
-    """Create the tables (no migrations yet). Connects, so it raises if the DB is unreachable."""
+    """Migrate the database to the latest schema (alembic upgrade head). Connects, so it raises
+    if the DB is unreachable."""
     global _engine
     if url is not None:
         _engine = _make_engine(url)
-    import shared.models  # noqa: F401  registers the tables on SQLModel.metadata
-    SQLModel.metadata.create_all(get_engine())
-    _add_missing_columns(get_engine())
+    engine = get_engine()
+    have = inspect(engine).get_table_names()
+    if "sessions" in have and "alembic_version" not in have:
+        raise RuntimeError(
+            "the database was created before Otto used migrations; reset it (see docs/dev.md): "
+            "docker exec otto-pg psql -U otto -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public'")
+    cfg = alembic_config()
+    with engine.begin() as conn:
+        cfg.attributes["connection"] = conn
+        command.upgrade(cfg, "head")
 
 
 @contextmanager
