@@ -16,6 +16,34 @@ def no_github(monkeypatch):
     monkeypatch.setattr(config, "GITHUB_APP_KEY_PATH", "")
     monkeypatch.setattr(config, "GITHUB_TOKEN", None)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(config, "GITHUB_CLIENT_ID", None)
+    monkeypatch.setattr(config, "GITHUB_CLIENT_SECRET", None)
+    monkeypatch.setattr(config, "GITHUB_APP_SLUG", None)
+
+    from gateway import github_app
+
+    def no_network(*a, **kw):
+        raise AssertionError("a test tried to call GitHub; use the fake_github fixture")
+
+    monkeypatch.setattr(github_app, "request", no_network)
+    github_app.forget_all()
+
+
+@pytest.fixture
+def fake_github(monkeypatch):
+    """GitHub OAuth and the App configured, answered by a FakeGitHub."""
+    from gateway import github_app
+    from tests.fakes import FakeGitHub
+
+    gh = FakeGitHub()
+    monkeypatch.setattr(config, "GITHUB_CLIENT_ID", "Iv1.testclient")
+    monkeypatch.setattr(config, "GITHUB_CLIENT_SECRET", "test-client-secret")
+    monkeypatch.setattr(config, "GITHUB_APP_SLUG", "ottoci")
+    monkeypatch.setattr(config, "GITHUB_APP_ID", "12345")
+    monkeypatch.setattr(config, "GITHUB_APP_KEY_PATH", "/nonexistent/key.pem")
+    monkeypatch.setattr(github_app, "make_jwt", lambda: "app-jwt")
+    monkeypatch.setattr(github_app, "request", gh)
+    return gh
 
 
 @pytest.fixture(autouse=True)

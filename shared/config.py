@@ -131,3 +131,6 @@ DAILY_TOKEN_LIMIT = int(os.environ.get("DAILY_TOKEN_LIMIT", "50000"))  # a new u
 GITHUB_APP_ID = os.environ.get("GITHUB_APP_ID")
 GITHUB_INSTALLATION_ID = os.environ.get("GITHUB_INSTALLATION_ID")
 GITHUB_APP_KEY_PATH = os.environ.get("GITHUB_APP_KEY_PATH", "")
+GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID")          # the App's user OAuth: sign-in, installs
+GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET")
+GITHUB_APP_SLUG = os.environ.get("GITHUB_APP_SLUG")            # github.com/apps/<slug>

@@ -18,7 +18,7 @@ from kubernetes.client.exceptions import ApiException
 from pydantic import BaseModel, Field, field_validator
 
 from brain.bus import bus_call, start_consumer, stop_consumer
-from gateway import auth, live
+from gateway import auth, github_app, live
 from orchestrator import sandbox
 from shared import config
 from shared.bus import SESSIONS_QUEUE, actions_queue, resume_job, results_queue, start_job
@@ -62,6 +62,7 @@ async def lifespan(app):
 
 app = FastAPI(title="Otto", lifespan=lifespan)
 app.include_router(auth.router)
+app.include_router(github_app.router)
 
 
 @app.middleware("http")
