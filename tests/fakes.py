@@ -246,6 +246,17 @@ class FakeRunners:
 PASSWORD = "correct horse battery"
 
 
+def make_user(user_id="u1", **fields):
+    """A user row, straight into the database."""
+    from shared.db import get_db
+    from shared.models import User
+
+    user = User(id=user_id, name=fields.pop("name", user_id), **fields)
+    with get_db() as s:
+        s.add(user)
+    return user
+
+
 def signup(client, email="taufik@example.com", name="Taufik Khan", password=PASSWORD) -> dict:
     """Sign up through the API; the client keeps the login cookie. Returns GET /me."""
     r = client.post("/auth/signup", json={"name": name, "email": email, "password": password})

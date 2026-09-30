@@ -44,7 +44,13 @@ def providers(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def accounts(monkeypatch):
-    """A known signing secret and limits, whatever .env says."""
+    """A known signing secret and limits, whatever .env says; cheap argon2 so signups are fast."""
+    from argon2 import PasswordHasher
+    from gateway import auth
+
+    cheap = PasswordHasher(time_cost=1, memory_cost=8, parallelism=1)
+    monkeypatch.setattr(auth, "hasher", cheap)
+    monkeypatch.setattr(auth, "DUMMY_HASH", cheap.hash("dummy"))
     monkeypatch.setattr(config, "AUTH_SECRET", "test-secret-" + "x" * 32)
     monkeypatch.setattr(config, "FRONTEND_URL", "http://localhost:5173")
     monkeypatch.setattr(config, "COOKIE_SECURE", False)

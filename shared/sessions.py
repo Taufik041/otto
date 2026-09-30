@@ -12,8 +12,8 @@ STALE_AGE = timedelta(minutes=30)     # crash sweep: only sessions older than th
 STALE_QUIET = timedelta(minutes=10)   # ...with no events for this long
 
 
-def create_session(sid, task, repo_url, model, status="pending") -> Session:
-    row = Session(id=sid, task=redact(task), repo_url=repo_url, model=model, status=status)
+def create_session(sid, task, repo_url, model, status="pending", user_id=None) -> Session:
+    row = Session(id=sid, task=redact(task), repo_url=repo_url, model=model, status=status, user_id=user_id)
     with get_db() as s:
         s.add(row)
     append_event(sid, "session.created", {"task": task, "repo_url": repo_url, "model": model})
@@ -79,9 +79,11 @@ def count_active() -> int:
         return s.exec(select(func.count()).select_from(Session).where(Session.status.in_(ACTIVE))).one()
 
 
-def list_sessions() -> list[Session]:
+def list_sessions(user_id) -> list[Session]:
+    """The user's sessions, newest first."""
     with get_db() as s:
-        return list(s.exec(select(Session).order_by(Session.created_at.desc())).all())
+        return list(s.exec(select(Session).where(Session.user_id == user_id)
+                           .order_by(Session.created_at.desc())).all())
 
 
 def sweep_stale_sessions() -> list[str]:

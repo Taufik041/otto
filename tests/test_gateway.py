@@ -14,9 +14,17 @@ from shared.events import append_event, load_events
 from shared.models import Session, SessionEvent, utcnow
 from shared.sessions import create_session, get_session, set_status
 from gateway import app as gateway_app, live
-from tests.fakes import FakeChannel, use_env
+from tests.conftest import ORIGIN
+from tests.fakes import FakeChannel, signup, use_env
 
 REPO = "https://github.com/Taufik041/otto_test"
+
+
+@pytest.fixture
+def client(client):
+    """Every test here acts as one signed-in user, client.user_id."""
+    client.user_id = signup(client)["id"]
+    return client
 
 
 def jobs(ch):
@@ -70,7 +78,7 @@ def test_create_sandbox_failure_is_502_and_failed(client, env):
 
 def test_too_many_active_sessions_is_429(client, env, monkeypatch):
     monkeypatch.setattr(config, "MAX_ACTIVE_SESSIONS", 2)
-    create_session("old1", task="t", repo_url=REPO, model="m", status="done")  # not active
+    create_session("old1", task="t", repo_url=REPO, model="m", status="done", user_id=client.user_id)  # not active
     assert client.post("/sessions", json={"repo_url": REPO, "task": "a"}).status_code == 201
     assert client.post("/sessions", json={"repo_url": REPO, "task": "b"}).status_code == 201
     r = client.post("/sessions", json={"repo_url": REPO, "task": "c"})
@@ -184,14 +192,14 @@ def test_list_get_and_events(client, env):
 
 # --- follow-ups ------------------------------------------------------------------
 
-def finished_session(sid="abcdef0123", status="done"):
-    create_session(sid, task="t", repo_url=REPO, model="m", status=status)
+def finished_session(user_id, sid="abcdef0123", status="done"):
+    create_session(sid, task="t", repo_url=REPO, model="m", status=status, user_id=user_id)
     return sid
 
 
 def test_follow_up_reuses_a_warm_sandbox(client, env):
     ch, orch, runners = env
-    sid = finished_session()
+    sid = finished_session(client.user_id)
     orch.status[sid] = "running"
     runners.alive.add(sid)
 
@@ -208,7 +216,7 @@ def test_follow_up_reuses_a_warm_sandbox(client, env):
 @pytest.mark.parametrize("state", ["running", "finished", "missing"])
 def test_follow_up_recreates_a_dead_sandbox(client, env, state):
     ch, orch, _ = env
-    sid = finished_session()
+    sid = finished_session(client.user_id)
     if state != "missing":
         orch.status[sid] = state  # "running" but its runner doesn't answer the ping
     ch.queue(actions_queue(sid)).put({"stale": "action"})
@@ -230,7 +238,7 @@ def test_follow_up_recreates_a_dead_sandbox(client, env, state):
 @pytest.mark.parametrize("status", ["provisioning", "queued", "running"])
 def test_follow_up_on_a_busy_session_is_409(client, env, status):
     ch, orch, _ = env
-    sid = finished_session(status=status)
+    sid = finished_session(client.user_id, status=status)
     r = client.post(f"/sessions/{sid}/messages", json={"text": "more"})
     assert r.status_code == 409
     assert orch.calls == [] and jobs(ch) == [] and actions(ch, sid) == []
@@ -243,7 +251,7 @@ def test_follow_up_on_missing_session_is_404(client):
 
 def test_follow_up_recreate_failure_is_502(client, env):
     ch, orch, _ = env
-    sid = finished_session()
+    sid = finished_session(client.user_id)
     orch.fail_create = RuntimeError("quota")
     r = client.post(f"/sessions/{sid}/messages", json={"text": "more"})
     assert r.status_code == 502
@@ -255,7 +263,7 @@ def test_follow_up_recreate_failure_is_502(client, env):
 
 def test_delete_session(client, env):
     ch, orch, runners = env
-    sid = finished_session()
+    sid = finished_session(client.user_id)
     orch.status[sid] = "running"
     runners.alive.add(sid)
 
@@ -271,7 +279,7 @@ def test_delete_session(client, env):
 
 def test_delete_without_a_sandbox(client, env):
     ch, orch, _ = env
-    sid = finished_session()
+    sid = finished_session(client.user_id)
     assert client.delete(f"/sessions/{sid}").status_code == 200
     assert actions(ch, sid) == []  # nothing to shut down
     assert get_session(sid).status == "stopped"
@@ -332,9 +340,9 @@ def test_no_live_listener_on_sqlite(env, fake_listener):
 WS = "wsses00001"
 
 
-def ws_session(n_events):
+def ws_session(user_id, n_events):
     """A session with events 1..n_events (1 is session.created)."""
-    create_session(WS, task="t", repo_url=REPO, model="m")
+    create_session(WS, task="t", repo_url=REPO, model="m", user_id=user_id)
     for i in range(2, n_events + 1):
         append_event(WS, "note", {"i": i})
 
@@ -347,8 +355,9 @@ def add(client, i, notify=True):
     return seq
 
 
-def connect(client, after_seq=0, sid=WS):
-    return client.websocket_connect(f"/sessions/{sid}/ws?after_seq={after_seq}")
+def connect(client, after_seq=0, sid=WS, origin=ORIGIN):
+    return client.websocket_connect(f"/sessions/{sid}/ws?after_seq={after_seq}",
+                                    headers={"origin": origin} if origin else {})
 
 
 def seqs(ws, n):
@@ -356,7 +365,7 @@ def seqs(ws, n):
 
 
 def test_ws_replays_events_after_after_seq_in_order(client):
-    ws_session(5)
+    ws_session(client.user_id, 5)
     with connect(client, after_seq=2) as ws:
         got = [ws.receive_json() for _ in range(3)]
         assert [e["seq"] for e in got] == [3, 4, 5]
@@ -367,7 +376,7 @@ def test_ws_replays_events_after_after_seq_in_order(client):
 
 
 def test_ws_streams_events_appended_after_connecting(client):
-    ws_session(1)
+    ws_session(client.user_id, 1)
     with connect(client) as ws:
         assert ws.receive_json()["type"] == "session.created"
         add(client, 2)
@@ -376,7 +385,7 @@ def test_ws_streams_events_appended_after_connecting(client):
 
 
 def test_ws_event_appended_between_subscribe_and_replay_is_sent_once(client, monkeypatch):
-    ws_session(1)
+    ws_session(client.user_id, 1)
     subscribe = live.subscribe
 
     def subscribe_then_race(sid):
@@ -393,7 +402,7 @@ def test_ws_event_appended_between_subscribe_and_replay_is_sent_once(client, mon
 
 
 def test_ws_duplicate_notification_is_sent_once(client):
-    ws_session(1)
+    ws_session(client.user_id, 1)
     with connect(client) as ws:
         assert seqs(ws, 1) == [1]
         seq = add(client, 2)
@@ -404,7 +413,7 @@ def test_ws_duplicate_notification_is_sent_once(client):
 
 
 def test_ws_gap_in_notifications_is_filled_in_order(client):
-    ws_session(3)
+    ws_session(client.user_id, 3)
     with connect(client, after_seq=2) as ws:
         assert seqs(ws, 1) == [3]
         add(client, 4, notify=False)  # 4 is never notified
@@ -415,7 +424,7 @@ def test_ws_gap_in_notifications_is_filled_in_order(client):
 
 
 def test_ws_resync_rereads_after_the_listener_reconnects(client):
-    ws_session(1)
+    ws_session(client.user_id, 1)
     with connect(client) as ws:
         assert seqs(ws, 1) == [1]
         add(client, 2, notify=False)  # committed while the listener was down
@@ -432,14 +441,14 @@ def test_ws_unknown_session_is_closed_with_4404(client):
 
 def test_ws_heartbeat(client, monkeypatch):
     monkeypatch.setattr(gateway_app, "PING_INTERVAL", 0.05)
-    ws_session(1)
+    ws_session(client.user_id, 1)
     with connect(client, after_seq=1) as ws:
         assert ws.receive_json() == {"type": "ping"}
         assert ws.receive_json() == {"type": "ping"}
 
 
 def test_ws_is_read_only_and_unsubscribes_on_disconnect(client):
-    ws_session(1)
+    ws_session(client.user_id, 1)
     with connect(client) as ws:
         assert seqs(ws, 1) == [1]
         ws.send_text("hello")  # ignored
@@ -463,7 +472,7 @@ def test_cors_allows_the_configured_origins(client):
 
 
 def test_ws_stream_error_closes_with_1011(client, monkeypatch):
-    ws_session(1)
+    ws_session(client.user_id, 1)
 
     def broken(*a, **kw):
         raise RuntimeError("db down")

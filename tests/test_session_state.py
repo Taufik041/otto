@@ -5,6 +5,7 @@ from shared.events import append_event, load_events
 from shared.models import Session, SessionEvent, utcnow
 from shared.sessions import (ACTIVE, count_active, create_session, get_session, list_sessions,
                              set_status, sweep_stale_sessions, transition)
+from tests.fakes import make_user
 
 
 def test_create_session_with_status():
@@ -24,11 +25,15 @@ def test_transition_only_from_allowed_statuses():
 
 
 def test_count_and_list():
+    make_user("u1")
+    make_user("u2")
     for i, status in enumerate(["provisioning", "queued", "running", "done", "failed", "stopped"]):
-        create_session(f"s{i}", task=f"t{i}", repo_url=None, model="m", status=status)
+        create_session(f"s{i}", task=f"t{i}", repo_url=None, model="m", status=status, user_id="u1")
+    create_session("other", task="t", repo_url=None, model="m", status="running", user_id="u2")
     assert ACTIVE == ("provisioning", "queued", "running")
-    assert count_active() == 3
-    assert [r.id for r in list_sessions()][:2] == ["s5", "s4"]  # newest first
+    assert count_active() == 4
+    assert [r.id for r in list_sessions("u1")][:2] == ["s5", "s4"]  # newest first
+    assert [r.id for r in list_sessions("u2")] == ["other"]
 
 
 def test_load_events_after_seq():

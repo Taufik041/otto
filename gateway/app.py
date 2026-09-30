@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager, suppress
 
 import anyio
 from aio_pika import DeliveryMode, Message, connect_robust
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.websockets import WebSocketDisconnect
@@ -25,6 +25,7 @@ from shared.bus import SESSIONS_QUEUE, actions_queue, resume_job, results_queue,
 from shared.db import get_engine, init_db
 from shared.events import append_event, load_events, redact
 from shared.github import parse_repo
+from shared.models import User
 from shared.sessions import (ACTIVE, count_active, create_session, get_session, list_sessions,
                              set_status, sweep_stale_sessions, transition)
 
@@ -114,9 +115,14 @@ def new_session_id() -> str:
     return uuid.uuid4().hex[:10]  # lowercase alphanumerics: a valid k8s name
 
 
-def _row(sid):
+def _owned(row, user) -> bool:
+    return row is not None and row.user_id is not None and row.user_id == user.id
+
+
+def _row(sid, user):
+    """The user's session; someone else's is 404 too, so ids reveal nothing."""
     row = get_session(sid)
-    if row is None:
+    if not _owned(row, user):
         raise HTTPException(404, f"no session {sid!r}")
     return row
 
@@ -177,7 +183,7 @@ def models():
 
 
 @app.post("/sessions", status_code=201)
-async def create(body: NewSession):
+async def create(body: NewSession, user: User = Depends(auth.current_user)):
     model = body.model or config.DEFAULT_MODEL
     if not config.is_available(model):
         raise HTTPException(503, f"default model {model!r} is not available: set OPENROUTER_API_KEY, "
@@ -186,7 +192,8 @@ async def create(body: NewSession):
         if count_active() >= config.MAX_ACTIVE_SESSIONS:
             raise HTTPException(429, f"{config.MAX_ACTIVE_SESSIONS} sessions are already active; try again later")
         sid = new_session_id()
-        create_session(sid, task=body.task, repo_url=body.repo_url, model=model, status="provisioning")
+        create_session(sid, task=body.task, repo_url=body.repo_url, model=model, status="provisioning",
+                       user_id=user.id)
     try:
         await asyncio.to_thread(sandbox.create_sandbox, sid, body.repo_url)
     except Exception as e:
@@ -197,20 +204,20 @@ async def create(body: NewSession):
 
 
 @app.get("/sessions")
-def sessions():
-    return [_summary(r) for r in list_sessions()]
+def sessions(user: User = Depends(auth.current_user)):
+    return [_summary(r) for r in list_sessions(user.id)]
 
 
 @app.get("/sessions/{sid}")
-async def session(sid: str):
-    row = _row(sid)
+async def session(sid: str, user: User = Depends(auth.current_user)):
+    row = _row(sid, user)
     return {**_summary(row), "model": row.model, "work_branch": row.work_branch,
             "updated_at": row.updated_at, "sandbox_status": await _status(sid)}
 
 
 @app.get("/sessions/{sid}/events")
-def events(sid: str, after_seq: int = Query(0, ge=0)):
-    _row(sid)
+def events(sid: str, after_seq: int = Query(0, ge=0), user: User = Depends(auth.current_user)):
+    _row(sid, user)
     return [{"seq": e.seq, "ts": e.ts, "type": e.type, "payload": e.payload}
             for e in load_events(sid, after_seq=after_seq)]
 
@@ -257,9 +264,20 @@ async def watch(websocket: WebSocket, sid: str, after_seq: int = Query(0, ge=0))
 
     A {"type": "ping"} goes out every PING_INTERVAL seconds. To resume after a drop, reconnect
     with after_seq=<last seq received>. Follow-ups go through POST /sessions/{sid}/messages.
+
+    Needs the login cookie and an Origin in CORS_ORIGINS (browsers send cookies on cross-site
+    WebSocket handshakes, and CORS doesn't cover them). Refusals close with 4403 (origin),
+    4401 (no login) or 4404 (not your session).
     """
-    await websocket.accept()  # then close, so the client sees the 4404 (a refused handshake is a bare 403)
-    if get_session(sid) is None:
+    await websocket.accept()  # then close, so the client sees the code (a refused handshake is a bare 403)
+    if websocket.headers.get("origin") not in config.CORS_ORIGINS:
+        await websocket.close(code=4403, reason="origin not allowed")
+        return
+    user = await asyncio.to_thread(auth.user_from_token, websocket.cookies.get(auth.COOKIE))
+    if user is None:
+        await websocket.close(code=4401, reason="sign in first")
+        return
+    if not _owned(await asyncio.to_thread(get_session, sid), user):
         await websocket.close(code=4404, reason=f"no session {sid!r}")
         return
     q = live.subscribe(sid)  # before the replay, so nothing committed in between is missed
@@ -283,12 +301,12 @@ async def watch(websocket: WebSocket, sid: str, after_seq: int = Query(0, ge=0))
 
 
 @app.post("/sessions/{sid}/messages", status_code=202)
-async def follow_up(sid: str, body: FollowUp):
+async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_user)):
     ch = app.state.ch
-    _row(sid)
+    row = _row(sid, user)
     # claim the session atomically; a busy one (or a concurrent follow-up) gets 409
     if not transition(sid, "provisioning", IDLE):
-        raise HTTPException(409, f"session {sid} is {_row(sid).status}; wait until it finishes")
+        raise HTTPException(409, f"session {sid} is {_row(sid, user).status}; wait until it finishes")
     try:
         state = await asyncio.to_thread(sandbox.sandbox_status, sid)
         warm = state == "running" and (await _control(ch, sid, "control.ping")).get("pong") is True
@@ -300,7 +318,7 @@ async def follow_up(sid: str, body: FollowUp):
             for q in await _queues(ch, sid):
                 await q.purge()
             # the entrypoint checks out otto/<sid>, so pushed work carries over
-            await asyncio.to_thread(sandbox.create_sandbox, sid, _row(sid).repo_url)
+            await asyncio.to_thread(sandbox.create_sandbox, sid, row.repo_url)
             append_event(sid, "sandbox.recreated", {"previous": state})
     except HTTPException:
         raise
@@ -311,9 +329,9 @@ async def follow_up(sid: str, body: FollowUp):
 
 
 @app.delete("/sessions/{sid}")
-async def stop(sid: str):
+async def stop(sid: str, user: User = Depends(auth.current_user)):
     ch = app.state.ch
-    _row(sid)
+    _row(sid, user)
     # stopped first: a worker still running this session ends after its current step
     set_status(sid, "stopped")
     if await _status(sid) == "running":

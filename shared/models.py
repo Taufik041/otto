@@ -22,6 +22,7 @@ class Session(SQLModel, table=True):
     __tablename__ = "sessions"
 
     id: str = Field(primary_key=True)
+    user_id: str | None = Field(default=None, foreign_key="users.id", index=True)  # None: made by the brain CLI
     repo_url: str | None = None
     task: str
     status: str = "pending"  # one of STATUSES
