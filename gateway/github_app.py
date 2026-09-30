@@ -92,11 +92,6 @@ def make_jwt():
     return jwt.encode(payload, key, algorithm="RS256")
 
 
-def get_installation_token():
-    inst = config.GITHUB_INSTALLATION_ID
-    return _json("POST", f"{API}/app/installations/{inst}/access_tokens", headers=_headers(make_jwt()))["token"]
-
-
 def mint_token(installation_id, repositories=None) -> str:
     """A new installation token (1h); repositories (repo names) narrows it to just those."""
     return _json("POST", f"{API}/app/installations/{installation_id}/access_tokens", headers=_headers(make_jwt()),

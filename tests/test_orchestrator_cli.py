@@ -94,6 +94,20 @@ def test_create_replaces_the_old_job_and_waits_for_the_runner(cluster, capsys):
     assert "listening" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("args, expected", [([], "456"), (["--installation", "789"], "789")])
+def test_create_mints_for_the_installation_given_or_github_installation_id(cluster, monkeypatch, args, expected):
+    from gateway import github_app
+
+    monkeypatch.setattr(config, "GITHUB_APP_ID", "123")
+    monkeypatch.setattr(config, "GITHUB_APP_KEY_PATH", "/keys/app.pem")
+    monkeypatch.setattr(config, "GITHUB_INSTALLATION_ID", "456")
+    minted = []
+    monkeypatch.setattr(github_app, "mint_token", lambda iid, repositories=None: minted.append((iid, repositories)) or "t")
+    cluster(FakeCluster())
+    assert cli.main(["create", "s1", "--repo", "https://github.com/o/r", *args]) == 0
+    assert minted == [(expected, ["r"])]
+
+
 def test_create_without_an_old_job(cluster):
     c = cluster(FakeCluster())
     assert cli.main(["create", "s1", "--repo", "https://github.com/o/r"]) == 0

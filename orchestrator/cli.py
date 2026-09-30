@@ -3,6 +3,7 @@ import argparse, sys, time
 from kubernetes.client.exceptions import ApiException
 
 from orchestrator import sandbox
+from shared import config
 
 READY = "Listening for actions"
 POLL = 2             # seconds between checks
@@ -63,10 +64,12 @@ def destroy(sid):
     print(f"[orchestrator] destroyed the job for session {sid}")
 
 
-def create(sid, repo):
+def create(sid, repo, installation_id=None):
     destroy(sid)
-    name = sandbox.create_sandbox(sid, repo)
-    token = "minted" if sandbox.github_app_configured() else "none (GitHub App not configured)"
+    installation_id = installation_id or config.GITHUB_INSTALLATION_ID
+    name = sandbox.create_sandbox(sid, repo, installation_id=installation_id)
+    token = ("minted" if sandbox.github_app_configured() and installation_id
+             else "none (set GITHUB_APP_ID, GITHUB_APP_KEY_PATH and --installation or GITHUB_INSTALLATION_ID)")
     print(f"[orchestrator] created job {name} for {repo} (GitHub token: {token})", flush=True)
     last = {"logs": ""}
     try:
@@ -84,13 +87,15 @@ def main(argv=None) -> int:
     c = sub.add_parser("create", help="(re)create the session's sandbox Job and wait until its runner listens")
     c.add_argument("sid")
     c.add_argument("--repo", required=True, help="repo URL the sandbox clones")
+    c.add_argument("--installation", help="GitHub App installation to mint the token for "
+                                          "(default: GITHUB_INSTALLATION_ID)")
     d = sub.add_parser("destroy", help="delete the session's sandbox Job and wait until it is gone")
     d.add_argument("sid")
     args = p.parse_args(argv)
 
     try:
         if args.cmd == "create":
-            create(args.sid, args.repo)
+            create(args.sid, args.repo, args.installation)
         else:
             destroy(args.sid)
     except (CliError, ValueError, ApiException) as e:
