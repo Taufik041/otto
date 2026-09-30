@@ -68,6 +68,7 @@ class User(SQLModel, table=True):
     avatar_url: str | None = None
     default_model: str | None = None  # a catalog id; None: the server's default
     daily_token_limit: int = Field(default_factory=lambda: config.DAILY_TOKEN_LIMIT)
+    token_version: int = Field(default=0, sa_column_kwargs={"server_default": "0"})  # in login tokens; +1 signs out
     created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
 
 

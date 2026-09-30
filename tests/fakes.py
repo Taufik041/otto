@@ -267,8 +267,12 @@ def signup(client, email="taufik@example.com", name="Taufik Khan", password=PASS
 def log_in_as(client, user_id):
     """Put a valid login cookie for user_id on the client, as if they had signed in."""
     from gateway import auth
+    from shared.db import get_db
+    from shared.models import User
 
-    client.cookies.set(auth.COOKIE, auth.session_token(user_id))
+    with get_db() as s:
+        user = s.get(User, user_id)
+    client.cookies.set(auth.COOKIE, auth.session_token(user_id, user.token_version if user else 0))
 
 
 # --- GitHub ------------------------------------------------------------------------

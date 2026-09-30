@@ -2,6 +2,8 @@
 
 The login session is a signed JWT (HS256, AUTH_SECRET) in an httpOnly, SameSite=Lax cookie.
 SameSite=Lax plus JSON-only writes (see app.py) keep other sites from acting as the user.
+The JWT carries the user's token_version; changing or resetting the password bumps it, which
+signs out every other device.
 """
 import hashlib, re, secrets, uuid
 from datetime import timedelta
@@ -55,13 +57,14 @@ def verify(token, audience) -> dict | None:
         return None
 
 
-def session_token(user_id) -> str:
-    return sign({"sub": user_id}, "session", SESSION_TTL)
+def session_token(user_id, version=0) -> str:
+    return sign({"sub": user_id, "ver": version}, "session", SESSION_TTL)
 
 
-def set_login(response: Response, user_id):
-    response.set_cookie(COOKIE, session_token(user_id), max_age=int(SESSION_TTL.total_seconds()),
-                        httponly=True, samesite="lax", secure=config.COOKIE_SECURE, path="/")
+def set_login(response: Response, user: User):
+    response.set_cookie(COOKIE, session_token(user.id, user.token_version),
+                        max_age=int(SESSION_TTL.total_seconds()), httponly=True, samesite="lax",
+                        secure=config.COOKIE_SECURE, path="/")
 
 
 def clear_login(response: Response):
@@ -75,7 +78,9 @@ def user_from_token(token) -> User | None:
     if not claims:
         return None
     with get_db() as s:
-        return s.get(User, claims["sub"])
+        user = s.get(User, claims["sub"])
+    # a token from before the last password change or reset is void
+    return user if user is not None and claims.get("ver", 0) == user.token_version else None
 
 
 def optional_user(request: Request) -> User | None:
@@ -158,7 +163,7 @@ def signup(body: Signup, response: Response):
             s.add(user)
     except IntegrityError:
         raise HTTPException(409, "an account with this email already exists") from None
-    set_login(response, user.id)
+    set_login(response, user)
     return me_json(user)
 
 
@@ -170,7 +175,7 @@ def login(body: Login, response: Response):
     if hasher.check_needs_rehash(user.password_hash):
         with get_db() as s:
             s.exec(update(User).where(User.id == user.id).values(password_hash=hash_password(body.password)))
-    set_login(response, user.id)
+    set_login(response, user)
     return me_json(user)
 
 
@@ -222,14 +227,23 @@ class PasswordChange(BaseModel):
     _new = field_validator("new")(strong_password)
 
 
+def _new_password(s, user_id, password) -> User:
+    """Set the password and bump token_version, signing out every device. Returns the user."""
+    s.exec(update(User).where(User.id == user_id)
+           .values(password_hash=hash_password(password), token_version=User.token_version + 1))
+    return s.get(User, user_id, populate_existing=True)
+
+
 @router.post("/me/password")
-def change_password(body: PasswordChange, user: User = Depends(current_user)):
+def change_password(body: PasswordChange, response: Response, user: User = Depends(current_user)):
+    """Other devices are signed out; this one gets a new cookie."""
     if user.password_hash is None:
         raise HTTPException(400, "this account signs in with GitHub and has no password")
     if not password_ok(user, body.current):
         raise HTTPException(403, "the current password is wrong")
     with get_db() as s:
-        s.exec(update(User).where(User.id == user.id).values(password_hash=hash_password(body.new)))
+        user = _new_password(s, user.id, body.new)
+    set_login(response, user)
     return {"ok": True}
 
 
@@ -274,7 +288,6 @@ def reset(body: Reset, response: Response):
         # single use, and it uses up the user's other outstanding links too
         s.exec(update(PasswordReset).where(PasswordReset.user_id == row.user_id, PasswordReset.used_at.is_(None))
                .values(used_at=now))
-        s.exec(update(User).where(User.id == row.user_id).values(password_hash=hash_password(body.password)))
-        user_id = row.user_id
-    set_login(response, user_id)
+        user = _new_password(s, row.user_id, body.password)
+    set_login(response, user)  # and every other device is signed out
     return {"ok": True}

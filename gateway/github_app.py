@@ -275,7 +275,7 @@ def github_callback(request: Request, state: str | None = None, code: str | None
         raise _refused(e, "GitHub sign-in failed; try again") from None
     user = _sign_in(user, gh)
     r = _finish(config.FRONTEND_URL, claims)
-    auth.set_login(r, user.id)
+    auth.set_login(r, user)
     return r
 
 

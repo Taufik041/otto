@@ -2,7 +2,7 @@ from datetime import timedelta
 
 import jwt
 import pytest
-from sqlmodel import select
+from sqlmodel import select, update
 
 from gateway import auth
 from shared import config
@@ -239,3 +239,49 @@ def test_reset_needs_a_strong_password(client, capsys):
     assert client.post("/auth/reset", json={"token": token, "password": "short"}).status_code == 422
     # the token wasn't used up by the refused request
     assert client.post("/auth/reset", json={"token": token, "password": "long enough"}).status_code == 200
+
+
+# --- signing out other devices -------------------------------------------------------
+
+def claims_of(token) -> dict:
+    return jwt.decode(token, config.AUTH_SECRET, algorithms=["HS256"], audience="session")
+
+
+def test_the_login_cookie_carries_the_token_version(client):
+    me = signup(client)
+    assert claims_of(client.cookies[auth.COOKIE])["ver"] == 0 == user_row(me["id"]).token_version
+
+
+def test_a_token_with_a_stale_version_is_401(client):
+    me = signup(client)
+    with get_db() as s:
+        s.exec(update(User).where(User.id == me["id"]).values(token_version=3))
+    assert client.get("/me").status_code == 401
+    client.cookies.set(auth.COOKIE, auth.session_token(me["id"], 3))
+    assert client.get("/me").status_code == 200
+
+
+def test_changing_the_password_signs_out_other_devices(client):
+    me = signup(client)
+    other_device = client.cookies[auth.COOKIE]
+
+    assert client.post("/me/password", json={"current": PASSWORD, "new": "a whole new password"}).status_code == 200
+
+    assert client.get("/me").json()["id"] == me["id"]  # this device got a fresh cookie
+    assert claims_of(client.cookies[auth.COOKIE])["ver"] == 1
+    client.cookies.set(auth.COOKIE, other_device)
+    assert client.get("/me").status_code == 401
+
+
+def test_resetting_the_password_signs_out_every_other_device(client, capsys):
+    me = signup(client)
+    other_device = client.cookies[auth.COOKIE]
+    client.cookies.clear()
+    client.post("/auth/forgot", json={"email": "taufik@example.com"})
+
+    assert client.post("/auth/reset", json={"token": token_from(reset_link(capsys)),
+                                            "password": "a brand new password"}).status_code == 200
+
+    assert client.get("/me").json()["id"] == me["id"]
+    client.cookies.set(auth.COOKIE, other_device)
+    assert client.get("/me").status_code == 401
