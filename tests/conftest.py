@@ -1,8 +1,11 @@
 import pytest
+from fastapi.testclient import TestClient
 
 from shared import config, db as shared_db
 from brain import providers as providers_module
-from tests.fakes import use_env
+from tests.fakes import FakeChannel, FakeConnection, FakeOrchestrator, FakeRunners, use_env
+
+ORIGIN = "http://localhost:5173"  # in the default CORS_ORIGINS
 
 
 @pytest.fixture(autouse=True)
@@ -37,3 +40,41 @@ def providers(monkeypatch):
         raise AssertionError("a test tried to build a real AsyncOpenAI client; use tests.fakes.fake_openai")
 
     monkeypatch.setattr(providers_module, "AsyncOpenAI", no_network)
+
+
+@pytest.fixture(autouse=True)
+def accounts(monkeypatch):
+    """A known signing secret and limits, whatever .env says."""
+    monkeypatch.setattr(config, "AUTH_SECRET", "test-secret-" + "x" * 32)
+    monkeypatch.setattr(config, "FRONTEND_URL", "http://localhost:5173")
+    monkeypatch.setattr(config, "COOKIE_SECURE", False)
+    monkeypatch.setattr(config, "DAILY_TOKEN_LIMIT", 50000)
+
+
+@pytest.fixture
+def env(monkeypatch):
+    """The gateway with a fake bus, fake runners and a fake orchestrator."""
+    from gateway import app as gateway_app
+    from orchestrator import sandbox
+
+    ch = FakeChannel()
+    orch = FakeOrchestrator()
+    for name in ("create_sandbox", "remove_sandbox", "destroy_sandbox", "sandbox_status"):
+        monkeypatch.setattr(sandbox, name, getattr(orch, name))
+
+    async def connect(url):
+        return FakeConnection(ch)
+
+    monkeypatch.setattr(gateway_app, "connect_robust", connect)
+    monkeypatch.setattr(gateway_app, "PING_TIMEOUT", 0.2)
+    monkeypatch.setattr(config, "MAX_ACTIVE_SESSIONS", 3)
+    return ch, orch, FakeRunners(ch)
+
+
+@pytest.fixture
+def client(env):
+    """A browser-like client: every request is JSON (the gateway refuses other writes)."""
+    from gateway import app as gateway_app
+
+    with TestClient(gateway_app.app, headers={"content-type": "application/json"}) as c:
+        yield c

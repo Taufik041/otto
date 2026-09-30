@@ -1,11 +1,11 @@
-from datetime import timedelta, timezone
+from datetime import timedelta
 
 from sqlalchemy import func
 from sqlmodel import delete, select, update
 
 from shared.db import get_db
 from shared.events import append_event, redact
-from shared.models import STATUSES, Session, SessionEvent, utcnow
+from shared.models import STATUSES, Session, SessionEvent, as_utc, utcnow
 
 ACTIVE = ("provisioning", "queued", "running")  # a sandbox or a worker is (about to be) busy with it
 STALE_AGE = timedelta(minutes=30)     # crash sweep: only sessions older than this...
@@ -84,11 +84,6 @@ def list_sessions() -> list[Session]:
         return list(s.exec(select(Session).order_by(Session.created_at.desc())).all())
 
 
-def _utc(ts):
-    # SQLite hands back naive datetimes; they were stored as UTC
-    return ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts
-
-
 def sweep_stale_sessions() -> list[str]:
     """Mark sessions left queued/running by a dead worker as interrupted. Returns their ids."""
     now = utcnow()
@@ -101,9 +96,9 @@ def sweep_stale_sessions() -> list[str]:
     swept = []
     for sid, status, created_at in rows:
         quiet_since = last.get(sid)
-        if now - _utc(created_at) < STALE_AGE:
+        if now - as_utc(created_at) < STALE_AGE:
             continue
-        if quiet_since is not None and now - _utc(quiet_since) < STALE_QUIET:
+        if quiet_since is not None and now - as_utc(quiet_since) < STALE_QUIET:
             continue
         if transition(sid, "interrupted", {status}):
             swept.append(sid)

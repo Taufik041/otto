@@ -14,70 +14,9 @@ from shared.events import append_event, load_events
 from shared.models import Session, SessionEvent, utcnow
 from shared.sessions import create_session, get_session, set_status
 from gateway import app as gateway_app, live
-from tests.fakes import FakeChannel, FakeConnection, use_env
+from tests.fakes import FakeChannel, use_env
 
 REPO = "https://github.com/Taufik041/otto_test"
-
-
-class FakeOrchestrator:
-    def __init__(self):
-        self.calls = []
-        self.status = {}          # sid -> sandbox_status
-        self.fail_create = None   # exception to raise from create_sandbox
-
-    def create_sandbox(self, sid, repo_url, token=None):
-        self.calls.append(("create", sid, repo_url))
-        if self.fail_create:
-            raise self.fail_create
-        self.status[sid] = "running"
-        return f"otto-{sid}"
-
-    def remove_sandbox(self, sid, timeout=120, poll=1):
-        self.calls.append(("remove", sid))
-        existed = self.status.pop(sid, "missing") != "missing"
-        return existed
-
-    def destroy_sandbox(self, sid):
-        self.calls.append(("destroy", sid))
-        self.status.pop(sid, None)
-
-    def sandbox_status(self, sid):
-        return self.status.get(sid, "missing")
-
-
-class FakeRunners:
-    """Answers control actions on the fake bus for sessions whose runner is 'alive'."""
-
-    def __init__(self, ch):
-        self.ch, self.alive = ch, set()
-        ch.default_exchange.on_publish = self.on_publish
-
-    def on_publish(self, key, body):
-        if key.endswith(".actions") and body["session_id"] in self.alive:
-            payload = {"exit_code": 0, "pong": True} if body["kind"] == "control.ping" else {"exit_code": 0}
-            self.ch.queue(results_queue(body["session_id"])).put(make_result(body, True, payload))
-
-
-@pytest.fixture
-def env(monkeypatch):
-    ch = FakeChannel()
-    orch = FakeOrchestrator()
-    for name in ("create_sandbox", "remove_sandbox", "destroy_sandbox", "sandbox_status"):
-        monkeypatch.setattr(sandbox, name, getattr(orch, name))
-
-    async def connect(url):
-        return FakeConnection(ch)
-
-    monkeypatch.setattr(gateway_app, "connect_robust", connect)
-    monkeypatch.setattr(gateway_app, "PING_TIMEOUT", 0.2)
-    monkeypatch.setattr(config, "MAX_ACTIVE_SESSIONS", 3)
-    return ch, orch, FakeRunners(ch)
-
-
-@pytest.fixture
-def client(env):
-    with TestClient(gateway_app.app) as c:
-        yield c
 
 
 def jobs(ch):

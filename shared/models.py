@@ -4,11 +4,18 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
+from shared import config
+
 STATUSES = ("pending", "provisioning", "queued", "running", "done", "failed", "interrupted", "stopped")
 
 
 def utcnow():
     return datetime.now(timezone.utc)
+
+
+def as_utc(ts):
+    """ts as an aware UTC datetime: SQLite hands back naive ones (they were stored as UTC)."""
+    return ts.replace(tzinfo=timezone.utc) if ts is not None and ts.tzinfo is None else ts
 
 
 class Session(SQLModel, table=True):
@@ -34,3 +41,28 @@ class SessionEvent(SQLModel, table=True):
     type: str
     # JSONB on Postgres, plain JSON elsewhere so tests can run on SQLite
     payload: dict = Field(sa_column=sa.Column(sa.JSON().with_variant(JSONB(), "postgresql"), nullable=False))
+
+
+class User(SQLModel, table=True):
+    __tablename__ = "users"
+
+    id: str = Field(primary_key=True)
+    email: str | None = Field(default=None, unique=True)  # lower-cased; None for GitHub-only accounts
+    name: str
+    password_hash: str | None = None  # argon2; None: no email/password sign-in
+    github_id: int | None = Field(default=None, unique=True, sa_type=sa.BigInteger)
+    github_login: str | None = None
+    avatar_url: str | None = None
+    default_model: str | None = None  # a catalog id; None: the server's default
+    daily_token_limit: int = Field(default_factory=lambda: config.DAILY_TOKEN_LIMIT)
+    created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
+
+
+class PasswordReset(SQLModel, table=True):
+    __tablename__ = "password_resets"
+
+    token_hash: str = Field(primary_key=True)  # sha256 of the emailed token; the token itself isn't stored
+    user_id: str = Field(foreign_key="users.id", index=True)
+    expires_at: datetime = Field(sa_type=sa.DateTime(timezone=True))
+    used_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))

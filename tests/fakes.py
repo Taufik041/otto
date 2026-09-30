@@ -198,3 +198,63 @@ def fake_clock(monkeypatch, start=1_750_000_000.0):
     monkeypatch.setattr(providers, "now", lambda: t[0])
     monkeypatch.setattr(providers, "sleep", sleep)
     return waits
+
+
+# --- gateway -----------------------------------------------------------------------
+
+class FakeOrchestrator:
+    def __init__(self):
+        self.calls = []
+        self.status = {}          # sid -> sandbox_status
+        self.fail_create = None   # exception to raise from create_sandbox
+
+    def create_sandbox(self, sid, repo_url, token=None):
+        self.calls.append(("create", sid, repo_url))
+        if self.fail_create:
+            raise self.fail_create
+        self.status[sid] = "running"
+        return f"otto-{sid}"
+
+    def remove_sandbox(self, sid, timeout=120, poll=1):
+        self.calls.append(("remove", sid))
+        existed = self.status.pop(sid, "missing") != "missing"
+        return existed
+
+    def destroy_sandbox(self, sid):
+        self.calls.append(("destroy", sid))
+        self.status.pop(sid, None)
+
+    def sandbox_status(self, sid):
+        return self.status.get(sid, "missing")
+
+
+class FakeRunners:
+    """Answers control actions on the fake bus for sessions whose runner is 'alive'."""
+
+    def __init__(self, ch):
+        self.ch, self.alive = ch, set()
+        ch.default_exchange.on_publish = self.on_publish
+
+    def on_publish(self, key, body):
+        from shared.bus import make_result, results_queue
+
+        if key.endswith(".actions") and body["session_id"] in self.alive:
+            payload = {"exit_code": 0, "pong": True} if body["kind"] == "control.ping" else {"exit_code": 0}
+            self.ch.queue(results_queue(body["session_id"])).put(make_result(body, True, payload))
+
+
+PASSWORD = "correct horse battery"
+
+
+def signup(client, email="taufik@example.com", name="Taufik Khan", password=PASSWORD) -> dict:
+    """Sign up through the API; the client keeps the login cookie. Returns GET /me."""
+    r = client.post("/auth/signup", json={"name": name, "email": email, "password": password})
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def log_in_as(client, user_id):
+    """Put a valid login cookie for user_id on the client, as if they had signed in."""
+    from gateway import auth
+
+    client.cookies.set(auth.COOKIE, auth.session_token(user_id))

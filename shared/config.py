@@ -121,6 +121,12 @@ WORKER_CONCURRENCY = int(os.environ.get("WORKER_CONCURRENCY", "3"))
 CORS_ORIGINS = [o.strip() for o in os.environ.get(
     "CORS_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",") if o.strip()]
 
+# accounts
+AUTH_SECRET = os.environ.get("AUTH_SECRET")  # signs login cookies and OAuth state; at least 32 characters
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+COOKIE_SECURE = FRONTEND_URL.startswith("https://")
+DAILY_TOKEN_LIMIT = int(os.environ.get("DAILY_TOKEN_LIMIT", "50000"))  # a new user's limit
+
 # github app
 GITHUB_APP_ID = os.environ.get("GITHUB_APP_ID")
 GITHUB_INSTALLATION_ID = os.environ.get("GITHUB_INSTALLATION_ID")

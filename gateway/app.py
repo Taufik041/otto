@@ -10,14 +10,15 @@ from contextlib import asynccontextmanager, suppress
 
 import anyio
 from aio_pika import DeliveryMode, Message, connect_robust
-from fastapi import FastAPI, HTTPException, Query, WebSocket
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from starlette.websockets import WebSocketDisconnect
 from kubernetes.client.exceptions import ApiException
 from pydantic import BaseModel, Field, field_validator
 
 from brain.bus import bus_call, start_consumer, stop_consumer
-from gateway import live
+from gateway import auth, live
 from orchestrator import sandbox
 from shared import config
 from shared.bus import SESSIONS_QUEUE, actions_queue, resume_job, results_queue, start_job
@@ -34,6 +35,7 @@ IDLE = ("pending", "done", "failed", "interrupted", "stopped")  # statuses that 
 
 @asynccontextmanager
 async def lifespan(app):
+    auth.check_secret()
     init_db()
     swept = sweep_stale_sessions()
     if swept:
@@ -58,7 +60,22 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Otto", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS,
+app.include_router(auth.router)
+
+
+@app.middleware("http")
+async def json_only_writes(request: Request, call_next):
+    """CSRF protection alongside the SameSite=Lax cookie: a cross-site form can only send form or
+    text bodies, and a cross-site fetch with a JSON content type needs a CORS preflight."""
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            return JSONResponse({"detail": "send state-changing requests as application/json"}, 415)
+    return await call_next(request)
+
+
+# added last, so it wraps everything above: refusals still carry CORS headers
+app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 
 
