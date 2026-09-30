@@ -220,9 +220,29 @@ def test_a_used_state_cant_be_used_again(client, fake_github):
     assert callback(client, code="c2", state=state).status_code == 400
 
 
-def test_a_bad_code_is_400(client, fake_github):
-    assert callback(client, code="nope", state=start(client)).status_code == 400
+def test_a_bad_code_is_400_and_githubs_answer_is_logged(client, fake_github, capsys):
+    r = callback(client, code="nope", state=start(client))
+    assert r.status_code == 400 and r.json()["detail"] == "GitHub sign-in failed; try again"
     assert users() == []
+    out = capsys.readouterr().out
+    assert "bad_verification_code" in out and "The code passed is incorrect or expired." in out
+
+
+@pytest.mark.parametrize("path", ["/auth/github/start", "/github/install"])
+def test_wrong_client_credentials_say_so_and_never_log_the_secret(client, fake_github, monkeypatch, capsys, path):
+    if path == "/github/install":
+        signup(client)
+    monkeypatch.setattr(config, "GITHUB_CLIENT_SECRET", "wrong-secret-0123456789")
+    fake_github.add_user("c1", gid=101, login="Taufik041")
+    extra = {"installation_id": 555, "setup_action": "install"} if path == "/github/install" else {}
+
+    r = callback(client, code="c1", state=start(client, path), **extra)
+
+    assert r.status_code == 400
+    assert r.json()["detail"] == "GitHub rejected Otto's client credentials — check GITHUB_CLIENT_ID/SECRET"
+    out = capsys.readouterr().out
+    assert "incorrect_client_credentials" in out and "client_secret passed are incorrect" in out
+    assert "wrong-secret-0123456789" not in out + r.text
 
 
 def test_github_sign_in_needs_the_oauth_app_configured(client, monkeypatch):

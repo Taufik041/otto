@@ -13,7 +13,7 @@ signed in when it started, and a nonce that must match a cookie set in this brow
 attacker's GitHub account to the victim's Otto account. Each state has its own cookie
 (nonce_cookie), so a second /start (a prefetch, a double click, a reload) doesn't void the first.
 """
-import hashlib, jwt, secrets, time, uuid
+import hashlib, json, jwt, secrets, time, uuid
 from datetime import timedelta
 from urllib.parse import quote, urlencode
 
@@ -32,6 +32,7 @@ API = "https://api.github.com"
 WEB = "https://github.com"
 TIMEOUT = 15  # seconds per GitHub request
 STATE_TTL = timedelta(minutes=10)
+BAD_CLIENT = "GitHub rejected Otto's client credentials — check GITHUB_CLIENT_ID/SECRET"
 NONCE_PATH = "/auth/github"  # sent to the callback only
 TOKEN_REUSE = 50 * 60  # seconds to reuse an installation token (they last an hour)
 REPOS_TTL = 60         # seconds to reuse a user's repo list
@@ -44,6 +45,10 @@ router = APIRouter()
 
 class GitHubError(Exception):
     """GitHub answered with an error, or not at all."""
+
+
+class BadClientCredentials(GitHubError):
+    """GitHub refused GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET: a server misconfiguration."""
 
 
 def request(method, url, **kw) -> requests.Response:
@@ -201,14 +206,29 @@ def _finish(url, claims) -> RedirectResponse:
     return r
 
 
+def _no_secret(text) -> str:
+    secret = config.GITHUB_CLIENT_SECRET
+    return text.replace(secret, "[REDACTED]") if secret else text
+
+
 def exchange_code(code) -> str:
-    """A user access token for an OAuth code."""
-    body = _json("POST", f"{WEB}/login/oauth/access_token", headers={"Accept": "application/json"},
-                 data={"client_id": config.GITHUB_CLIENT_ID, "client_secret": config.GITHUB_CLIENT_SECRET,
-                       "code": code})
+    """A user access token for an OAuth code. A refusal carries GitHub's answer, minus the secret."""
+    try:
+        body = _json("POST", f"{WEB}/login/oauth/access_token", headers={"Accept": "application/json"},
+                     data={"client_id": config.GITHUB_CLIENT_ID, "client_secret": config.GITHUB_CLIENT_SECRET,
+                           "code": code})
+    except GitHubError as e:
+        raise GitHubError(_no_secret(str(e))) from None
     if not body.get("access_token"):
-        raise GitHubError(f"code exchange failed: {body.get('error') or 'no token'}")
+        shown = json.dumps({k: v for k, v in body.items() if k != "access_token"})
+        error = BadClientCredentials if body.get("error") == "incorrect_client_credentials" else GitHubError
+        raise error(_no_secret(f"code exchange failed: {shown}"))
     return body["access_token"]
+
+
+def _refused(e: GitHubError, message) -> HTTPException:
+    """The 400 for a failed exchange: a misconfigured server says so; anything else, `message`."""
+    return HTTPException(400, BAD_CLIENT if isinstance(e, BadClientCredentials) else message)
 
 
 def github_user(user_token) -> dict:
@@ -252,7 +272,7 @@ def github_callback(request: Request, state: str | None = None, code: str | None
         gh = github_user(exchange_code(code))
     except GitHubError as e:
         print(f"[github] sign-in failed: {e}", flush=True)
-        raise HTTPException(400, "GitHub sign-in failed; try again") from None
+        raise _refused(e, "GitHub sign-in failed; try again") from None
     user = _sign_in(user, gh)
     r = _finish(config.FRONTEND_URL, claims)
     auth.set_login(r, user.id)
@@ -296,7 +316,7 @@ def _installed(user: User, installation_id: int, setup_action: str, code: str | 
         gh = github_user(token)
     except GitHubError as e:
         print(f"[github] install check failed: {e}", flush=True)
-        raise HTTPException(400, "GitHub didn't confirm the installation; try again") from None
+        raise _refused(e, "GitHub didn't confirm the installation; try again") from None
     if installation_id not in mine:
         raise HTTPException(403, "that installation isn't one your GitHub account can access")
     with get_db() as s:

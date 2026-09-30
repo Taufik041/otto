@@ -335,8 +335,13 @@ class FakeGitHub:
         token = auth_header.removeprefix("Bearer ").removeprefix("token ")
 
         if (method, path) == ("POST", "github.com/login/oauth/access_token"):
-            if data.get("client_secret") != "test-client-secret" or data.get("code") not in self.codes:
-                return FakeResponse(200, {"error": "bad_verification_code"})
+            if data.get("client_secret") != "test-client-secret":
+                return FakeResponse(200, {"error": "incorrect_client_credentials",
+                                          "error_description": "The client_id and/or client_secret passed are incorrect.",
+                                          "error_uri": "https://docs.github.com/apps/troubleshooting"})
+            if data.get("code") not in self.codes:
+                return FakeResponse(200, {"error": "bad_verification_code",
+                                          "error_description": "The code passed is incorrect or expired."})
             return FakeResponse(200, {"access_token": self.codes[data["code"]], "token_type": "bearer"})
         if path == "/user" and token in self.users:
             return FakeResponse(200, self.users[token])
