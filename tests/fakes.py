@@ -120,15 +120,15 @@ class FakeConnection:
 from types import SimpleNamespace as NS
 
 
-def llm_tool_calls(*calls, content=None):
+def llm_tool_calls(*calls, content=None, usage=None):
     """calls: (name, args_dict) pairs -> a chat completion asking for those tools."""
     tcs = [NS(id=f"call_{i}", function=NS(name=name, arguments=json.dumps(args)))
            for i, (name, args) in enumerate(calls)]
-    return NS(choices=[NS(message=NS(content=content, tool_calls=tcs))])
+    return NS(choices=[NS(message=NS(content=content, tool_calls=tcs))], usage=usage)
 
 
-def llm_final(text):
-    return NS(choices=[NS(message=NS(content=text, tool_calls=None))])
+def llm_final(text, usage=None):
+    return NS(choices=[NS(message=NS(content=text, tool_calls=None))], usage=usage)
 
 
 def auto_reply(ch, results, stdout=lambda action: f"ran {action['kind']}"):
@@ -198,3 +198,197 @@ def fake_clock(monkeypatch, start=1_750_000_000.0):
     monkeypatch.setattr(providers, "now", lambda: t[0])
     monkeypatch.setattr(providers, "sleep", sleep)
     return waits
+
+
+# --- gateway -----------------------------------------------------------------------
+
+class FakeOrchestrator:
+    def __init__(self):
+        self.calls = []
+        self.status = {}          # sid -> sandbox_status
+        self.fail_create = None   # exception to raise from create_sandbox
+
+    def create_sandbox(self, sid, repo_url, installation_id=None, token=None):
+        self.calls.append(("create", sid, repo_url, installation_id))
+        if self.fail_create:
+            raise self.fail_create
+        self.status[sid] = "running"
+        return f"otto-{sid}"
+
+    def remove_sandbox(self, sid, timeout=120, poll=1):
+        self.calls.append(("remove", sid))
+        existed = self.status.pop(sid, "missing") != "missing"
+        return existed
+
+    def destroy_sandbox(self, sid):
+        self.calls.append(("destroy", sid))
+        self.status.pop(sid, None)
+
+    def sandbox_status(self, sid):
+        return self.status.get(sid, "missing")
+
+
+class FakeRunners:
+    """Answers control actions on the fake bus for sessions whose runner is 'alive'."""
+
+    def __init__(self, ch):
+        self.ch, self.alive = ch, set()
+        ch.default_exchange.on_publish = self.on_publish
+
+    def on_publish(self, key, body):
+        from shared.bus import make_result, results_queue
+
+        if key.endswith(".actions") and body["session_id"] in self.alive:
+            payload = {"exit_code": 0, "pong": True} if body["kind"] == "control.ping" else {"exit_code": 0}
+            self.ch.queue(results_queue(body["session_id"])).put(make_result(body, True, payload))
+
+
+PASSWORD = "correct horse battery"
+
+
+def make_user(user_id="u1", **fields):
+    """A user row, straight into the database."""
+    from shared.db import get_db
+    from shared.models import User
+
+    user = User(id=user_id, name=fields.pop("name", user_id), **fields)
+    with get_db() as s:
+        s.add(user)
+    return user
+
+
+def signup(client, email="taufik@example.com", name="Taufik Khan", password=PASSWORD) -> dict:
+    """Sign up through the API; the client sends its access token from now on. Returns the user."""
+    r = client.post("/auth/signup", json={"name": name, "email": email, "password": password})
+    assert r.status_code == 201, r.text
+    client.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
+    return r.json()["user"]
+
+
+def log_in_as(client, user_id):
+    """Sign the client in as user_id, as if they had signed in: an access token, and a refresh
+    cookie while the user exists."""
+    from gateway import auth, tokens
+    from shared.db import get_db
+    from shared.models import User
+
+    with get_db() as s:
+        user = s.get(User, user_id)
+    sign_out(client)
+    client.headers["Authorization"] = f"Bearer {tokens.access_token(user or User(id=user_id, name='gone'))}"
+    if user is not None:
+        client.cookies.set(auth.REFRESH_COOKIE, tokens.issue_refresh(user_id), path=auth.REFRESH_PATH)
+
+
+def sign_out(client):
+    """Forget the client's access token and refresh cookie (not GitHub's nonce cookies)."""
+    client.headers.pop("Authorization", None)
+    client.cookies.delete("otto_refresh")
+
+
+# --- GitHub ------------------------------------------------------------------------
+
+class FakeResponse:
+    def __init__(self, status_code, body, links=None):
+        self.status_code, self._body, self.links = status_code, body, links or {}
+        self.text = json.dumps(body)
+
+    @property
+    def ok(self):
+        return self.status_code < 400
+
+    def json(self):
+        return self._body
+
+
+class FakeGitHub:
+    """Stands in for gateway.github_app.request: canned GitHub answers and a log of the calls.
+
+    Fill in: codes (OAuth code -> user token), users (user token -> GET /user),
+    user_installations (user token -> installation ids), installations (id -> account login),
+    repos (installation id -> repo dicts). Lists are paged by page_size.
+    """
+    API = "https://api.github.com"
+
+    def __init__(self):
+        self.calls = []                # (method, path)
+        self.codes, self.users, self.user_installations = {}, {}, {}
+        self.installations, self.repos = {}, {}
+        self.minted = []               # (installation id, repositories or None)
+        self.page_size = 100
+
+    def add_user(self, code, gid, login, **extra):
+        token = f"ghu_{login}_{code}"
+        self.codes[code] = token
+        self.users[token] = {"id": gid, "login": login, "name": extra.pop("name", None),
+                             "avatar_url": f"https://avatars.githubusercontent.com/u/{gid}", **extra}
+        return token
+
+    def add_installation(self, iid, account_login, repos=(), users=()):
+        self.installations[iid] = account_login
+        self.repos[iid] = [repo(name) if isinstance(name, str) else name for name in repos]
+        for token in users:
+            self.user_installations.setdefault(token, []).append(iid)
+
+    def paths(self, method=None):
+        return [p for m, p in self.calls if method in (None, m)]
+
+    def _page(self, url, items, key, params):
+        page = int((params or {}).get("page", 1))
+        chunk = items[(page - 1) * self.page_size: page * self.page_size]
+        links = {"next": {"url": url.split("?")[0] + f"?page={page + 1}"}} if page * self.page_size < len(items) else {}
+        return FakeResponse(200, {"total_count": len(items), key: chunk}, links)
+
+    def __call__(self, method, url, headers=None, params=None, json=None, data=None, **kw):
+        from urllib.parse import parse_qsl, urlsplit
+
+        parts = urlsplit(url)
+        params = {**dict(parse_qsl(parts.query)), **(params or {})}
+        path = parts.path if parts.netloc == "api.github.com" else parts.netloc + parts.path
+        self.calls.append((method, path))
+        auth_header = (headers or {}).get("Authorization", "")
+        token = auth_header.removeprefix("Bearer ").removeprefix("token ")
+
+        if (method, path) == ("POST", "github.com/login/oauth/access_token"):
+            if data.get("client_secret") != "test-client-secret":
+                return FakeResponse(200, {"error": "incorrect_client_credentials",
+                                          "error_description": "The client_id and/or client_secret passed are incorrect.",
+                                          "error_uri": "https://docs.github.com/apps/troubleshooting"})
+            if data.get("code") not in self.codes:
+                return FakeResponse(200, {"error": "bad_verification_code",
+                                          "error_description": "The code passed is incorrect or expired."})
+            return FakeResponse(200, {"access_token": self.codes[data["code"]], "token_type": "bearer"})
+        if path == "/user" and token in self.users:
+            return FakeResponse(200, self.users[token])
+        if path == "/user/installations" and token in self.users:
+            items = [{"id": i, "account": {"login": self.installations[i]}}
+                     for i in self.user_installations.get(token, [])]
+            return self._page(url, items, "installations", params)
+        if method == "POST" and path.startswith("/app/installations/") and path.endswith("/access_tokens"):
+            iid = int(path.split("/")[3])
+            if token != "app-jwt" or iid not in self.installations:
+                return FakeResponse(404, {"message": "Not Found"})
+            self.minted.append((iid, (json or {}).get("repositories")))
+            return FakeResponse(201, {"token": f"ghs_inst{iid}_{len(self.minted)}",
+                                      "expires_at": "2099-01-01T00:00:00Z"})
+        if path == "/installation/repositories":
+            iid = next((i for i in self.installations if token.startswith(f"ghs_inst{i}_")), None)
+            if iid is None:
+                return FakeResponse(401, {"message": "Bad credentials"})
+            return self._page(url, self.repos[iid], "repositories", params)
+        return FakeResponse(404, {"message": f"FakeGitHub has no {method} {path}"})
+
+
+def connect_github(fake_github, user_id, iid=555, repos=("Taufik041/otto_test",), account="Taufik041"):
+    """user_id has installation iid (on account), which GitHub says can see repos."""
+    from shared.db import get_db
+    from shared.models import Installation
+
+    fake_github.add_installation(iid, account, repos=repos)
+    with get_db() as s:
+        s.add(Installation(id=iid, user_id=user_id, account_login=account))
+
+
+def repo(full_name, private=True, updated_at="2026-09-01T00:00:00Z", default_branch="main"):
+    return {"full_name": full_name, "name": full_name.split("/")[1], "private": private,
+            "updated_at": updated_at, "default_branch": default_branch}

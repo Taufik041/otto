@@ -11,7 +11,11 @@ def rebuild_messages(events) -> list[dict]:
     exactly one result right after it (a synthetic INTERRUPTED one if the
     session stopped before the real one was stored), and tool results that
     answer no open call are dropped.
+
+    The latest system message is the one in force (a chat that gets a repo
+    switches to the agent's prompt), and it goes first.
     """
+    system = None
     out = []
     waiting = []  # tool_call ids of the last assistant message still without a result
 
@@ -24,6 +28,9 @@ def rebuild_messages(events) -> list[dict]:
         if ev.type != "llm.message":
             continue
         m = ev.payload["message"]
+        if m.get("role") == "system":
+            system = m
+            continue
         if m.get("role") == "tool":
             if m.get("tool_call_id") in waiting:
                 waiting.remove(m["tool_call_id"])
@@ -34,4 +41,4 @@ def rebuild_messages(events) -> list[dict]:
         if m.get("role") == "assistant":
             waiting.extend(tc["id"] for tc in m.get("tool_calls") or [])
     fill_missing()
-    return out
+    return ([system] if system else []) + out

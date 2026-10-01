@@ -1,14 +1,23 @@
 import json, asyncio
-from shared import config
+from shared import config, usage
 from brain.providers import LLMError, complete
-from brain.tools import SYSTEM, TOOLS, KIND, missing_args
+from brain.tools import CHAT_SYSTEM, SYSTEM, TOOLS, KIND, missing_args
 from brain.bus import bus_call, start_consumer, stop_consumer
 from brain.resume import rebuild_messages
 from shared.events import append_event, load_events
+from shared.github import parse_repo
 from shared.sessions import create_session, get_session, record_pr, set_status, transition
 
 TOOL_CONTENT_LIMIT = 20000
 TRUNCATED = "\n[... truncated]"
+
+
+class LimitReached(Exception):
+    """The session's user is at their daily token limit."""
+
+    def __init__(self, info):
+        super().__init__(f"daily token limit reached: {info}")
+        self.info = info
 
 
 def tool_content(result, limit=TOOL_CONTENT_LIMIT) -> str:
@@ -37,7 +46,8 @@ def add_message(sid, messages, message):
 
 async def run_session(ch, results, sid, task):
     """Create and run a new session (the CLI path). Returns the final messages list."""
-    create_session(sid, task=task, repo_url=config.REPO_URL, model=config.DEFAULT_MODEL)
+    repo = "/".join(parse_repo(config.REPO_URL)) if config.REPO_URL else None
+    create_session(sid, task=task, repo=repo, model=config.DEFAULT_MODEL)
     return await start_session(ch, results, sid, task)
 
 
@@ -49,30 +59,84 @@ async def start_session(ch, results, sid, task):
     return await run_loop(ch, results, sid, messages)
 
 
-async def resume_session(ch, results, sid, text):
-    """Continue a stored session with a new user message. Returns the final messages list."""
+def _conversation(messages) -> list[dict]:
+    return [m for m in messages if m.get("role") != "system"]
+
+
+def replay(sid) -> list[dict]:
+    """The stored conversation, as the model should see it next."""
     events = load_events(sid)
     stored = [e.payload["message"] for e in events if e.type == "llm.message"]
     if not stored:
         raise LookupError(f"session {sid!r} has no conversation to resume")
     messages = rebuild_messages(events)
-    if messages[:len(stored)] == stored:
+    old, new = _conversation(stored), _conversation(messages)
+    if new[:len(old)] == old:
         # store the synthetic results for calls cut off mid-turn, so the log matches what the model sees
-        for m in messages[len(stored):]:
+        for m in new[len(old):]:
             append_event(sid, "llm.message", {"message": m})
+    return messages
+
+
+def use_system(sid, messages, content):
+    """Make content the system prompt in force: first in messages, and stored (on replay the
+    latest stored system message wins)."""
+    message = {"role": "system", "content": content}
+    if messages and messages[0] == message:
+        return
+    if messages and messages[0].get("role") == "system":
+        messages[0] = message
+    else:
+        messages.insert(0, message)
+    append_event(sid, "llm.message", {"message": message})
+
+
+async def resume_session(ch, results, sid, text):
+    """Continue a stored session with a new user message. Returns the final messages list.
+
+    A plain chat that just got a repo continues here, under the agent's prompt."""
+    messages = replay(sid)
+    use_system(sid, messages, SYSTEM)
     add_message(sid, messages, {"role": "user", "content": text})
     return await run_loop(ch, results, sid, messages)
 
 
+async def chat_session(sid, text=None):
+    """One plain-chat turn: the model answers with no tools and no sandbox. text: a follow-up;
+    None for the first turn, which answers the session's task."""
+    if text is None:
+        messages = []
+        add_message(sid, messages, {"role": "system", "content": CHAT_SYSTEM})
+        add_message(sid, messages, {"role": "user", "content": get_session(sid).task})
+    else:
+        messages = replay(sid)
+        use_system(sid, messages, CHAT_SYSTEM)
+        add_message(sid, messages, {"role": "user", "content": text})
+    return await _turn(sid, messages, lambda record: _chat_step(sid, messages, record))
+
+
 async def run_loop(ch, results, sid, messages):
     """Drive the model from `messages` until it answers without tool calls (or the step cap)."""
+    pending, consumer = start_consumer(results)
+    try:
+        return await _turn(sid, messages, lambda record: _steps(ch, pending, sid, messages, record))
+    finally:
+        await stop_consumer(pending, consumer)
+
+
+async def _turn(sid, messages, steps):
+    """Run steps(record) as the session's turn, with its status: running, then a final one."""
     record = lambda type, payload: append_event(sid, type, payload)
 
     set_status(sid, "running")
-    pending, consumer = start_consumer(results)
     # final statuses only replace "running": a session stopped meanwhile stays "stopped"
     try:
-        await _steps(ch, pending, sid, messages, record)
+        await steps(record)
+    except LimitReached as e:
+        # a clean stop between calls: every tool call is answered, and the sandbox stays warm
+        record("usage.limit_reached", e.info)
+        transition(sid, "limited", {"running"})
+        return messages
     except (asyncio.CancelledError, KeyboardInterrupt):
         transition(sid, "interrupted", {"running"})
         raise
@@ -83,10 +147,28 @@ async def run_loop(ch, results, sid, messages):
     except Exception:
         transition(sid, "failed", {"running"})
         raise
-    finally:
-        await stop_consumer(pending, consumer)
     transition(sid, "done", {"running"})
     return messages
+
+
+async def _complete(sid, record, messages, **kw):
+    """One LLM call on the session's model, within the user's daily token limit, and recorded."""
+    row = get_session(sid)
+    if row.user_id and (info := usage.limit_status(row.user_id)):
+        raise LimitReached(info)
+    # the model the session was created with, for every turn: never another provider or model
+    model = config.resolve_model(row.model)
+    resp = await complete(model["provider"], record, model=model["model"], messages=messages, **kw)
+    counts = getattr(resp, "usage", None)
+    tokens = {k: int(getattr(counts, k, 0) or 0) for k in ("prompt_tokens", "completion_tokens")}
+    usage.record(sid, row.user_id, model["provider"], row.model, **tokens)
+    record("llm.usage", {"provider": model["provider"], "model": row.model, **tokens})
+    return resp
+
+
+async def _chat_step(sid, messages, record):
+    resp = await _complete(sid, record, messages)
+    add_message(sid, messages, {"role": "assistant", "content": resp.choices[0].message.content or ""})
 
 
 def _stopped(sid) -> bool:
@@ -95,13 +177,11 @@ def _stopped(sid) -> bool:
 
 
 async def _steps(ch, pending, sid, messages, record):
-    # the model the session was created with, for every turn: never another provider or model
-    model = config.resolve_model(get_session(sid).model)
     for step in range(20):
         if _stopped(sid):
             print(f"[brain] session {sid} was stopped")
             return
-        resp = await complete(model["provider"], record, model=model["model"], messages=messages, tools=TOOLS)
+        resp = await _complete(sid, record, messages, tools=TOOLS)
         m = resp.choices[0].message
 
         if not m.tool_calls:

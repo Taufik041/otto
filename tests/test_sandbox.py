@@ -64,39 +64,44 @@ def env_of(job):
 @pytest.fixture
 def app_configured(monkeypatch):
     monkeypatch.setattr(config, "GITHUB_APP_ID", "123")
-    monkeypatch.setattr(config, "GITHUB_INSTALLATION_ID", "456")
+    monkeypatch.setattr(config, "GITHUB_INSTALLATION_ID", "456")  # the CLI's fallback; never used here
     monkeypatch.setattr(config, "GITHUB_APP_KEY_PATH", "/keys/app.pem")
     minted = []
 
-    def mint():
-        minted.append(1)
+    def mint(installation_id, repositories=None):
+        minted.append((installation_id, repositories))
         return TOKEN
 
-    monkeypatch.setattr(github_app, "get_installation_token", mint)
+    monkeypatch.setattr(github_app, "mint_token", mint)
     return minted
 
 
-def test_token_is_minted_and_injected(jobs, app_configured, capsys):
-    sandbox.create_sandbox("s1", "https://github.com/o/r")
+def test_a_token_for_the_sessions_installation_and_repo_is_injected(jobs, app_configured, capsys):
+    sandbox.create_sandbox("s1", "https://github.com/o/r", installation_id=789)
     env = env_of(jobs[0])
     assert env["GITHUB_TOKEN"] == TOKEN
     assert env["SESSION_ID"] == "s1" and env["REPO_URL"] == "https://github.com/o/r"
-    assert app_configured == [1]
+    assert app_configured == [(789, ["r"])]  # a fresh token, for this repo only
     out = capsys.readouterr()
     assert TOKEN not in out.out + out.err
 
 
 def test_given_token_is_used_as_is(jobs, app_configured):
-    sandbox.create_sandbox("s1", "https://github.com/o/r", token="ghs_given")
+    sandbox.create_sandbox("s1", "https://github.com/o/r", installation_id=789, token="ghs_given")
     assert env_of(jobs[0])["GITHUB_TOKEN"] == "ghs_given"
+    assert app_configured == []
+
+
+def test_no_installation_means_no_token(jobs, app_configured):
+    sandbox.create_sandbox("s1", "https://github.com/o/r")  # GITHUB_INSTALLATION_ID is not a fallback here
+    assert "GITHUB_TOKEN" not in env_of(jobs[0])
     assert app_configured == []
 
 
 def test_no_github_app_means_no_token(jobs, monkeypatch):
     monkeypatch.setattr(config, "GITHUB_APP_ID", None)
-    monkeypatch.setattr(github_app, "get_installation_token",
-                        lambda: pytest.fail("must not mint without GitHub App config"))
-    sandbox.create_sandbox("s1", "https://github.com/o/r")
+    monkeypatch.setattr(github_app, "mint_token", lambda *a, **kw: pytest.fail("must not mint without the App"))
+    sandbox.create_sandbox("s1", "https://github.com/o/r", installation_id=789)
     assert "GITHUB_TOKEN" not in env_of(jobs[0])
 
 

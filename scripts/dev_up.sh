@@ -46,8 +46,9 @@ ready. In two terminals:
   uvicorn gateway.app:app --port 8000
   python -m brain.worker
 (SANDBOX_IDLE_MINUTES=2 on the gateway makes new sandboxes exit after 2 idle minutes)
-Then:
-  curl localhost:8000/models    # ids to pick from; "model" is optional (default: default_model)
-  curl -X POST localhost:8000/sessions -H 'content-type: application/json' \
-       -d '{"repo_url": "https://github.com/Taufik041/otto_test", "task": "...", "model": "openrouter:openrouter/free"}'
+Then open http://localhost:8000/docs: sign up (POST /auth/signup), connect GitHub
+(http://localhost:8000/github/install), and start a chat (POST /sessions {"message", "repo"?}).
+See docs/dev.md ("Trying it without a frontend"). The API needs AUTH_SECRET, and GitHub needs
+GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET and GITHUB_APP_SLUG.
+A database from before migrations must be reset first (docs/dev.md).
 EOF

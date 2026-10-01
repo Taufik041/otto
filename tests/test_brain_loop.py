@@ -197,7 +197,7 @@ TWO_PROVIDERS = {"OPENROUTER_API_KEY": "orkey-one", "OPENROUTER_API_KEY2": "orke
 @pytest.mark.asyncio
 async def test_session_runs_on_its_models_provider(monkeypatch):
     use_env(monkeypatch, TWO_PROVIDERS)
-    create_session("s1", task="hi", repo_url=None, model="openai:model-a", status="queued")
+    create_session("s1", task="hi", repo=None, model="openai:model-a", status="queued")
     ch = FakeChannel()
     results = ch.queue(results_queue("s1"))
     calls = fake_openai(monkeypatch, {"oaikey-one": [llm_final("done")]})

@@ -11,7 +11,7 @@ from shared.models import Session, SessionEvent
 def test_session_and_event_round_trip(db):
     payload = {"message": {"role": "tool", "content": "x", "nested": [1, None, {"a": "ü"}]}}
     with get_db() as s:
-        s.add(Session(id="s1", repo_url=None, task="do it", status="pending", model="m"))
+        s.add(Session(id="s1", repo=None, task="do it", status="pending", model="m"))
         s.add(SessionEvent(session_id="s1", seq=1, ts=datetime.now(timezone.utc),
                            type="llm.message", payload=payload))
 

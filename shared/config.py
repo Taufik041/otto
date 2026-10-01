@@ -116,12 +116,51 @@ K8S_NAMESPACE = os.environ.get("K8S_NAMESPACE", "default")
 SANDBOX_BUS_URL = os.environ.get("SANDBOX_BUS_URL", "amqp://guest:guest@rabbitmq:5672/")  # bus URL as seen from inside the pod
 
 # gateway / worker
-MAX_ACTIVE_SESSIONS = int(os.environ.get("MAX_ACTIVE_SESSIONS", "3"))
+MAX_ACTIVE_SESSIONS = int(os.environ.get("MAX_ACTIVE_SESSIONS", "3"))    # agent sessions at work, per user
+MAX_ACTIVE_SANDBOXES = int(os.environ.get("MAX_ACTIVE_SANDBOXES", "3"))  # agent sessions at work, everyone's
 WORKER_CONCURRENCY = int(os.environ.get("WORKER_CONCURRENCY", "3"))
 CORS_ORIGINS = [o.strip() for o in os.environ.get(
     "CORS_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",") if o.strip()]
+
+# accounts
+AUTH_SECRET = os.environ.get("AUTH_SECRET")  # signs access tokens and OAuth state; at least 32 characters
+ACCESS_TOKEN_MINUTES = int(os.environ.get("ACCESS_TOKEN_MINUTES", "15"))
+REFRESH_TOKEN_DAYS = int(os.environ.get("REFRESH_TOKEN_DAYS", "30"))
+# a token rotated this recently may come back once more (a lost response, two tabs): not theft
+REFRESH_REUSE_GRACE_SECONDS = int(os.environ.get("REFRESH_REUSE_GRACE_SECONDS", "20"))
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+COOKIE_SECURE = FRONTEND_URL.startswith("https://")
+DAILY_TOKEN_LIMIT = int(os.environ.get("DAILY_TOKEN_LIMIT", "50000"))  # a new user's limit
+
+
+def model_prices(env) -> dict[str, dict[str, float]]:
+    """MODEL_PRICES: JSON {model_id: {"input_per_1m": USD, "output_per_1m": USD}}. Unlisted models,
+    and missing fields, cost 0."""
+    if not env.get("MODEL_PRICES"):
+        return {}
+    try:
+        raw = json.loads(env["MODEL_PRICES"])
+    except ValueError as e:
+        raise ValueError(f"MODEL_PRICES is not valid JSON: {e}") from None
+    if not isinstance(raw, dict):
+        raise ValueError('MODEL_PRICES must be a JSON object: {"<model id>": {"input_per_1m": 0.15, '
+                         '"output_per_1m": 0.6}}')
+    prices = {}
+    for model, p in raw.items():
+        entry = {k: (p.get(k, 0) if isinstance(p, dict) else None) for k in ("input_per_1m", "output_per_1m")}
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 for v in entry.values()):
+            raise ValueError(f"MODEL_PRICES[{model!r}] needs non-negative numbers input_per_1m and "
+                             f"output_per_1m; got {p!r}")
+        prices[model] = {k: float(v) for k, v in entry.items()}
+    return prices
+
+
+MODEL_PRICES = model_prices(os.environ)
 
 # github app
 GITHUB_APP_ID = os.environ.get("GITHUB_APP_ID")
 GITHUB_INSTALLATION_ID = os.environ.get("GITHUB_INSTALLATION_ID")
 GITHUB_APP_KEY_PATH = os.environ.get("GITHUB_APP_KEY_PATH", "")
+GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID")          # the App's user OAuth: sign-in, installs
+GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET")
+GITHUB_APP_SLUG = os.environ.get("GITHUB_APP_SLUG")            # github.com/apps/<slug>

@@ -59,7 +59,7 @@ async def run_worker(ch, conn, jobs, concurrency=3):
 
 
 def session(sid, task, status="queued"):
-    create_session(sid, task=task, repo_url="https://github.com/o/r", model="m", status=status)
+    create_session(sid, task=task, repo="o/r", model="m", status=status)
 
 
 @pytest.mark.asyncio
@@ -144,3 +144,28 @@ async def test_failing_session_is_marked_failed_and_the_worker_goes_on(monkeypat
 
     assert get_session("aaaa").status == "failed"
     assert get_session("bbbb").status == "done"
+
+
+@pytest.mark.asyncio
+async def test_a_session_deleted_during_its_turn_ends_quietly(monkeypatch, capsys):
+    from shared.sessions import delete_session
+
+    session("aaaa", "task A")
+    session("bbbb", "task B")
+    real = worker.run_job
+
+    async def deleted_meanwhile(conn, job):
+        if job["session_id"] == "aaaa":
+            delete_session("aaaa")  # DELETE /sessions/aaaa while it runs
+            raise RuntimeError("its events have nowhere to go")
+        await real(conn, job)
+
+    monkeypatch.setattr(worker, "run_job", deleted_meanwhile)
+    fake_llm(monkeypatch, {"task B": [llm_final("ok")]})
+    ch, conn = fake_bus()
+
+    await run_worker(ch, conn, [start_job("aaaa"), start_job("bbbb")])
+
+    assert get_session("aaaa") is None
+    assert get_session("bbbb").status == "done"
+    assert "session aaaa was deleted" in capsys.readouterr().out

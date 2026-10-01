@@ -37,3 +37,8 @@ def start_job(sid: str) -> dict:
 
 def resume_job(sid: str, text: str) -> dict:
     return {"type": "resume", "session_id": sid, "text": text}
+
+
+def chat_job(sid: str, text: str | None = None) -> dict:
+    """A plain-chat turn: the first message (no text) or a follow-up."""
+    return {"type": "chat", "session_id": sid, **({"text": text} if text is not None else {})}

@@ -22,7 +22,8 @@ def bus(sid="s1", answer=True):
 
 
 def types(sid="s1"):
-    return [e.type for e in load_events(sid)]
+    """The session's event types, leaving out llm.usage (tests/test_usage.py covers those)."""
+    return [e.type for e in load_events(sid) if e.type != "llm.usage"]
 
 
 def llm_messages(sid="s1"):
@@ -54,8 +55,8 @@ async def test_rebuild_round_trip_after_two_tool_turns(monkeypatch):
         "llm.message", "session.status"]
     evs = load_events("s1")
     assert [e.seq for e in evs] == list(range(1, len(evs) + 1))
-    assert evs[0].payload == {"task": "fix it", "repo_url": None, "model": "openrouter:openrouter/free"}
-    action, result = evs[5].payload, evs[6].payload
+    assert evs[0].payload == {"task": "fix it", "repo": None, "model": "openrouter:openrouter/free"}
+    action, result = [e.payload for e in evs if e.type != "llm.usage"][5:7]
     assert action["kind"] == "git.status" and result["action_id"] == action["action_id"]
     assert result["ok"] is True and result["payload"]["stdout"] == "ran git.status"
     assert [e.payload["status"] for e in evs if e.type == "session.status"] == ["running", "done"]
@@ -102,8 +103,8 @@ async def test_cancel_mid_turn_then_resume(monkeypatch):
 
     new = load_events("s1")[last_seq:]
     assert [e.seq for e in new] == list(range(last_seq + 1, last_seq + 1 + len(new)))
-    assert [e.type for e in new] == ["llm.message", "llm.message", "session.status",
-                                     "llm.message", "session.status"]
+    assert [e.type for e in new if e.type != "llm.usage"] == ["llm.message", "llm.message", "session.status",
+                                                              "llm.message", "session.status"]
     assert calls[0] == rebuilt + [{"role": "user", "content": "what did you do?"}]
     # the synthetic result is stored too, so the log matches what the model saw
     assert llm_messages() == messages

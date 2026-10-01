@@ -1,7 +1,8 @@
 import base64
 import requests
 
-from gateway.github_app import get_installation_token
+from gateway.github_app import mint_token
+from shared import config
 
 REPO = "Taufik041/otto_test"   # or otto-gym, whichever the app is on
 
@@ -37,7 +38,7 @@ def open_pr(tok):
 
 
 if __name__ == "__main__":
-    tok = get_installation_token()
+    tok = mint_token(config.GITHUB_INSTALLATION_ID)
     print("token:", tok[:12], "...")
     r = requests.get("https://api.github.com/installation/repositories",
                      headers={"Authorization": f"Bearer {tok}"})

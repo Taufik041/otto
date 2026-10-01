@@ -18,6 +18,9 @@ dependencies = [
     "fastapi",
     "uvicorn",
     "websockets",  # uvicorn needs a WebSocket library for the live event stream
+    "alembic",
+    "argon2-cffi",
+    "python-multipart",  # the OAuth2 password form of POST /auth/token
 ]
 
 [project.optional-dependencies]
@@ -25,6 +28,9 @@ dev = ["pytest", "pytest-asyncio", "httpx"]
 
 [tool.setuptools]
 packages = ["shared", "runner", "brain", "orchestrator", "gateway"]
+
+[tool.setuptools.package-data]
+shared = ["migrations/*.py", "migrations/*.mako", "migrations/versions/*.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

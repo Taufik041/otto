@@ -1,9 +1,8 @@
 import json
 
 import pytest
-import sqlalchemy as sa
 
-from shared import config, db as shared_db
+from shared import config
 from shared.bus import make_result, results_queue
 from shared.events import load_events
 from shared.sessions import get_session
@@ -83,7 +82,7 @@ async def test_token_never_reaches_stored_events(monkeypatch):
 
 def test_show_prints_branch_and_pr(monkeypatch, capsys):
     from shared.sessions import create_session, record_pr
-    create_session(config.SESSION_ID, task="t", repo_url=None, model="m")
+    create_session(config.SESSION_ID, task="t", repo=None, model="m")
     record_pr(config.SESSION_ID, PR["number"], PR["html_url"])
 
     brain_main.main(["--show"])
@@ -102,25 +101,3 @@ def test_tools_and_prompt():
     assert SYSTEM.startswith("You are Otto, an autonomous coding agent")
     assert "git_commit with a short message" in SYSTEM  # the existing text is kept
     assert "git_push" in SYSTEM and "git_open_pr" in SYSTEM
-
-
-def test_init_db_adds_new_columns_to_an_old_table(tmp_path, monkeypatch):
-    url = f"sqlite:///{tmp_path / 'old.db'}"
-    old = sa.create_engine(url)
-    with old.begin() as c:  # the sessions table as the previous step created it
-        c.execute(sa.text("CREATE TABLE sessions (id VARCHAR PRIMARY KEY, repo_url VARCHAR, task VARCHAR NOT NULL, "
-                          "status VARCHAR NOT NULL, model VARCHAR NOT NULL, work_branch VARCHAR, "
-                          "created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"))
-        c.execute(sa.text("INSERT INTO sessions VALUES ('s9', NULL, 't', 'done', 'm', NULL, "
-                          "'2026-01-01 00:00:00', '2026-01-01 00:00:00')"))
-    old.dispose()
-
-    monkeypatch.setattr(shared_db, "_engine", None)
-    shared_db.init_db(url)
-    try:
-        cols = {c["name"] for c in sa.inspect(shared_db.get_engine()).get_columns("sessions")}
-        assert "pr_url" in cols
-        assert get_session("s9").pr_url is None
-        shared_db.init_db(url)  # idempotent
-    finally:
-        shared_db.get_engine().dispose()

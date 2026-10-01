@@ -1,22 +1,25 @@
-from datetime import timedelta, timezone
+from datetime import timedelta
 
 from sqlalchemy import func
 from sqlmodel import delete, select, update
 
 from shared.db import get_db
 from shared.events import append_event, redact
-from shared.models import STATUSES, Session, SessionEvent, utcnow
+from shared.models import STATUSES, Session, SessionEvent, Usage, as_utc, make_title, utcnow
 
 ACTIVE = ("provisioning", "queued", "running")  # a sandbox or a worker is (about to be) busy with it
 STALE_AGE = timedelta(minutes=30)     # crash sweep: only sessions older than this...
 STALE_QUIET = timedelta(minutes=10)   # ...with no events for this long
 
 
-def create_session(sid, task, repo_url, model, status="pending") -> Session:
-    row = Session(id=sid, task=redact(task), repo_url=repo_url, model=model, status=status)
+def create_session(sid, task, repo, model, status="pending", user_id=None) -> Session:
+    """A new session. repo is "owner/name", or None for a plain chat; the title comes from task."""
+    task = redact(task)
+    row = Session(id=sid, task=task, title=make_title(task), repo=repo, model=model, status=status,
+                  user_id=user_id)
     with get_db() as s:
         s.add(row)
-    append_event(sid, "session.created", {"task": task, "repo_url": repo_url, "model": model})
+    append_event(sid, "session.created", {"task": task, "repo": repo, "model": model})
     return row
 
 
@@ -26,9 +29,28 @@ def get_session(sid) -> Session | None:
 
 
 def delete_session(sid):
+    """Delete the session and its events. Its usage stays (without the session): it still counts
+    against the user's daily limit."""
     with get_db() as s:
+        s.exec(update(Usage).where(Usage.session_id == sid).values(session_id=None))
         s.exec(delete(SessionEvent).where(SessionEvent.session_id == sid))
         s.exec(delete(Session).where(Session.id == sid))
+
+
+def attach_repo(sid, repo) -> bool:
+    """Give a plain chat its repo, turning it into an agent session. False if it has one already."""
+    with get_db() as s:
+        moved = s.exec(update(Session).where(Session.id == sid, Session.repo.is_(None))
+                       .values(repo=repo, updated_at=utcnow())).rowcount == 1
+    if moved:
+        append_event(sid, "repo.attached", {"repo": repo})
+    return moved
+
+
+def set_title(sid, title):
+    """Rename; doesn't count as activity, so the chat keeps its place in the list."""
+    with get_db() as s:
+        s.exec(update(Session).where(Session.id == sid).values(title=title))
 
 
 def record_pr(sid, number, html_url):
@@ -74,19 +96,29 @@ def transition(sid, status, allowed_from) -> bool:
     return moved
 
 
-def count_active() -> int:
+def count_active_agents(user_id=None) -> int:
+    """Active sessions with a repo (each has a sandbox), everyone's or one user's. Plain chats
+    don't count."""
+    q = select(func.count()).select_from(Session).where(Session.status.in_(ACTIVE), Session.repo.is_not(None))
+    if user_id is not None:
+        q = q.where(Session.user_id == user_id)
     with get_db() as s:
-        return s.exec(select(func.count()).select_from(Session).where(Session.status.in_(ACTIVE))).one()
+        return s.exec(q).one()
 
 
-def list_sessions() -> list[Session]:
+def list_sessions(user_id) -> list[Session]:
+    """The user's sessions, most recently active first."""
     with get_db() as s:
-        return list(s.exec(select(Session).order_by(Session.created_at.desc())).all())
+        return list(s.exec(select(Session).where(Session.user_id == user_id)
+                           .order_by(Session.updated_at.desc(), Session.created_at.desc())).all())
 
 
-def _utc(ts):
-    # SQLite hands back naive datetimes; they were stored as UTC
-    return ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts
+def repo_sessions_since(user_id, since) -> list[Session]:
+    """The user's sessions with a repo that changed since `since`, newest first."""
+    with get_db() as s:
+        return list(s.exec(select(Session).where(Session.user_id == user_id, Session.repo.is_not(None),
+                                                 Session.updated_at >= since)
+                           .order_by(Session.updated_at.desc())).all())
 
 
 def sweep_stale_sessions() -> list[str]:
@@ -101,9 +133,9 @@ def sweep_stale_sessions() -> list[str]:
     swept = []
     for sid, status, created_at in rows:
         quiet_since = last.get(sid)
-        if now - _utc(created_at) < STALE_AGE:
+        if now - as_utc(created_at) < STALE_AGE:
             continue
-        if quiet_since is not None and now - _utc(quiet_since) < STALE_QUIET:
+        if quiet_since is not None and now - as_utc(quiet_since) < STALE_QUIET:
             continue
         if transition(sid, "interrupted", {status}):
             swept.append(sid)
