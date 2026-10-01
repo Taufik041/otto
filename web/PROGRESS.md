@@ -1,9 +1,6 @@
 # Otto web: Part 1 progress
 
-This is a work-in-progress snapshot. **`npm run build` fails at this commit:** `src/App.tsx` is still
-the Vite template, and it imports files I deleted (`App.css`, `assets/*`). There's no `npm test`
-script yet, and `src/test/setup.ts`, which `vite.config.ts` points at, doesn't exist yet.
-`README.md` is still the Vite template's.
+Work in progress. `npm run build` and `npm test` pass from "web: tokens, theme, API client" on.
 
 ## Done
 
