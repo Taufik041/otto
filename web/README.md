@@ -1,32 +1,75 @@
-# React + TypeScript + Vite
+# Otto web
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+The browser app: sign-in, onboarding, chats, and Settings. It uses Vite, React, TypeScript,
+Tailwind, shadcn/ui (Radix), React Router, TanStack Query, Vitest and MSW.
 
-Currently, two official plugins are available:
+## Run it
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+You need Node 22 and the gateway on `http://localhost:8000` (see `../docs/dev.md`).
 
-## React Compiler
+    cd web
+    npm install
+    npm run dev          # http://localhost:5173
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+`VITE_API_URL` sets the gateway's URL; it defaults to `http://localhost:8000`. The gateway's
+`CORS_ORIGINS` must include the app's origin, and its `FRONTEND_URL` must be the app's URL, so
+GitHub sends the browser back here. The defaults (`http://localhost:5173`) already match.
 
-## Expanding the Oxlint configuration
+| Script | What it does |
+|---|---|
+| `npm run dev` | The dev server, with hot reload. |
+| `npm run build` | Type-checks (`tsc -b`) and builds into `dist/`. |
+| `npm test` | Vitest, once. `npm run test:watch` keeps it running. Tests mock the API with MSW and never touch the network. |
+| `npm run screenshots` | Playwright screenshots of the main screens at 1440px and 390px, light and dark, into `screenshots/`. They show the design brief's sample data from a mocked API. Needs `npm run dev` running and `npx playwright install chromium` once. |
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+## How it's put together
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
+- **`src/api/client.ts`:** the API client and the signed-in state.
+  - The access token lives only in memory and goes out as `Authorization: Bearer`.
+  - Every request sends cookies (`credentials: "include"`), for the refresh cookie.
+  - On load the app calls `POST /auth/refresh`.
+  - A 401 refreshes once and retries the request once. A refresh the gateway refuses signs out.
+  - Refreshes are single-flight: one promise per tab, plus `navigator.locks` across tabs.
+  - The next refresh is scheduled about a minute before the token expires.
+- **`src/api/index.ts`:** one function per endpoint.
+- **`src/api/queries.ts`:** the TanStack Query hooks.
+- **`src/index.css`:** the design tokens (copied from `docs/design/Otto v3.dc.html`) for light and
+  dark, as CSS variables. Tailwind utilities map onto them (`bg-bg2`, `text-muted`,
+  `border-line`, `bg-accent-bg`, ...). The theme is `data-theme` on `<html>`. The choice
+  (Light / Dark / System) is kept in `localStorage` as `otto.theme`, and `index.html` applies it
+  before first paint.
+- **`src/components/ui/`:** shadcn components (button, dropdown menu, dialog, field), restyled to
+  the design.
+- **`src/composer/`:** the composer. It has the `@` repo picker and the model picker; on phones
+  both become bottom sheets. It also shows the inline cards for the daily limit, the
+  active-session cap and an unavailable model.
+- **`src/shell/`:** the sidebar (collapsible; a drawer on phones), the top bar, the profile menu
+  and deleting a chat.
+- **`src/pages/`:** sign-in and sign-up, password reset, `/auth/callback`, onboarding
+  (`/welcome`), home, the chat page (a placeholder until Part 2) and Settings.
+- **`src/utils/`:** pure helpers with tests: mention parsing, grouping chats by day, status dots,
+  formatting. (It isn't called `lib/`, because the repo's `.gitignore` ignores `lib/`.)
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+### GitHub round trips
+
+The gateway sends the browser back from GitHub to one of two places:
+
+- `/auth/callback`, after a sign-in or linking an account.
+- `/settings/github`, after an install.
+
+Before leaving, the app writes the page to come back to in `sessionStorage` (`otto.return`), and
+those two pages send you on to it. That's how onboarding and the @ picker get you back where you
+started. When you cancel on GitHub, the gateway redirects to `/?github_error=...`, and the app
+explains it on /login (signed out) or on home (signed in).
+
+### Onboarding
+
+`/welcome` is offered after signing up, and after a GitHub sign-in that created a new account. It
+has three steps, and the first two can be skipped:
+
+1. Connect GitHub: `POST /auth/github/url` with `{mode: "link"}`.
+2. Install on repositories: `POST /github/install-url`.
+3. The "Connected. N repositories available." screen.
+
+Once you finish or skip, it isn't offered again in this browser
+(`localStorage` `otto.onboarded.<user id>`).

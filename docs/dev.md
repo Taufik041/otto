@@ -1,5 +1,15 @@
 # Developing Otto
 
+## The web app
+
+The frontend is in `web/` (see `web/README.md`). With the gateway running on port 8000:
+
+    cd web && npm install      # once
+    cd web && npm run dev      # http://localhost:5173
+
+It signs in with the access and refresh tokens described under "How sign-in works" below.
+`npm test` runs its tests (no network) and `npm run build` type-checks and builds it.
+
 ## Database and migrations
 
 The schema lives in `shared/models.py` and is changed only through Alembic migrations in
@@ -44,6 +54,7 @@ Stop the gateway and workers first, since they hold connections.
 | `FRONTEND_URL` | `http://localhost:5173` | Where the GitHub callback sends the browser afterwards (`/auth/callback` after a sign-in), and the base of password-reset links. An `https://` URL also makes the cookies `Secure`. |
 | `DAILY_TOKEN_LIMIT` | `50000` | A new user's daily token limit (UTC days). Existing users keep theirs (`users.daily_token_limit`). |
 | `MODEL_PRICES` | `{}` | JSON `{"<model id>": {"input_per_1m": 0.15, "output_per_1m": 0.6}}` in USD, keyed by catalog id (`GET /models`). Unlisted models count as free. |
+| `OTTO_MODELS` | built from the env | A JSON list of `{id, provider, model, label, description}` replacing the model catalog (`GET /models`). `description` is the one line under the model in the picker; an unavailable model (its provider has no key) gets a `hint` instead of being hidden. |
 | `MAX_ACTIVE_SESSIONS` | `3` | Agent sessions (chats with a repo) one user may have at work at once (provisioning, queued or running). Plain chats don't count. |
 | `MAX_ACTIVE_SANDBOXES` | `3` | The same, for everyone together: protects the cluster. Sandboxes kept warm between turns don't count; they exit after `SANDBOX_IDLE_MINUTES`. |
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Origins allowed to call the API with credentials, to use the refresh cookie (`/auth/refresh`, `/auth/logout`; the gateway's own origin may too, for `/docs`), and to open the WebSocket. |
@@ -101,7 +112,9 @@ In the App's settings on GitHub:
 The frontend keeps the access token in memory, calls `/auth/refresh` (with
 `credentials: "include"`) on load and whenever it gets a 401, and opens the WebSocket with a fresh
 ticket each time. The GitHub callback ends a sign-in at `FRONTEND_URL/auth/callback` with a new
-refresh cookie; that page calls `/auth/refresh` to get its access token. Cookies set by the API
+refresh cookie; that page calls `/auth/refresh` to get its access token. (`web/src/api/client.ts`
+does all this; with the web app running, signing in at `http://localhost:5173` is easier than the
+/docs and curl routes below.) Cookies set by the API
 (the refresh and nonce cookies) need the frontend and the API on the same site, as
 `localhost:5173` and `localhost:8000` are.
 

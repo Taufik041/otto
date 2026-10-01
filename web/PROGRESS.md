@@ -1,6 +1,6 @@
 # Otto web: Part 1 progress
 
-Work in progress. `npm run build` and `npm test` pass from "web: tokens, theme, API client" on.
+Part 1 is done. `npm run build`, `npm test` and backend `pytest -q` pass. How to run it is in `README.md`.
 
 ## Done
 
@@ -24,40 +24,57 @@ Work in progress. `npm run build` and `npm test` pass from "web: tokens, theme, 
   colours (classes `i` and `a` with no rules), so on its own it neither switches with the colour
   scheme nor shows the right colours. The style block makes it light/dark aware.
 
-## Next
+## Also done
 
-1. **`src/index.css`:** the mockup's tokens for light and dark (`--bg`, `--bg2`, `--card`,
-   `--text`, `--muted`, `--line`, `--hair`, `--accent`, the status colours, etc.), mapped through
-   Tailwind `@theme inline`. Add the keyframes (rise, fade, pop, sheet, spin, pulse) and the
-   reduced-motion rule. In `index.html`, add a script that applies the theme before first paint.
-2. **Theme:** Light / Dark / System, saved in localStorage as `otto.theme`, and applied as
-   `data-theme` on `<html>`.
-3. **`src/api/`:**
-   - **The auth client:** a factory, so it can be tested.
-     - The access token lives in memory only.
-     - Refresh is single-flight: one in-flight promise, plus `navigator.locks` across tabs.
-     - A 401 refreshes once and retries once. If the token changed while the request was in
-       flight, it just retries.
-     - It refreshes proactively about 60s before expiry.
-     - A failed refresh signs you out. A network error does not.
-   - **API types and TanStack Query hooks:** me, models, repos, sessions, usage, github.
-4. **Pages:**
-   - Auth: /login, /signup, /forgot-password, /reset-password and /auth/callback.
-   - /welcome, the onboarding flow:
-     - Step 1, link GitHub: `POST /auth/github/url` with mode `"link"`.
-     - Step 2, install: `POST /github/install-url`.
-     - Step 3, done: "Connected. N repositories available."
-   - The shell: sidebar, drawer, row menu with Delete, and the profile menu.
-   - Home: the composer with the @ picker and the model picker.
-   - `/c/:id` as a placeholder.
-   - Settings: account, github, models, usage and appearance.
-5. **Tests:**
-   - The auth client.
-   - Mention parsing.
-   - The model picker's disabled state.
-   - Grouping sessions by date.
-6. **Last:** README, docs/dev.md, Playwright screenshots at 1440 and 390 in light and dark, and
-   fixing whatever differs from the mockup.
+- **Tokens and theme:** the tokens are in `src/index.css`. The theme (Light / Dark / System) is
+  in `src/theme`, and `index.html` applies it before first paint.
+- **The API client:** `src/api/client.ts`, with tests.
+- **Pages:**
+  - Sign in and sign up.
+  - Forgot and reset password.
+  - `/auth/callback`.
+  - Onboarding (`/welcome`).
+  - The shell: sidebar, drawer, row menu with Delete, and the profile menu.
+  - Home with the composer.
+  - The `/c/:id` placeholder.
+  - Settings: Account, GitHub, Models, Usage and Appearance.
+- **Tests (46):**
+  - The auth client.
+  - Mention parsing.
+  - The model picker.
+  - The composer.
+  - Grouping sessions by date.
+  - Formatting.
+  - The sign-in guards.
+- **Real-gateway check:** a Playwright smoke run against the gateway passed. It covered sign-up,
+  onboarding skip, restoring the session on reload, sending a plain chat, the Settings pages,
+  renaming, deleting a chat, sign-out, sign-in, and deleting the account.
+- **Screenshots:** `npm run screenshots` captures the main screens, and they were compared with
+  the mockup at 1440 and 390 in light and dark.
+
+## Next (Part 2)
+
+- The conversation at `/c/:id`:
+  - Events over the WebSocket (`POST /sessions/{id}/ws-ticket`).
+  - Work blocks and the PR card.
+  - Follow-ups with `POST /sessions/{id}/messages`.
+  - Stop and Rename in the "⋯" menu.
+- The workspace panel: Changes and Terminal.
+
+## Differences from the design
+
+- **"Help" is left out of the profile menu:** there's nowhere for it to go yet.
+- **The "Check your inbox" screen says the link "expires in an hour":** the gateway's reset links
+  last an hour, not the mockup's 30 minutes.
+- **GitHub settings handles more than one installation:** with one, "Disconnect" sits beside "Add
+  or remove repositories", as designed. With several, they're listed under "Installations", each
+  with its own Disconnect. The gateway disconnects per installation, and its answer links to
+  uninstalling on GitHub.
+- **Things the design doesn't show, but the spec or API needed:**
+  - Settings › Account has an editable Name row and "Sign out of all devices".
+  - Settings › Usage lists active sandboxes with Stop.
+  - There's a `/reset-password` page for the emailed link.
+  - Sign-up and sign-in check for empty fields inline, because their buttons are never disabled.
 
 ## Decisions
 
@@ -77,7 +94,5 @@ Work in progress. `npm run build` and `npm test` pass from "web: tokens, theme, 
   /welcome for the success state. No backend change is needed.
 - **GitHub cancels:** the callback sends a cancel to `/?github_error=...`. Signed out, that goes to
   /login with a friendly message. Signed in, it shows a notice on home.
-- **"Help" in the profile menu:** the design has it, but there's nowhere for it to go yet. I plan
-  to leave it out and list it in the summary as a difference.
 - **Sending needs text,** because `POST /sessions` requires a non-empty `message`. A repo chip on
   its own isn't enough.
