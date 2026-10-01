@@ -261,7 +261,7 @@ def signup(client, email="taufik@example.com", name="Taufik Khan", password=PASS
     """Sign up through the API; the client keeps the login cookie. Returns GET /me."""
     r = client.post("/auth/signup", json={"name": name, "email": email, "password": password})
     assert r.status_code == 201, r.text
-    return r.json()
+    return r.json()["user"]
 
 
 def log_in_as(client, user_id):

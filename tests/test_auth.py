@@ -28,7 +28,7 @@ def test_signup_logs_in_with_an_httponly_lax_cookie(client):
                                           "password": PASSWORD})
 
     assert r.status_code == 201
-    me = r.json()
+    me = r.json()["user"]
     assert (me["name"], me["email"], me["has_password"]) == ("Taufik Khan", "taufik@example.com", True)
     assert me["github_login"] is None and me["daily_token_limit"] == 50000
     header = cookie_header(r).lower()
@@ -81,7 +81,7 @@ def test_login_and_logout(client):
     assert client.get("/me").status_code == 401
 
     r = client.post("/auth/login", json={"email": " TAUFIK@example.com", "password": PASSWORD})
-    assert r.status_code == 200 and r.json()["id"] == me["id"]
+    assert r.status_code == 200 and r.json()["user"]["id"] == me["id"]
     assert "httponly" in cookie_header(r).lower()
     assert client.get("/me").json()["id"] == me["id"]
 
@@ -138,10 +138,10 @@ def test_state_changing_requests_must_be_json(client, ctype):
     headers = {"content-type": ctype} if ctype else {}
     if ctype is None:
         client.headers.pop("content-type")
-    r = client.post("/auth/logout", content=b"", headers=headers)
+    r = client.post("/auth/logout-all", content=b"", headers=headers)
     assert r.status_code == 415
     assert client.get("/me").status_code == 200  # still logged in
-    r = client.post("/auth/login", content=b"email=a&password=b", headers=headers)
+    r = client.patch("/me", content=b"name=b", headers=headers)
     assert r.status_code == 415
 
 

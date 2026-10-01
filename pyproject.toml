@@ -20,6 +20,7 @@ dependencies = [
     "websockets",  # uvicorn needs a WebSocket library for the live event stream
     "alembic",
     "argon2-cffi",
+    "python-multipart",  # the OAuth2 password form of POST /auth/token
 ]
 
 [project.optional-dependencies]

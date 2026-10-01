@@ -72,11 +72,18 @@ app.include_router(auth.router)
 app.include_router(github_app.router)
 
 
+# these don't read the login cookie: /auth/token takes a form, refresh and logout check the Origin
+TOKEN_ROUTES = {"/auth/token", "/auth/refresh", "/auth/logout"}
+
+
 @app.middleware("http")
 async def json_only_writes(request: Request, call_next):
-    """CSRF protection alongside the SameSite=Lax cookie: a cross-site form can only send form or
-    text bodies, and a cross-site fetch with a JSON content type needs a CORS preflight."""
-    if request.method not in ("GET", "HEAD", "OPTIONS"):
+    """CSRF protection for the login cookie, alongside SameSite=Lax: a cross-site form can only
+    send form or text bodies, and a cross-site fetch with a JSON content type needs a CORS
+    preflight. Requests without that cookie (Bearer tokens, the refresh routes) don't need it."""
+    bearer = request.headers.get("authorization", "").lower().startswith("bearer ")  # then the cookie is ignored
+    cookie = auth.COOKIE in request.cookies and not bearer and request.url.path not in TOKEN_ROUTES
+    if request.method not in ("GET", "HEAD", "OPTIONS") and cookie:
         ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
         if ctype != "application/json":
             return JSONResponse({"detail": "send state-changing requests as application/json"}, 415)
@@ -492,6 +499,7 @@ async def delete_me(response: Response, user: User = Depends(auth.current_user))
     await asyncio.to_thread(delete_account, user.id)
     github_app.forget(user.id)
     auth.clear_login(response)
+    auth.clear_refresh(response)
     return {"ok": True}
 
 
