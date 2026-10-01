@@ -9,23 +9,32 @@ GET /user/installations for the user who just authorized. Repos picked on github
 as setup_action=update without Otto's state: that only refreshes caches, for a signed-in user
 whose GitHub confirms the installation, and never links anything.
 
-The OAuth state is a signed token (auth.sign, audience "github-state") holding the flow, the user
-signed in when it started, and a nonce that must match a cookie set in this browser. So a state
-(and code) started by someone else can't be replayed in a victim's browser to link the
+The frontend starts a flow with POST /auth/github/url (sign in, or link GitHub to the signed-in
+account) or POST /github/install-url, and sends the browser to the URL it gets back. The OAuth
+state is a signed token (auth.sign, audience "github-state") holding the flow, the user who
+started it (for a link or an install), and a nonce that must match a cookie set in this browser.
+So a state (and code) started by someone else can't be replayed in a victim's browser to link the
 attacker's GitHub account to the victim's Otto account. Each state has its own cookie
-(nonce_cookie), so a second /start (a prefetch, a double click, a reload) doesn't void the first.
+(nonce_cookie), so a second start (a prefetch, a double click, a reload) doesn't void the first.
+
+The callback is a top-level GET from github.com, so it carries no access token; the refresh
+cookie does reach it (SameSite=Lax, Path=/auth). A sign-in ends with a new refresh cookie and a
+redirect to FRONTEND_URL/auth/callback, where the frontend calls /auth/refresh.
 """
 import hashlib, json, jwt, secrets, time, uuid
 from datetime import timedelta
 from urllib.parse import quote, urlencode
 
 import requests
-from fastapi import APIRouter, Depends, HTTPException, Request
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
-from gateway import auth
+from gateway import auth, tokens
 from shared import config
 from shared.db import get_db
 from shared.models import Installation, User
@@ -176,28 +185,49 @@ def nonce_cookie(nonce) -> str:
     return "gh_nonce_" + hashlib.sha256(nonce.encode()).hexdigest()[:12]
 
 
-def _redirect_with_state(url, params, flow, user) -> RedirectResponse:
-    """Redirect to GitHub with a new state for `flow`, and remember its nonce in this browser."""
+def _with_state(response: Response, url, params, flow, user: User | None) -> str:
+    """url with a new state for `flow` started by user (None: signed out); the state's nonce is
+    remembered in this browser by a cookie on response."""
     nonce = secrets.token_urlsafe(24)
     state = auth.sign({"flow": flow, "uid": user.id if user else None, "nonce": nonce}, "github-state", STATE_TTL)
-    r = RedirectResponse(f"{url}?{urlencode({**params, 'state': state})}", 302)
-    r.set_cookie(nonce_cookie(nonce), nonce, max_age=int(STATE_TTL.total_seconds()), httponly=True,
-                 samesite="lax", secure=config.COOKIE_SECURE, path=NONCE_PATH)
-    return r
+    response.set_cookie(nonce_cookie(nonce), nonce, max_age=int(STATE_TTL.total_seconds()), httponly=True,
+                        samesite="lax", secure=config.COOKIE_SECURE, path=NONCE_PATH)
+    return f"{url}?{urlencode({**params, 'state': state})}"
 
 
-def _check_state(request: Request, state, user: User | None) -> dict:
-    """The state's claims if it is valid and was started in this browser, by whoever is signed in
-    now. A state started signed out is fine for a signed-in user (a prefetch of /start may come
-    without cookies): the callback then links GitHub to them, and never makes a second account."""
+def _check_state(request: Request, state) -> dict:
+    """The state's claims if it is valid and was started in this browser."""
     claims = auth.verify(state, "github-state") if state else None
     nonce = str((claims or {}).get("nonce", ""))
     cookie = request.cookies.get(nonce_cookie(nonce)) if nonce else None
     if not cookie or not secrets.compare_digest(nonce, cookie):
         raise HTTPException(400, "invalid or expired GitHub state; start again")
-    if claims.get("uid") is not None and claims["uid"] != (user.id if user else None):
-        raise HTTPException(400, "you signed in or out since this started; start again")
     return claims
+
+
+def _browser_user(request: Request) -> User | None:
+    """Whoever is signed in in this browser, by its refresh cookie (not rotated)."""
+    user_id = tokens.refresh_user(request.cookies.get(auth.REFRESH_COOKIE))
+    if user_id is None:
+        return None
+    with get_db() as s:
+        return s.get(User, user_id)
+
+
+def _flow_user(claims, browser: User | None) -> User | None:
+    """Who the flow is for: the user who started it, else whoever is signed in in this browser.
+    A state started signed out is fine for a signed-in user (a prefetch may come without
+    cookies): GitHub is then linked to them, and never made a second account."""
+    uid = claims.get("uid")
+    if uid is None:
+        return browser
+    if browser is not None and browser.id != uid:
+        raise HTTPException(400, "you signed in or out since this started; start again")
+    with get_db() as s:
+        user = s.get(User, uid)
+    if user is None:
+        raise HTTPException(400, "that account no longer exists; start again")
+    return user
 
 
 def _finish(url, claims) -> RedirectResponse:
@@ -237,38 +267,64 @@ def github_user(user_token) -> dict:
     return _json("GET", f"{API}/user", headers=_headers(user_token))
 
 
-@router.get("/auth/github/start")
-def github_start(user: User | None = Depends(auth.optional_user)):
-    """Sign in with GitHub; when signed in already, link GitHub to this account."""
+def _authorize(response: Response, user: User | None) -> str:
+    return _with_state(response, f"{WEB}/login/oauth/authorize", {"client_id": config.GITHUB_CLIENT_ID},
+                       "signin", user)
+
+
+class GitHubUrl(BaseModel):
+    mode: Literal["signin", "link"] = "signin"
+
+
+@router.post("/auth/github/url")
+def github_url(body: GitHubUrl, response: Response, user: User | None = Depends(auth.optional_user)):
+    """Where to send the browser to sign in with GitHub, or (mode "link", signed in) to link
+    GitHub to this account. Sets the state's nonce cookie, so call it from the browser."""
     _need_oauth()
-    return _redirect_with_state(f"{WEB}/login/oauth/authorize", {"client_id": config.GITHUB_CLIENT_ID},
-                                "signin", user)
+    if body.mode == "link" and user is None:
+        raise HTTPException(401, "sign in first", headers={"WWW-Authenticate": "Bearer"})
+    return {"url": _authorize(response, user if body.mode == "link" else None)}
 
 
-@router.get("/github/install")
-def github_install(user: User = Depends(auth.current_user)):
-    """Install the App (or change its repos) on GitHub, which comes back to the callback."""
+@router.get("/auth/github/start")
+def github_start():
+    """Sign in with GitHub straight from the browser's address bar (handy for manual tests). It
+    links GitHub to whoever is signed in in this browser, if anyone."""
+    _need_oauth()
+    r = RedirectResponse("", 302)
+    r.headers["location"] = _authorize(r, None)  # the cookie and the URL come together
+    return r
+
+
+@router.post("/github/install-url")
+def github_install_url(response: Response, user: User = Depends(auth.current_user)):
+    """Where to send the browser to install the App (or change its repos) on GitHub, which comes
+    back to the callback. Sets the state's nonce cookie, so call it from the browser."""
     _need_oauth()
     if not config.GITHUB_APP_SLUG:
         raise HTTPException(503, "set GITHUB_APP_SLUG to the App's name in its github.com/apps/<slug> URL")
-    return _redirect_with_state(f"{WEB}/apps/{config.GITHUB_APP_SLUG}/installations/new", {}, "install", user)
+    return {"url": _with_state(response, f"{WEB}/apps/{config.GITHUB_APP_SLUG}/installations/new", {},
+                               "install", user)}
 
 
 @router.get("/auth/github/callback")
 def github_callback(request: Request, state: str | None = None, code: str | None = None,
                     error: str | None = None, installation_id: int | None = None,
-                    setup_action: str | None = None, user: User | None = Depends(auth.optional_user)):
+                    setup_action: str | None = None):
     """Both flows come back here: an install or update (installation_id and setup_action in the
     query), or a sign-in / account link."""
     if state is None and setup_action == "update" and installation_id is not None:
-        return _updated_on_github(user, installation_id, code)
-    claims = _check_state(request, state, user)
+        return _updated_on_github(_browser_user(request), installation_id, code)
+    claims = _check_state(request, state)
+    user = _flow_user(claims, _browser_user(request))
     if error:  # the user cancelled on GitHub
         return _finish(f"{config.FRONTEND_URL}/?github_error={quote(error)}", claims)
     installing = installation_id is not None and setup_action is not None
     if installing != (claims["flow"] == "install"):
         raise HTTPException(400, "unexpected GitHub callback; start again")
     if installing:
+        if user is None:
+            raise HTTPException(400, "unexpected GitHub callback; start again")
         return _installed(user, installation_id, setup_action, code, claims)
     if not code:
         raise HTTPException(400, "unexpected GitHub callback; start again")
@@ -278,8 +334,8 @@ def github_callback(request: Request, state: str | None = None, code: str | None
         print(f"[github] sign-in failed: {e}", flush=True)
         raise _refused(e, "GitHub sign-in failed; try again") from None
     user = _sign_in(user, gh)
-    r = _finish(config.FRONTEND_URL, claims)
-    auth.set_login(r, user)
+    r = _finish(f"{config.FRONTEND_URL}/auth/callback", claims)
+    auth.set_refresh(r, tokens.issue_refresh(user.id, request.headers.get("user-agent")))
     return r
 
 

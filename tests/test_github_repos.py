@@ -29,7 +29,7 @@ def me(client):
 def install(client, fake_github, iid=INST, code="c1", setup_action="install", state=None):
     """Go through /github/install and come back as GitHub would."""
     return callback(client, code=code, installation_id=iid, setup_action=setup_action,
-                    state=state or start(client, "/github/install"))
+                    state=state or start(client, "install"))
 
 
 def links() -> list[tuple]:
@@ -39,19 +39,20 @@ def links() -> list[tuple]:
 
 # --- installing -----------------------------------------------------------------------
 
-def test_install_redirects_to_the_apps_install_page_with_a_state_for_this_user(client, fake_github, me):
-    r = client.get("/github/install", follow_redirects=False)
-    url = urlsplit(r.headers["location"])
+def test_install_url_points_at_the_apps_install_page_with_a_state_for_this_user(client, fake_github, me):
+    r = client.post("/github/install-url")
+    url = urlsplit(r.json()["url"])
     assert f"{url.scheme}://{url.netloc}{url.path}" == "https://github.com/apps/ottoci/installations/new"
     claims = auth.verify(parse_qs(url.query)["state"][0], "github-state")
     assert (claims["flow"], claims["uid"]) == ("install", me["id"])
+    assert github_app.nonce_cookie(claims["nonce"]) in r.headers["set-cookie"]
 
 
 def test_install_needs_a_login_and_the_app_configured(client, fake_github, monkeypatch):
-    assert client.get("/github/install", follow_redirects=False).status_code == 401
+    assert client.post("/github/install-url").status_code == 401
     signup(client)
     monkeypatch.setattr(config, "GITHUB_APP_SLUG", None)
-    assert client.get("/github/install", follow_redirects=False).status_code == 503
+    assert client.post("/github/install-url").status_code == 503
 
 
 def test_a_valid_installation_is_saved(client, fake_github, me):
@@ -76,7 +77,7 @@ def test_duplicate_install_starts_both_work(client, fake_github, me):
     fake_github.codes["c2"] = token
     fake_github.add_installation(INST, "Taufik041", users=[token])
     fake_github.add_installation(777, "some-org", users=[token])
-    first, second = start(client, "/github/install"), start(client, "/github/install")
+    first, second = start(client, "install"), start(client, "install")
 
     assert install(client, fake_github, state=first).status_code in (302, 307)
     assert install(client, fake_github, iid=777, code="c2", state=second).status_code in (302, 307)
@@ -122,7 +123,7 @@ def test_an_install_callback_without_an_install_state_is_400(client, fake_github
 
 def test_an_install_state_cant_be_used_to_sign_in(client, fake_github, me):
     fake_github.add_user("c1", gid=101, login="Taufik041")
-    assert callback(client, code="c1", state=start(client, "/github/install")).status_code == 400
+    assert callback(client, code="c1", state=start(client, "install")).status_code == 400
 
 
 def test_an_installation_linked_to_another_otto_user_is_409(client, fake_github, me):
@@ -157,7 +158,7 @@ def test_setup_action_update_only_refreshes_the_caches(client, fake_github, me, 
     install(client, fake_github)
     assert len(client.get("/repos").json()) == 1
     fake_github.repos[INST].append(repo("Taufik041/portfolio"))  # the user picked another repo on GitHub
-    state = start(client, "/github/install")
+    state = start(client, "install")
     before = list(fake_github.calls)
 
     r = install(client, fake_github, code="c2", setup_action="update", state=state)

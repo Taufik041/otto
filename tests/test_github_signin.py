@@ -1,4 +1,5 @@
-"""GitHub sign-in and account linking through GET /auth/github/start and /auth/github/callback."""
+"""GitHub sign-in and account linking: POST /auth/github/url (or GET /auth/github/start), then
+/auth/github/callback, which sets the refresh cookie and sends the browser to /auth/callback."""
 from datetime import timedelta
 from urllib.parse import parse_qs, urlsplit
 
@@ -9,18 +10,33 @@ from gateway import auth, github_app
 from shared import config
 from shared.db import get_db
 from shared.models import User
-from tests.fakes import log_in_as, sign_out, signup
+from tests.fakes import sign_out, signup
 
 
-def start(client, path="/auth/github/start") -> str:
-    """Begin a flow; returns the state GitHub would hand back."""
-    r = client.get(path, follow_redirects=False)
-    assert r.status_code in (302, 307), r.text
-    return parse_qs(urlsplit(r.headers["location"]).query)["state"][0]
+def start(client, how="get") -> str:
+    """Begin a flow: "get" (GET /auth/github/start), "signin" or "link" (POST /auth/github/url),
+    or "install" (POST /github/install-url). Returns the state GitHub would hand back."""
+    if how == "get":
+        r = client.get("/auth/github/start", follow_redirects=False)
+        assert r.status_code in (302, 307), r.text
+        url = r.headers["location"]
+    else:
+        r = (client.post("/github/install-url") if how == "install"
+             else client.post("/auth/github/url", json={"mode": how}))
+        assert r.status_code == 200, r.text
+        url = r.json()["url"]
+    return parse_qs(urlsplit(url).query)["state"][0]
 
 
 def callback(client, **params):
-    return client.get("/auth/github/callback", params=params, follow_redirects=False)
+    """Come back from GitHub. A sign-in lands on the frontend's /auth/callback, which then (like
+    the frontend) trades the refresh cookie for an access token."""
+    r = client.get("/auth/github/callback", params=params, follow_redirects=False)
+    if r.status_code in (302, 307) and r.headers["location"] == f"{config.FRONTEND_URL}/auth/callback":
+        got = client.post("/auth/refresh")
+        assert got.status_code == 200, got.text
+        client.headers["Authorization"] = f"Bearer {got.json()['access_token']}"
+    return r
 
 
 def nonce_cookies(client) -> list[str]:
@@ -52,7 +68,9 @@ def test_sign_in_creates_a_user(client, fake_github):
 
     r = callback(client, code="c1", state=start(client))
 
-    assert r.status_code in (302, 307) and r.headers["location"] == "http://localhost:5173"
+    assert r.status_code in (302, 307) and r.headers["location"] == "http://localhost:5173/auth/callback"
+    header = [v for k, v in r.headers.multi_items() if k == "set-cookie" and v.startswith("otto_refresh=")][0]
+    assert "httponly" in header.lower() and "path=/auth" in header.lower()
     me = client.get("/me").json()
     assert (me["name"], me["github_login"], me["avatar_url"]) == (
         "Taufik Khan", "Taufik041", "https://avatars.githubusercontent.com/u/101")
@@ -87,10 +105,47 @@ def test_a_logged_in_user_links_github_to_their_account(client, fake_github):
     assert [(u.id, u.github_id) for u in users()] == [(me["id"], 101)]
 
 
-def test_start_reads_the_login_cookie(client, fake_github):
+def test_the_url_endpoint_sets_the_nonce_cookie_and_link_mode_puts_the_uid_in_the_state(client, fake_github):
     me = signup(client)
-    claims = auth.verify(start(client), "github-state")
-    assert claims["uid"] == me["id"]
+    r = client.post("/auth/github/url", json={"mode": "link"})
+    claims = auth.verify(parse_qs(urlsplit(r.json()["url"]).query)["state"][0], "github-state")
+    assert (claims["flow"], claims["uid"]) == ("signin", me["id"])
+    header = r.headers["set-cookie"].lower()
+    assert header.startswith(github_app.nonce_cookie(claims["nonce"]) + "=") and "path=/auth/github" in header
+
+
+def test_signin_mode_needs_no_login_and_has_no_uid(client, fake_github):
+    r = client.post("/auth/github/url", json={"mode": "signin"})
+    url = urlsplit(r.json()["url"])
+    assert (url.netloc, url.path) == ("github.com", "/login/oauth/authorize")
+    assert auth.verify(parse_qs(url.query)["state"][0], "github-state")["uid"] is None
+
+
+def test_link_mode_needs_a_login(client, fake_github):
+    assert client.post("/auth/github/url", json={"mode": "link"}).status_code == 401
+    assert client.post("/auth/github/url", json={"mode": "other"}).status_code == 422
+
+
+def test_link_mode_links_by_the_states_uid_without_a_refresh_cookie(client, fake_github):
+    me = signup(client)
+    state = start(client, "link")
+    client.cookies.delete("otto_refresh")
+    fake_github.add_user("c1", gid=101, login="Taufik041")
+
+    r = callback(client, code="c1", state=state)
+
+    assert r.headers["location"] == "http://localhost:5173/auth/callback"
+    assert client.get("/me").json()["id"] == me["id"]
+    assert [(u.id, u.github_id) for u in users()] == [(me["id"], 101)]
+
+
+def test_a_link_for_a_deleted_account_is_400(client, fake_github):
+    signup(client)
+    state = start(client, "link")
+    client.delete("/me")
+    fake_github.add_user("c1", gid=101, login="Taufik041")
+    assert callback(client, code="c1", state=state).status_code == 400
+    assert users() == []
 
 
 def test_a_state_started_signed_out_links_to_whoever_is_signed_in_at_the_callback(client, fake_github):
@@ -188,8 +243,9 @@ def test_a_state_from_another_browser_is_400(client, fake_github):
 
 def test_a_state_started_by_someone_else_is_400(client, fake_github):
     a = signup(client, email="a@example.com")
-    state = start(client)  # started while signed in as A
-    log_in_as(client, signup(client, email="b@example.com")["id"])
+    state = start(client, "link")  # started while signed in as A
+    sign_out(client)
+    signup(client, email="b@example.com")
     fake_github.add_user("c1", gid=101, login="Taufik041")
     assert callback(client, code="c1", state=state).status_code == 400
     assert all(u.github_id is None for u in users()) and a
@@ -228,13 +284,13 @@ def test_a_bad_code_is_400_and_githubs_answer_is_logged(client, fake_github, cap
     assert "bad_verification_code" in out and "The code passed is incorrect or expired." in out
 
 
-@pytest.mark.parametrize("path", ["/auth/github/start", "/github/install"])
+@pytest.mark.parametrize("path", ["get", "install"])
 def test_wrong_client_credentials_say_so_and_never_log_the_secret(client, fake_github, monkeypatch, capsys, path):
-    if path == "/github/install":
+    if path == "install":
         signup(client)
     monkeypatch.setattr(config, "GITHUB_CLIENT_SECRET", "wrong-secret-0123456789")
     fake_github.add_user("c1", gid=101, login="Taufik041")
-    extra = {"installation_id": 555, "setup_action": "install"} if path == "/github/install" else {}
+    extra = {"installation_id": 555, "setup_action": "install"} if path == "install" else {}
 
     r = callback(client, code="c1", state=start(client, path), **extra)
 
@@ -248,6 +304,7 @@ def test_wrong_client_credentials_say_so_and_never_log_the_secret(client, fake_g
 def test_github_sign_in_needs_the_oauth_app_configured(client, monkeypatch):
     monkeypatch.setattr(config, "GITHUB_CLIENT_ID", None)
     assert client.get("/auth/github/start", follow_redirects=False).status_code == 503
+    assert client.post("/auth/github/url", json={"mode": "signin"}).status_code == 503
 
 
 def test_cancelling_on_github_goes_back_to_the_frontend(client, fake_github):

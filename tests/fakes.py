@@ -266,15 +266,18 @@ def signup(client, email="taufik@example.com", name="Taufik Khan", password=PASS
 
 
 def log_in_as(client, user_id):
-    """Give the client a valid access token for user_id, as if they had signed in."""
+    """Sign the client in as user_id, as if they had signed in: an access token, and a refresh
+    cookie while the user exists."""
     from gateway import auth, tokens
     from shared.db import get_db
     from shared.models import User
 
     with get_db() as s:
-        user = s.get(User, user_id) or User(id=user_id, name="gone")
-    client.headers["Authorization"] = f"Bearer {tokens.access_token(user)}"
-    client.cookies.set(auth.COOKIE, auth.session_token(user_id, user.token_version))
+        user = s.get(User, user_id)
+    sign_out(client)
+    client.headers["Authorization"] = f"Bearer {tokens.access_token(user or User(id=user_id, name='gone'))}"
+    if user is not None:
+        client.cookies.set(auth.REFRESH_COOKIE, tokens.issue_refresh(user_id), path=auth.REFRESH_PATH)
 
 
 def sign_out(client):
