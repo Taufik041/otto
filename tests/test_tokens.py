@@ -74,14 +74,81 @@ def test_rotating_revokes_the_old_token_and_issues_one_in_the_same_family(user):
     assert second.family_id == first.family_id and second.revoked_at is None and second.user_agent == "firefox"
 
 
-def test_reusing_a_rotated_token_revokes_the_whole_family(user):
+def backdate_revocations(seconds):
+    """As if every revocation so far happened `seconds` earlier."""
+    with get_db() as s:
+        for row in s.exec(select(RefreshToken).where(RefreshToken.revoked_at.is_not(None))).all():
+            row.revoked_at = as_utc(row.revoked_at) - timedelta(seconds=seconds)
+            s.add(row)
+
+
+def reasons() -> list:
+    return [r.revoked_reason for r in rows()]
+
+
+def test_reusing_a_rotated_token_after_the_grace_window_revokes_the_whole_family(user):
     old = tokens.issue_refresh("u1")
     _, new = tokens.rotate_refresh(old)
     other_family = tokens.issue_refresh("u1")
+    backdate_revocations(21)
 
     assert tokens.rotate_refresh(old) is None
+    assert reasons() == ["rotated", "reuse", None]
     assert tokens.rotate_refresh(new) is None  # the family is gone
     assert tokens.rotate_refresh(other_family) is not None  # another device is unaffected
+
+
+def test_a_retry_within_the_grace_window_gets_a_sibling_and_the_family_lives(user):
+    old = tokens.issue_refresh("u1")
+    _, new = tokens.rotate_refresh(old)
+    backdate_revocations(19)
+
+    user_id, sibling = tokens.rotate_refresh(old)
+
+    assert user_id == "u1" and sibling not in (old, new)
+    first, second, third = rows()
+    assert third.family_id == first.family_id and third.revoked_at is None
+    assert tokens.refresh_user(new) == "u1" and tokens.refresh_user(sibling) == "u1"
+    assert reasons() == ["rotated", None, None]
+
+
+def test_the_grace_window_is_configurable(user, monkeypatch):
+    monkeypatch.setattr(config, "REFRESH_REUSE_GRACE_SECONDS", 0)
+    old = tokens.issue_refresh("u1")
+    tokens.rotate_refresh(old)
+    assert tokens.rotate_refresh(old) is None
+
+
+def test_a_token_revoked_by_logout_gets_no_grace(user):
+    token = tokens.issue_refresh("u1")
+    tokens.revoke_family(token)
+    assert tokens.rotate_refresh(token) is None
+    assert reasons() == ["logout"]
+
+
+def test_no_grace_in_a_family_with_a_token_revoked_for_another_reason(user):
+    old = tokens.issue_refresh("u1")
+    _, new = tokens.rotate_refresh(old)
+    tokens.revoke_family(new)  # logged out right after rotating
+    assert tokens.rotate_refresh(old) is None
+
+
+def test_no_grace_in_a_family_killed_for_reuse(user):
+    a = tokens.issue_refresh("u1")
+    _, b = tokens.rotate_refresh(a)
+    backdate_revocations(21)
+    _, c = tokens.rotate_refresh(b)  # b was rotated just now
+    assert tokens.rotate_refresh(a) is None  # stale: the family dies
+    assert tokens.rotate_refresh(b) is None  # within b's grace window, but the family is dead
+    assert tokens.refresh_user(c) is None
+
+
+def test_revoking_everything_records_why(user):
+    tokens.issue_refresh("u1")
+    tokens.revoke_all("u1", reason="password")
+    tokens.issue_refresh("u1")
+    tokens.revoke_all("u1", reason="logout_all")
+    assert reasons() == ["password", "logout_all"]
 
 
 def test_expired_unknown_or_missing_refresh_tokens_dont_rotate(user, monkeypatch):
@@ -110,13 +177,25 @@ def test_revoking_a_family_and_everything_of_a_user(user):
     assert tokens.refresh_user(a2) is None and tokens.refresh_user(b) == "u1"
     tokens.revoke_family("made-up")  # nothing to do
 
-    tokens.revoke_all("u1")
+    tokens.revoke_all("u1", reason="logout_all")
     assert tokens.refresh_user(b) is None and tokens.refresh_user(theirs) == "u2"
 
 
 def test_the_user_agent_is_trimmed(user):
     tokens.issue_refresh("u1", user_agent="x" * 1000)
     assert len(rows()[0].user_agent) == tokens.USER_AGENT_MAX
+
+
+def test_prune_deletes_tokens_that_expired_over_a_week_ago(user):
+    keep = [tokens.issue_refresh("u1") for _ in range(2)]
+    with get_db() as s:
+        s.add(RefreshToken(id="old", user_id="u1", family_id="f", token_hash="h1",
+                           expires_at=utcnow() - timedelta(days=7, minutes=1)))
+        s.add(RefreshToken(id="recent", user_id="u1", family_id="f", token_hash="h2",
+                           expires_at=utcnow() - timedelta(days=6)))
+    assert tokens.prune_refresh() == 1
+    assert sorted(r.id for r in rows() if r.id in ("old", "recent")) == ["recent"] and len(rows()) == 3
+    assert all(tokens.refresh_user(t) == "u1" for t in keep)
 
 
 # --- WebSocket tickets ----------------------------------------------------------------

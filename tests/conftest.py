@@ -97,6 +97,7 @@ def accounts(monkeypatch):
     monkeypatch.setattr(config, "DAILY_TOKEN_LIMIT", 50000)
     monkeypatch.setattr(config, "ACCESS_TOKEN_MINUTES", 15)
     monkeypatch.setattr(config, "REFRESH_TOKEN_DAYS", 30)
+    monkeypatch.setattr(config, "REFRESH_REUSE_GRACE_SECONDS", 20)
     monkeypatch.setattr(tokens, "_tickets", {})
 
 

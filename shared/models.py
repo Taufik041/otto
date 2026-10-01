@@ -82,6 +82,9 @@ class PasswordReset(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
 
 
+REVOKED_REASONS = ("rotated", "logout", "reuse", "password", "logout_all")
+
+
 class RefreshToken(SQLModel, table=True):
     """One refresh token. Each sign-in starts a family; /auth/refresh replaces the token with the
     next one in its family. Only a hash of the token is stored."""
@@ -94,6 +97,7 @@ class RefreshToken(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
     expires_at: datetime = Field(sa_type=sa.DateTime(timezone=True))
     revoked_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    revoked_reason: str | None = None  # one of REVOKED_REASONS
     replaced_by_id: str | None = None  # the token that rotated this one out
     user_agent: str | None = None
 

@@ -17,7 +17,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select, update
@@ -37,7 +37,11 @@ EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 hasher = PasswordHasher()
 DUMMY_HASH = hasher.hash("otto: an unknown email still pays for one hash")
 router = APIRouter()
-oauth2 = OAuth2PasswordBearer(tokenUrl="/auth/token", auto_error=False)  # Swagger's "Authorize"
+# /docs' Authorize dialog offers both: the password form, and a field to paste an access token
+# (for GitHub-only accounts, which have no password: take one from POST /auth/refresh)
+oauth2 = OAuth2PasswordBearer(tokenUrl="/auth/token", auto_error=False,
+                              description="Sign in with your email (as username) and password.")
+pasted = HTTPBearer(auto_error=False, description="Paste an access token, e.g. from POST /auth/refresh.")
 
 
 # --- signed tokens ------------------------------------------------------------------
@@ -103,8 +107,11 @@ def user_from_access(token) -> User | None:
     return user if user is not None and claims.get("ver") == user.token_version else None
 
 
-def optional_user(token: str | None = Depends(oauth2)) -> User | None:
-    """The user of the request's Bearer token, or None; routes that work either way depend on this."""
+def optional_user(token: str | None = Depends(oauth2),
+                  credentials: HTTPAuthorizationCredentials | None = Depends(pasted)) -> User | None:
+    """The user of the request's Bearer token, or None; routes that work either way depend on this.
+    Both schemes read the same Authorization header; they differ only in how /docs asks for it."""
+    token = token or (credentials.credentials if credentials else None)
     return user_from_access(token) if token else None
 
 
@@ -246,7 +253,7 @@ def logout_all(response: Response, user: User = Depends(current_user)):
     """Sign out every device, this one too: every refresh token is revoked, every access token void."""
     with get_db() as s:
         s.exec(update(User).where(User.id == user.id).values(token_version=User.token_version + 1))
-        tokens.revoke_all(user.id, s)
+        tokens.revoke_all(user.id, s, reason="logout_all")
     clear_refresh(response)
     return {"ok": True}
 
@@ -298,7 +305,7 @@ def _new_password(s, user_id, password) -> User:
     device. Returns the user."""
     s.exec(update(User).where(User.id == user_id)
            .values(password_hash=hash_password(password), token_version=User.token_version + 1))
-    tokens.revoke_all(user_id, s)
+    tokens.revoke_all(user_id, s, reason="password")
     return s.get(User, user_id, populate_existing=True)
 
 

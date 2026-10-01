@@ -11,6 +11,7 @@ from shared.db import get_db
 from shared.models import RefreshToken, User, utcnow
 from tests.conftest import ORIGIN
 from tests.fakes import PASSWORD
+from tests.test_tokens import backdate_revocations
 
 EMAIL = "taufik@example.com"
 
@@ -87,9 +88,20 @@ def test_the_refresh_cookie_is_secure_behind_https(api, monkeypatch):
     assert "secure" in refresh_header(sign_up(api)).lower()
 
 
-def test_swagger_knows_the_token_url(api):
-    schemes = api.get("/openapi.json").json()["components"]["securitySchemes"]
+def test_swagger_offers_the_password_form_and_a_pasted_token(api):
+    spec = api.get("/openapi.json").json()
+    schemes = spec["components"]["securitySchemes"]
     assert schemes["OAuth2PasswordBearer"]["flows"]["password"]["tokenUrl"] == "/auth/token"
+    assert (schemes["HTTPBearer"]["type"], schemes["HTTPBearer"]["scheme"]) == ("http", "bearer")
+    # either one will do
+    assert spec["paths"]["/me"]["get"]["security"] == [{"OAuth2PasswordBearer": []}, {"HTTPBearer": []}]
+
+
+def test_a_raw_bearer_header_works(api):
+    access = sign_up(api).json()["access_token"]
+    api.cookies.clear()
+    assert api.get("/me", headers={"Authorization": f"Bearer {access}"}).status_code == 200
+    assert api.get("/me", headers={"Authorization": f"bearer {access}"}).status_code == 200
 
 
 # --- the bearer dependency ------------------------------------------------------------------
@@ -130,11 +142,12 @@ def test_refresh_rotates_the_cookie_and_returns_a_new_access_token(api):
     assert api.get("/me", headers=bearer(body["access_token"])).status_code == 200
 
 
-def test_a_rotated_refresh_token_fails_and_reusing_it_revokes_the_family(api):
+def test_a_rotated_refresh_token_after_the_grace_window_is_reuse_and_the_family_dies(api):
     sign_up(api)
     old = api.cookies["otto_refresh"]
     assert api.post("/auth/refresh").status_code == 200
     new = api.cookies["otto_refresh"]
+    backdate_revocations(21)
 
     use_refresh(api, old)
     r = api.post("/auth/refresh")
@@ -143,6 +156,47 @@ def test_a_rotated_refresh_token_fails_and_reusing_it_revokes_the_family(api):
 
     use_refresh(api, new)
     assert api.post("/auth/refresh").status_code == 401
+
+
+def test_a_retry_within_the_grace_window_works_and_both_tokens_work(api):
+    """E.g. the response to a refresh was lost, or two tabs refreshed at once."""
+    sign_up(api)
+    old = api.cookies["otto_refresh"]
+    assert api.post("/auth/refresh").status_code == 200
+    new = api.cookies["otto_refresh"]
+
+    use_refresh(api, old)
+    r = api.post("/auth/refresh")
+
+    assert r.status_code == 200
+    sibling = refresh_header(r).split(";")[0].removeprefix("otto_refresh=")
+    assert sibling not in (old, new)
+    assert api.get("/me", headers=bearer(r.json()["access_token"])).status_code == 200
+    for token in (new, sibling):
+        use_refresh(api, token)
+        assert api.post("/auth/refresh").status_code == 200, token
+
+
+def test_a_token_revoked_by_logout_never_gets_grace(api):
+    sign_up(api)
+    token = api.cookies["otto_refresh"]
+    assert api.post("/auth/logout").status_code == 200
+    use_refresh(api, token)
+    assert api.post("/auth/refresh").status_code == 401
+
+
+def test_a_token_from_a_family_killed_for_reuse_never_gets_grace(api):
+    sign_up(api)
+    a = api.cookies["otto_refresh"]
+    api.post("/auth/refresh")
+    b = api.cookies["otto_refresh"]
+    backdate_revocations(21)
+    api.post("/auth/refresh")  # b rotated just now
+    use_refresh(api, a)
+    assert api.post("/auth/refresh").status_code == 401  # stale reuse: the family dies
+
+    use_refresh(api, b)
+    assert api.post("/auth/refresh").status_code == 401  # within b's window, but the family is dead
 
 
 def test_refresh_without_a_cookie_or_with_an_expired_one_is_401(api, monkeypatch):
@@ -199,6 +253,33 @@ def test_a_post_with_no_body_or_content_type_is_accepted(api):
 
 
 # --- signing out everywhere -------------------------------------------------------------------
+
+def test_revocations_record_why(api):
+    sign_up(api)
+    api.post("/auth/refresh")
+    api.post("/auth/logout")
+    access = api.post("/auth/login", json={"email": EMAIL, "password": PASSWORD}).json()["access_token"]
+    access = api.post("/me/password", json={"current": PASSWORD, "new": "a whole new password"},
+                      headers=bearer(access)).json()["access_token"]
+    api.post("/auth/logout-all", headers=bearer(access))
+    with get_db() as s:
+        rows = s.exec(select(RefreshToken).order_by(RefreshToken.created_at)).all()
+    assert [r.revoked_reason for r in rows] == ["rotated", "logout", "password", "logout_all"]
+
+
+def test_old_refresh_tokens_are_pruned_when_the_gateway_starts(env):
+    from gateway import app as gateway_app
+    from tests.fakes import make_user
+
+    make_user("u1")
+    with get_db() as s:
+        s.add(RefreshToken(id="old", user_id="u1", family_id="f", token_hash="h",
+                           expires_at=utcnow() - timedelta(days=8)))
+    with TestClient(gateway_app.app):
+        pass
+    with get_db() as s:
+        assert s.exec(select(RefreshToken)).all() == []
+
 
 def test_logout_all_voids_every_access_and_refresh_token(api):
     access = sign_up(api).json()["access_token"]

@@ -45,6 +45,8 @@ NEW_REPO = "Start a new chat for a different repo."
 async def lifespan(app):
     auth.check_secret()
     init_db()
+    if pruned := tokens.prune_refresh():
+        print(f"[gateway] deleted {pruned} refresh token(s) that expired over a week ago", flush=True)
     swept = sweep_stale_sessions()
     if swept:
         print(f"[gateway] marked {len(swept)} stale session(s) interrupted: {', '.join(swept)}", flush=True)
