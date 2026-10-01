@@ -1,11 +1,15 @@
-"""Accounts: email/password sign-in and the login cookie. GitHub sign-in is in github_app.py.
+"""Accounts: email/password sign-in, access tokens and the refresh cookie. GitHub sign-in is in
+github_app.py; the tokens themselves in tokens.py.
 
-The login session is a signed JWT (HS256, AUTH_SECRET) in an httpOnly, SameSite=Lax cookie.
-SameSite=Lax plus JSON-only writes (see app.py) keep other sites from acting as the user.
-The JWT carries the user's token_version; changing or resetting the password bumps it, which
-signs out every other device.
+Signing in returns a short-lived access token, which the client sends as `Authorization: Bearer`
+on every API call, and sets the refresh cookie (httpOnly, SameSite=Lax, Path=/auth), which only
+/auth/refresh and /auth/logout read. A cross-site page can't add an Authorization header, so the
+API routes need no CSRF guard; the two cookie routes also check the Origin.
+
+The access token carries the user's token_version: logout-all, or changing or resetting the
+password, bumps it and revokes every refresh token, which signs out every device.
 """
-import hashlib, re, secrets, uuid
+import re, secrets, uuid
 from datetime import timedelta
 
 import jwt
@@ -24,10 +28,8 @@ from shared import config
 from shared.db import get_db
 from shared.models import PasswordReset, User, as_utc, utcnow
 
-COOKIE = "otto_session"
 REFRESH_COOKIE = "otto_refresh"
 REFRESH_PATH = "/auth"  # the refresh cookie reaches /auth/* only
-SESSION_TTL = timedelta(days=7)
 RESET_TTL = timedelta(hours=1)
 MIN_PASSWORD = 8
 EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
@@ -57,20 +59,6 @@ def verify(token, audience) -> dict | None:
         return None
 
 
-def session_token(user_id, version=0) -> str:
-    return sign({"sub": user_id, "ver": version}, "session", SESSION_TTL)
-
-
-def set_login(response: Response, user: User):
-    response.set_cookie(COOKIE, session_token(user.id, user.token_version),
-                        max_age=int(SESSION_TTL.total_seconds()), httponly=True, samesite="lax",
-                        secure=config.COOKIE_SECURE, path="/")
-
-
-def clear_login(response: Response):
-    response.delete_cookie(COOKIE, httponly=True, samesite="lax", secure=config.COOKIE_SECURE, path="/")
-
-
 # --- access tokens and the refresh cookie ----------------------------------------------------
 
 def set_refresh(response: Response, token):
@@ -91,7 +79,6 @@ def token_body(user: User) -> dict:
 def signed_in(request: Request, response: Response, user: User) -> dict:
     """Sign this device in: a new refresh family in the cookie, and an access token in the body."""
     set_refresh(response, tokens.issue_refresh(user.id, request.headers.get("user-agent")))
-    set_login(response, user)
     return token_body(user)
 
 
@@ -105,16 +92,6 @@ def check_origin(request: Request):
 
 # --- the current user ---------------------------------------------------------------
 
-def user_from_token(token) -> User | None:
-    claims = verify(token, "session") if token else None
-    if not claims:
-        return None
-    with get_db() as s:
-        user = s.get(User, claims["sub"])
-    # a token from before the last password change or reset is void
-    return user if user is not None and claims.get("ver", 0) == user.token_version else None
-
-
 def user_from_access(token) -> User | None:
     """The user of a valid access token whose version is still the user's."""
     claims = tokens.access_claims(token) if token else None
@@ -122,14 +99,13 @@ def user_from_access(token) -> User | None:
         return None
     with get_db() as s:
         user = s.get(User, claims["sub"])
+    # a token from before the last logout-all, password change or reset is void
     return user if user is not None and claims.get("ver") == user.token_version else None
 
 
-def optional_user(request: Request, token: str | None = Depends(oauth2)) -> User | None:
-    """The signed-in user, or None; routes that work either way depend on this."""
-    if token:
-        return user_from_access(token)
-    return user_from_token(request.cookies.get(COOKIE))
+def optional_user(token: str | None = Depends(oauth2)) -> User | None:
+    """The user of the request's Bearer token, or None; routes that work either way depend on this."""
+    return user_from_access(token) if token else None
 
 
 def current_user(user: User | None = Depends(optional_user)) -> User:
@@ -262,7 +238,6 @@ def logout(request: Request, response: Response):
     check_origin(request)
     tokens.revoke_family(request.cookies.get(REFRESH_COOKIE))
     clear_refresh(response)
-    clear_login(response)
     return {"ok": True}
 
 
@@ -273,7 +248,6 @@ def logout_all(response: Response, user: User = Depends(current_user)):
         s.exec(update(User).where(User.id == user.id).values(token_version=User.token_version + 1))
         tokens.revoke_all(user.id, s)
     clear_refresh(response)
-    clear_login(response)
     return {"ok": True}
 
 
@@ -353,8 +327,7 @@ class Reset(BaseModel):
     _password = field_validator("password")(strong_password)
 
 
-def token_hash(token) -> str:
-    return hashlib.sha256(token.encode()).hexdigest()
+token_hash = tokens.sha256
 
 
 @router.post("/auth/forgot")

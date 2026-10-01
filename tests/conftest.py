@@ -123,8 +123,8 @@ def env(monkeypatch):
 
 @pytest.fixture
 def client(env):
-    """A browser-like client: every request is JSON (the gateway refuses other writes)."""
+    """The gateway's test client; tests.fakes.signup and log_in_as give it an access token."""
     from gateway import app as gateway_app
 
-    with TestClient(gateway_app.app, headers={"content-type": "application/json"}) as c:
+    with TestClient(gateway_app.app) as c:
         yield c

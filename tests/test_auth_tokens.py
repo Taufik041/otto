@@ -6,7 +6,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import select
 
-from gateway import tokens
 from shared import config
 from shared.db import get_db
 from shared.models import RefreshToken, User, utcnow
@@ -258,3 +257,21 @@ def test_deleting_the_account_deletes_its_refresh_tokens(api):
     assert api.delete("/me", headers=bearer(access)).status_code == 200
     with get_db() as s:
         assert s.exec(select(RefreshToken)).all() == [] and s.exec(select(User)).all() == []
+
+
+# --- the old login cookie is gone ---------------------------------------------------------------
+
+def test_the_old_login_cookie_signs_no_one_in(api):
+    from gateway import auth
+
+    uid = sign_up(api).json()["user"]["id"]
+    api.cookies.clear()
+    api.cookies.set("otto_session", auth.sign({"sub": uid, "ver": 0}, "session", timedelta(days=1)))
+    assert api.get("/me").status_code == 401
+
+
+def test_writes_are_not_refused_for_their_content_type(api):
+    sign_up(api)
+    api.cookies.set("otto_session", "anything")
+    r = api.patch("/me", content=b"name=x", headers={"content-type": "application/x-www-form-urlencoded"})
+    assert r.status_code == 401  # not 415: Bearer auth needs no CSRF guard

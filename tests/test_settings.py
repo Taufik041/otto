@@ -5,7 +5,7 @@ from sqlmodel import func, select
 from gateway import auth
 from shared.db import get_db
 from shared.events import append_event
-from shared.models import Installation, PasswordReset, Session, SessionEvent, Usage, User
+from shared.models import Installation, PasswordReset, RefreshToken, Session, SessionEvent, Usage, User
 from shared.sessions import create_session, set_status
 from tests.fakes import PASSWORD, connect_github, log_in_as, sign_out, signup, use_env
 from tests.test_github_signin import callback, start
@@ -110,8 +110,8 @@ def test_deleting_the_account_removes_everything_of_theirs(client, env, fake_git
         assert count(model, **where) == 0, model
     # someone else's things stay
     assert count(User, id=other) == 1 and count(Session, user_id=other) == 1 and count(Usage, user_id=other) == 1
-    # and the cookie is gone, and wouldn't work anyway
-    assert auth.COOKIE not in client.cookies
+    # and the refresh cookie is gone, and the access token doesn't work anymore
+    assert count(RefreshToken, user_id=me["id"]) == 0 and auth.REFRESH_COOKIE not in client.cookies
     log_in_as(client, me["id"])
     assert client.get("/me").status_code == 401
     sign_out(client)

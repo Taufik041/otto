@@ -281,10 +281,9 @@ def log_in_as(client, user_id):
 
 
 def sign_out(client):
-    """Forget the client's access token and login cookies (not GitHub's nonce cookies)."""
+    """Forget the client's access token and refresh cookie (not GitHub's nonce cookies)."""
     client.headers.pop("Authorization", None)
-    for name in ("otto_session", "otto_refresh"):
-        client.cookies.delete(name)
+    client.cookies.delete("otto_refresh")
 
 
 # --- GitHub ------------------------------------------------------------------------

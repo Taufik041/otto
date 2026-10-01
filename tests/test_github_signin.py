@@ -217,7 +217,7 @@ def expired_state(client):
     lambda client: None,                                            # missing
     lambda client: "garbage",
     expired_state,
-    lambda client: auth.session_token("someone"),                   # a token for another purpose
+    lambda client: auth.sign({"sub": "someone"}, "session", timedelta(days=1)),  # for another purpose
     lambda client: start(client) + "x",                             # tampered
 ])
 def test_a_bad_state_is_400(client, fake_github, make_state):
