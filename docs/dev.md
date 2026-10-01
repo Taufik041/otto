@@ -39,7 +39,8 @@ Stop the gateway and workers first, since they hold connections.
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | none | The GitHub App's user OAuth (App settings, "Client ID" and a generated client secret). Needed for GitHub sign-in and for connecting installations. |
 | `GITHUB_APP_SLUG` | none | The App's name in `github.com/apps/<slug>`: `ottoci`. |
 | `ACCESS_TOKEN_MINUTES` | `15` | How long an access token (the Bearer JWT) lasts. |
-| `REFRESH_TOKEN_DAYS` | `30` | How long a refresh token (the `otto_refresh` cookie) lasts unused; each refresh swaps it for a new one. |
+| `REFRESH_TOKEN_DAYS` | `30` | How long a refresh token (the `otto_refresh` cookie) lasts unused; each refresh swaps it for a new one. Rows that expired over a week ago are deleted when the gateway starts. |
+| `REFRESH_REUSE_GRACE_SECONDS` | `20` | How long a just-rotated refresh token may come back as a retry (a lost response, two tabs refreshing at once) instead of counting as theft. |
 | `FRONTEND_URL` | `http://localhost:5173` | Where the GitHub callback sends the browser afterwards (`/auth/callback` after a sign-in), and the base of password-reset links. An `https://` URL also makes the cookies `Secure`. |
 | `DAILY_TOKEN_LIMIT` | `50000` | A new user's daily token limit (UTC days). Existing users keep theirs (`users.daily_token_limit`). |
 | `MODEL_PRICES` | `{}` | JSON `{"<model id>": {"input_per_1m": 0.15, "output_per_1m": 0.6}}` in USD, keyed by catalog id (`GET /models`). Unlisted models count as free. |
@@ -76,7 +77,10 @@ In the App's settings on GitHub:
   SameSite=Lax, `Path=/auth`, `REFRESH_TOKEN_DAYS`), stored in `refresh_tokens` only as a sha256.
   `POST /auth/refresh` swaps it for a new one and returns a new access token. Presenting a
   refresh token that was already swapped out revokes its whole family (that sign-in, on every
-  device holding a copy) and is a 401.
+  device holding a copy) and is a 401, with one exception: a token rotated less than
+  `REFRESH_REUSE_GRACE_SECONDS` ago, in a family nobody logged out or caught reusing, is a retry.
+  It gets a new token in the same family, and the family lives on. `refresh_tokens.revoked_reason`
+  says why each token ended: `rotated`, `logout`, `reuse`, `password` or `logout_all`.
 - No CSRF guard on the API: a cross-site page can't add an `Authorization` header. Only
   `/auth/refresh` and `/auth/logout` read the cookie; SameSite=Lax, `Path=/auth` and an `Origin`
   check (`CORS_ORIGINS` or the gateway itself) protect them.
@@ -105,10 +109,13 @@ refresh cookie; that page calls `/auth/refresh` to get its access token. Cookies
 
 1. Open `http://localhost:8000/docs`. `POST /auth/signup` with `{"name", "email", "password"}`
    (8+ characters), or skip it if you have an account.
-2. Click **Authorize**, enter the email as `username` and the password, and **Authorize**. Every
-   "Try it out" now sends the Bearer token: try `GET /me` and `GET /sessions`. The token lasts
-   15 minutes; authorize again (or `POST /auth/refresh`, and paste the new `access_token` in
-   Authorize) when you get a 401.
+2. Click **Authorize**. It offers two ways in; use either:
+   - **OAuth2PasswordBearer:** the email as `username` and the password.
+   - **HTTPBearer:** paste an access token (just the token, without `Bearer `).
+
+   Every "Try it out" now sends the Bearer token: try `GET /me` and `GET /sessions`. The token
+   lasts 15 minutes; authorize again (or `POST /auth/refresh`, and paste the new `access_token`
+   into HTTPBearer) when you get a 401.
 3. To link GitHub, open `http://localhost:8000/auth/github/start` in the same browser: the refresh
    cookie from step 2 tells the callback who you are, so it links GitHub to your account (signed
    out, it signs in, creating a GitHub-only user). GitHub then sends you to
@@ -130,6 +137,19 @@ refresh cookie; that page calls `/auth/refresh` to get its access token. Cookies
 
 10. `POST /auth/logout` (no body) signs this browser out: the refresh cookie is cleared and
     revoked. Click **Authorize** > **Logout** to drop the access token from the page too.
+
+### A GitHub-only account in /docs
+
+An account made by GitHub sign-in has no password, so the password form can't sign it in. Paste
+a token instead:
+
+1. Open `http://localhost:8000/auth/github/start` in the browser and sign in on GitHub. The
+   callback sets the refresh cookie and sends you to `FRONTEND_URL/auth/callback`, which won't
+   load without a frontend; that's fine.
+2. Open `http://localhost:8000/docs` in the same browser and call `POST /auth/refresh` (no body,
+   no authorization). The browser sends the refresh cookie, and the answer has an `access_token`.
+3. Copy the `access_token`, click **Authorize**, paste it into **HTTPBearer**'s value, and
+   **Authorize**. `GET /me` now shows the GitHub account.
 
 ### Trying it with curl
 
