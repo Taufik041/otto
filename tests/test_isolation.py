@@ -2,9 +2,10 @@
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
-from shared.sessions import create_session, get_session
+from gateway import tokens
+from shared.sessions import create_session, delete_session, get_session
 from tests.conftest import ORIGIN
-from tests.fakes import log_in_as, signup
+from tests.fakes import log_in_as, sign_out, signup
 
 REPO = "Taufik041/otto_test"
 SID = "aaaa000001"
@@ -14,14 +15,22 @@ SID = "aaaa000001"
 def users(client):
     """Users A and B; A owns session SID. The client is signed in as B."""
     a = signup(client, email="a@example.com")["id"]
-    client.cookies.clear()
+    sign_out(client)
     b = signup(client, email="b@example.com")["id"]
     create_session(SID, task="A's secret task", repo=REPO, model="m", status="done", user_id=a)
     return a, b
 
 
-def ws(client, sid=SID, origin=ORIGIN):
-    return client.websocket_connect(f"/sessions/{sid}/ws", headers={"origin": origin} if origin else {})
+def ticket(client, sid=SID) -> str:
+    r = client.post(f"/sessions/{sid}/ws-ticket")
+    assert r.status_code == 200, r.text
+    return r.json()["ticket"]
+
+
+def ws(client, sid=SID, origin=ORIGIN, query=None):
+    if query is None:
+        query = f"ticket={ticket(client, sid)}"
+    return client.websocket_connect(f"/sessions/{sid}/ws?{query}", headers={"origin": origin} if origin else {})
 
 
 def close_code(client, **kw) -> int:
@@ -59,7 +68,7 @@ def test_the_owner_can_read_their_session(client, users):
 
 
 def test_session_routes_need_a_login(client, users):
-    client.cookies.clear()
+    sign_out(client)
     for method, path in [("get", "/sessions"), ("get", f"/sessions/{SID}"), ("get", f"/sessions/{SID}/events"),
                          ("post", f"/sessions/{SID}/messages"), ("delete", f"/sessions/{SID}")]:
         r = getattr(client, method)(path, **({"json": {"text": "x"}} if method == "post" else {}))
@@ -74,13 +83,50 @@ def test_the_owner_can_open_the_websocket(client, users):
         assert s.receive_json()["type"] == "session.created"
 
 
-def test_another_users_websocket_is_closed_with_4404(client, users):
-    assert close_code(client) == 4404
+def test_a_ticket_for_another_users_session_is_404(client, users):
+    assert client.post(f"/sessions/{SID}/ws-ticket").status_code == 404
 
 
-def test_the_websocket_needs_a_login(client, users):
-    client.cookies.clear()
-    assert close_code(client) == 4401
+def test_a_ticket_needs_a_login(client, users):
+    sign_out(client)
+    assert client.post(f"/sessions/{SID}/ws-ticket").status_code == 401
+
+
+def test_a_ticket_works_once(client, users):
+    log_in_as(client, users[0])
+    t = ticket(client)
+    with ws(client, query=f"ticket={t}") as s:
+        assert s.receive_json()["type"] == "session.created"
+    assert close_code(client, query=f"ticket={t}") == 4401
+
+
+def test_an_expired_ticket_is_4401(client, users, monkeypatch):
+    log_in_as(client, users[0])
+    t = ticket(client)
+    later = tokens.now() + tokens.TICKET_TTL + 1
+    monkeypatch.setattr(tokens, "now", lambda: later)
+    assert close_code(client, query=f"ticket={t}") == 4401
+
+
+def test_a_ticket_for_another_session_is_4401(client, users):
+    log_in_as(client, users[0])
+    create_session("aaaa000002", task="A's other task", repo=REPO, model="m", status="done", user_id=users[0])
+    t = ticket(client, "aaaa000002")
+    assert close_code(client, query=f"ticket={t}") == 4401
+
+
+@pytest.mark.parametrize("query", ["", "ticket=", "ticket=made-up", "access_token={access}", "token={access}"])
+def test_the_websocket_needs_a_ticket_and_never_takes_an_access_token(client, users, query):
+    log_in_as(client, users[0])
+    access = client.headers["authorization"].removeprefix("Bearer ")
+    assert close_code(client, query=query.format(access=access)) == 4401
+
+
+def test_a_session_deleted_after_its_ticket_is_4404(client, users):
+    log_in_as(client, users[0])
+    t = ticket(client)
+    delete_session(SID)
+    assert close_code(client, query=f"ticket={t}") == 4404
 
 
 @pytest.mark.parametrize("origin", ["http://evil.example", "null", None])

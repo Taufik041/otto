@@ -22,7 +22,7 @@ from kubernetes.client.exceptions import ApiException
 from pydantic import BaseModel, Field, field_validator
 
 from brain.bus import bus_call, start_consumer, stop_consumer
-from gateway import auth, github_app, live
+from gateway import auth, github_app, live, tokens
 from orchestrator import sandbox
 from shared import config, usage
 from shared.accounts import delete_account
@@ -353,26 +353,35 @@ async def _read_until_closed(websocket):
         pass
 
 
+@app.post("/sessions/{sid}/ws-ticket")
+def ws_ticket(sid: str, user: User = Depends(auth.current_user)):
+    """A single-use ticket, good for TICKET_TTL seconds, to open this session's WebSocket."""
+    _row(sid, user)
+    return {"ticket": tokens.issue_ticket(user.id, sid)}
+
+
 @app.websocket("/sessions/{sid}/ws")
-async def watch(websocket: WebSocket, sid: str, after_seq: int = Query(0, ge=0)):
+async def watch(websocket: WebSocket, sid: str, ticket: str | None = None, after_seq: int = Query(0, ge=0)):
     """Events with seq > after_seq, then new ones live, as JSON {seq, ts, type, payload}.
 
-    A {"type": "ping"} goes out every PING_INTERVAL seconds. To resume after a drop, reconnect
-    with after_seq=<last seq received>. Follow-ups go through POST /sessions/{sid}/messages.
+    A {"type": "ping"} goes out every PING_INTERVAL seconds. To resume after a drop, get a new
+    ticket and reconnect with after_seq=<last seq received>. Follow-ups go through
+    POST /sessions/{sid}/messages.
 
-    Needs the login cookie and an Origin in CORS_ORIGINS (browsers send cookies on cross-site
-    WebSocket handshakes, and CORS doesn't cover them). Refusals close with 4403 (origin),
-    4401 (no login) or 4404 (not your session).
+    Needs a ticket from POST /sessions/{sid}/ws-ticket (browsers can't send an Authorization
+    header on a WebSocket, and access tokens don't belong in URLs) and an Origin in CORS_ORIGINS.
+    Refusals close with 4403 (origin), 4401 (no valid ticket) or 4404 (no such session).
     """
     await websocket.accept()  # then close, so the client sees the code (a refused handshake is a bare 403)
     if websocket.headers.get("origin") not in config.CORS_ORIGINS:
         await websocket.close(code=4403, reason="origin not allowed")
         return
-    user = await asyncio.to_thread(auth.user_from_token, websocket.cookies.get(auth.COOKIE))
-    if user is None:
-        await websocket.close(code=4401, reason="sign in first")
+    user_id = tokens.take_ticket(ticket, sid)
+    if user_id is None:
+        await websocket.close(code=4401, reason="get a ticket from POST /sessions/{id}/ws-ticket")
         return
-    if not _owned(await asyncio.to_thread(get_session, sid), user):
+    row = await asyncio.to_thread(get_session, sid)
+    if row is None or row.user_id != user_id:
         await websocket.close(code=4404, reason=f"no session {sid!r}")
         return
     q = live.subscribe(sid)  # before the replay, so nothing committed in between is missed

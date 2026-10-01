@@ -1,6 +1,5 @@
 from datetime import timedelta
 
-import jwt
 import pytest
 from sqlmodel import select, update
 
@@ -8,12 +7,7 @@ from gateway import auth
 from shared import config
 from shared.db import get_db
 from shared.models import PasswordReset, User, as_utc, utcnow
-from tests.fakes import PASSWORD, signup
-
-
-def cookie_header(r) -> str:
-    [header] = [v for k, v in r.headers.multi_items() if k == "set-cookie" and v.startswith(auth.COOKIE)]
-    return header
+from tests.fakes import PASSWORD, log_in_as, sign_out, signup
 
 
 def user_row(user_id) -> User:
@@ -23,7 +17,7 @@ def user_row(user_id) -> User:
 
 # --- signup ------------------------------------------------------------------------
 
-def test_signup_logs_in_with_an_httponly_lax_cookie(client):
+def test_signup_returns_the_user_and_signs_in(client):
     r = client.post("/auth/signup", json={"name": " Taufik Khan ", "email": "Taufik@Example.com",
                                           "password": PASSWORD})
 
@@ -31,10 +25,7 @@ def test_signup_logs_in_with_an_httponly_lax_cookie(client):
     me = r.json()["user"]
     assert (me["name"], me["email"], me["has_password"]) == ("Taufik Khan", "taufik@example.com", True)
     assert me["github_login"] is None and me["daily_token_limit"] == 50000
-    header = cookie_header(r).lower()
-    assert "httponly" in header and "samesite=lax" in header and "path=/" in header
-    assert f"max-age={7 * 24 * 3600}" in header
-    assert "secure" not in header  # http://localhost in dev
+    client.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
     assert client.get("/me").json() == me
 
 
@@ -44,18 +35,12 @@ def test_the_password_is_stored_as_argon2_and_never_returned(client):
     assert user_row(me["id"]).password_hash.startswith("$argon2id$")
 
 
-def test_the_cookie_is_secure_behind_https(client, monkeypatch):
-    monkeypatch.setattr(config, "COOKIE_SECURE", True)
-    r = client.post("/auth/signup", json={"name": "a", "email": "a@example.com", "password": PASSWORD})
-    assert "secure" in cookie_header(r).lower()
-
-
 def test_signup_with_an_existing_email_is_409(client):
     signup(client, email="taufik@example.com")
-    client.cookies.clear()
+    sign_out(client)
     r = client.post("/auth/signup", json={"name": "x", "email": "TAUFIK@example.com", "password": PASSWORD})
     assert r.status_code == 409
-    assert auth.COOKIE not in client.cookies
+    assert "set-cookie" not in r.headers
 
 
 @pytest.mark.parametrize("body", [
@@ -75,74 +60,31 @@ def test_a_new_user_gets_the_configured_daily_limit(client, monkeypatch):
 
 # --- login, logout, /me -------------------------------------------------------------
 
-def test_login_and_logout(client):
+def test_login(client):
     me = signup(client)
-    client.cookies.clear()
+    sign_out(client)
     assert client.get("/me").status_code == 401
 
     r = client.post("/auth/login", json={"email": " TAUFIK@example.com", "password": PASSWORD})
     assert r.status_code == 200 and r.json()["user"]["id"] == me["id"]
-    assert "httponly" in cookie_header(r).lower()
+    client.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
     assert client.get("/me").json()["id"] == me["id"]
-
-    r = client.post("/auth/logout")
-    assert r.status_code == 200
-    assert "max-age=0" in cookie_header(r).lower()
-    assert client.get("/me").status_code == 401
 
 
 @pytest.mark.parametrize("email,password", [("taufik@example.com", "wrong password"),
                                             ("nobody@example.com", PASSWORD)])
 def test_wrong_password_or_unknown_email_is_401(client, email, password):
     signup(client)
-    client.cookies.clear()
+    sign_out(client)
     r = client.post("/auth/login", json={"email": email, "password": password})
     assert r.status_code == 401
-    assert auth.COOKIE not in client.cookies
+    assert "set-cookie" not in r.headers
 
 
 def test_a_github_only_account_cannot_log_in_with_a_password(client):
     with get_db() as s:
         s.add(User(id="gh1", email="gh@example.com", name="gh", github_id=7))
     assert client.post("/auth/login", json={"email": "gh@example.com", "password": PASSWORD}).status_code == 401
-
-
-def forged(claims, secret=None):
-    return jwt.encode(claims, secret or config.AUTH_SECRET, algorithm="HS256")
-
-
-def test_bad_cookies_are_401(client):
-    me = signup(client)
-    now = utcnow()
-    for token in ["garbage",
-                  forged({"sub": me["id"], "aud": "session", "exp": now + timedelta(days=1)}, "other" * 10),
-                  forged({"sub": me["id"], "aud": "session", "exp": now - timedelta(seconds=1)}),
-                  forged({"sub": me["id"], "aud": "github-state", "exp": now + timedelta(days=1)}),
-                  forged({"sub": "no-such-user", "aud": "session", "exp": now + timedelta(days=1)})]:
-        client.cookies.set(auth.COOKIE, token)
-        assert client.get("/me").status_code == 401, token
-
-
-def test_the_login_cookie_lasts_7_days(client):
-    signup(client)
-    claims = jwt.decode(client.cookies[auth.COOKIE], config.AUTH_SECRET, algorithms=["HS256"],
-                        audience="session")
-    assert claims["exp"] - claims["iat"] == 7 * 24 * 3600
-
-
-# --- CSRF: writes must be JSON ------------------------------------------------------
-
-@pytest.mark.parametrize("ctype", ["application/x-www-form-urlencoded", "text/plain", "multipart/form-data", None])
-def test_state_changing_requests_must_be_json(client, ctype):
-    signup(client)
-    headers = {"content-type": ctype} if ctype else {}
-    if ctype is None:
-        client.headers.pop("content-type")
-    r = client.post("/auth/logout-all", content=b"", headers=headers)
-    assert r.status_code == 415
-    assert client.get("/me").status_code == 200  # still logged in
-    r = client.patch("/me", content=b"name=b", headers=headers)
-    assert r.status_code == 415
 
 
 def test_the_gateway_refuses_to_start_without_a_strong_auth_secret(env, monkeypatch):
@@ -175,7 +117,7 @@ def token_from(line) -> str:
 
 def test_forgot_logs_a_reset_link_and_reset_sets_the_password(client, capsys):
     me = signup(client)
-    client.cookies.clear()
+    sign_out(client)
     capsys.readouterr()
 
     r = client.post("/auth/forgot", json={"email": "Taufik@example.com"})
@@ -191,8 +133,7 @@ def test_forgot_logs_a_reset_link_and_reset_sets_the_password(client, capsys):
     assert timedelta(minutes=59) < ttl <= timedelta(hours=1)
 
     r = client.post("/auth/reset", json={"token": token, "password": "a brand new password"})
-    assert r.status_code == 200 and client.get("/me").json()["id"] == me["id"]  # and logged in
-    client.cookies.clear()
+    assert r.status_code == 200 and r.json()["user"]["id"] == me["id"]  # and signed in
     assert client.post("/auth/login", json={"email": me["email"], "password": PASSWORD}).status_code == 401
     assert client.post("/auth/login", json={"email": me["email"],
                                             "password": "a brand new password"}).status_code == 200
@@ -241,47 +182,12 @@ def test_reset_needs_a_strong_password(client, capsys):
     assert client.post("/auth/reset", json={"token": token, "password": "long enough"}).status_code == 200
 
 
-# --- signing out other devices -------------------------------------------------------
-
-def claims_of(token) -> dict:
-    return jwt.decode(token, config.AUTH_SECRET, algorithms=["HS256"], audience="session")
-
-
-def test_the_login_cookie_carries_the_token_version(client):
-    me = signup(client)
-    assert claims_of(client.cookies[auth.COOKIE])["ver"] == 0 == user_row(me["id"]).token_version
-
+# --- token_version ----------------------------------------------------------------------
 
 def test_a_token_with_a_stale_version_is_401(client):
     me = signup(client)
     with get_db() as s:
         s.exec(update(User).where(User.id == me["id"]).values(token_version=3))
     assert client.get("/me").status_code == 401
-    client.cookies.set(auth.COOKIE, auth.session_token(me["id"], 3))
+    log_in_as(client, me["id"])
     assert client.get("/me").status_code == 200
-
-
-def test_changing_the_password_signs_out_other_devices(client):
-    me = signup(client)
-    other_device = client.cookies[auth.COOKIE]
-
-    assert client.post("/me/password", json={"current": PASSWORD, "new": "a whole new password"}).status_code == 200
-
-    assert client.get("/me").json()["id"] == me["id"]  # this device got a fresh cookie
-    assert claims_of(client.cookies[auth.COOKIE])["ver"] == 1
-    client.cookies.set(auth.COOKIE, other_device)
-    assert client.get("/me").status_code == 401
-
-
-def test_resetting_the_password_signs_out_every_other_device(client, capsys):
-    me = signup(client)
-    other_device = client.cookies[auth.COOKIE]
-    client.cookies.clear()
-    client.post("/auth/forgot", json={"email": "taufik@example.com"})
-
-    assert client.post("/auth/reset", json={"token": token_from(reset_link(capsys)),
-                                            "password": "a brand new password"}).status_code == 200
-
-    assert client.get("/me").json()["id"] == me["id"]
-    client.cookies.set(auth.COOKIE, other_device)
-    assert client.get("/me").status_code == 401

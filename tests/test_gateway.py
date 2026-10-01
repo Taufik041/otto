@@ -452,7 +452,8 @@ def add(client, i, notify=True):
 
 
 def connect(client, after_seq=0, sid=WS, origin=ORIGIN):
-    return client.websocket_connect(f"/sessions/{sid}/ws?after_seq={after_seq}",
+    ticket = client.post(f"/sessions/{sid}/ws-ticket").json()["ticket"]
+    return client.websocket_connect(f"/sessions/{sid}/ws?ticket={ticket}&after_seq={after_seq}",
                                     headers={"origin": origin} if origin else {})
 
 
@@ -528,11 +529,8 @@ def test_ws_resync_rereads_after_the_listener_reconnects(client):
         assert seqs(ws, 1) == [2]
 
 
-def test_ws_unknown_session_is_closed_with_4404(client):
-    with pytest.raises(WebSocketDisconnect) as e:
-        with connect(client, sid="nosuch0001") as ws:
-            ws.receive_json()
-    assert e.value.code == 4404
+def test_ws_ticket_for_an_unknown_session_is_404(client):
+    assert client.post("/sessions/nosuch0001/ws-ticket").status_code == 404
 
 
 def test_ws_heartbeat(client, monkeypatch):

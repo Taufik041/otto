@@ -9,7 +9,7 @@ from gateway import auth, github_app
 from shared import config
 from shared.db import get_db
 from shared.models import User
-from tests.fakes import log_in_as, signup
+from tests.fakes import log_in_as, sign_out, signup
 
 
 def start(client, path="/auth/github/start") -> str:
@@ -65,7 +65,7 @@ def test_signing_in_again_finds_the_same_user_and_refreshes_the_profile(client, 
     fake_github.add_user("c1", gid=101, login="old-login")
     callback(client, code="c1", state=start(client))
     first = client.get("/me").json()["id"]
-    client.cookies.clear()
+    sign_out(client)
 
     fake_github.add_user("c2", gid=101, login="Taufik041")
     callback(client, code="c2", state=start(client))
@@ -109,7 +109,7 @@ def test_a_state_started_signed_out_links_to_whoever_is_signed_in_at_the_callbac
 def test_a_signed_out_state_never_takes_over_github_linked_elsewhere(client, fake_github):
     fake_github.add_user("c0", gid=101, login="Taufik041")
     callback(client, code="c0", state=start(client))  # 101 has an account of its own
-    client.cookies.clear()
+    sign_out(client)
     state = start(client)
     other = signup(client, email="other@example.com")
     fake_github.add_user("c1", gid=101, login="Taufik041")
@@ -120,7 +120,7 @@ def test_a_signed_out_state_never_takes_over_github_linked_elsewhere(client, fak
 
 def test_accounts_are_never_merged_by_email(client, fake_github):
     email_user = signup(client, email="taufik@example.com")
-    client.cookies.clear()
+    sign_out(client)
     fake_github.add_user("c1", gid=101, login="Taufik041", email="taufik@example.com")
 
     callback(client, code="c1", state=start(client))
@@ -135,7 +135,7 @@ def test_accounts_are_never_merged_by_email(client, fake_github):
 def test_github_already_linked_to_another_account_is_409(client, fake_github):
     fake_github.add_user("c1", gid=101, login="Taufik041")
     callback(client, code="c1", state=start(client))  # a GitHub account of its own
-    client.cookies.clear()
+    sign_out(client)
     other = signup(client, email="other@example.com")
     fake_github.add_user("c2", gid=101, login="Taufik041")
 
@@ -177,7 +177,7 @@ def test_a_state_from_another_browser_is_400(client, fake_github):
     """The attacker's own state and code, replayed in the victim's browser, must not link or log in."""
     fake_github.add_user("c1", gid=666, login="attacker")
     attackers_state = start(client)
-    client.cookies.clear()
+    client.cookies.clear()  # another browser
     victim = signup(client, email="victim@example.com")
 
     r = callback(client, code="c1", state=attackers_state)
@@ -204,7 +204,7 @@ def test_each_start_keeps_its_own_nonce_so_duplicate_starts_dont_break_sign_in(c
 
     assert callback(client, code="c1", state=first).status_code in (302, 307)
     me = client.get("/me").json()["id"]
-    client.cookies.delete(auth.COOKIE)  # signed out again, as when second was started
+    sign_out(client)  # signed out again, as when second was started
     assert callback(client, code="c2", state=second).status_code in (302, 307)
 
     assert client.get("/me").json()["id"] == me and len(users()) == 1
@@ -216,7 +216,7 @@ def test_a_used_state_cant_be_used_again(client, fake_github):
     fake_github.add_user("c2", gid=101, login="Taufik041")
     state = start(client)
     assert callback(client, code="c1", state=state).status_code in (302, 307)
-    client.cookies.delete(auth.COOKIE)
+    sign_out(client)
     assert callback(client, code="c2", state=state).status_code == 400
 
 

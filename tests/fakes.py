@@ -258,21 +258,30 @@ def make_user(user_id="u1", **fields):
 
 
 def signup(client, email="taufik@example.com", name="Taufik Khan", password=PASSWORD) -> dict:
-    """Sign up through the API; the client keeps the login cookie. Returns GET /me."""
+    """Sign up through the API; the client sends its access token from now on. Returns the user."""
     r = client.post("/auth/signup", json={"name": name, "email": email, "password": password})
     assert r.status_code == 201, r.text
+    client.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
     return r.json()["user"]
 
 
 def log_in_as(client, user_id):
-    """Put a valid login cookie for user_id on the client, as if they had signed in."""
-    from gateway import auth
+    """Give the client a valid access token for user_id, as if they had signed in."""
+    from gateway import auth, tokens
     from shared.db import get_db
     from shared.models import User
 
     with get_db() as s:
-        user = s.get(User, user_id)
-    client.cookies.set(auth.COOKIE, auth.session_token(user_id, user.token_version if user else 0))
+        user = s.get(User, user_id) or User(id=user_id, name="gone")
+    client.headers["Authorization"] = f"Bearer {tokens.access_token(user)}"
+    client.cookies.set(auth.COOKIE, auth.session_token(user_id, user.token_version))
+
+
+def sign_out(client):
+    """Forget the client's access token and login cookies (not GitHub's nonce cookies)."""
+    client.headers.pop("Authorization", None)
+    for name in ("otto_session", "otto_refresh"):
+        client.cookies.delete(name)
 
 
 # --- GitHub ------------------------------------------------------------------------

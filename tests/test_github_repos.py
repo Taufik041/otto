@@ -8,7 +8,7 @@ from gateway import auth, github_app
 from shared import config
 from shared.db import get_db
 from shared.models import Installation, User
-from tests.fakes import log_in_as, repo, signup
+from tests.fakes import log_in_as, repo, sign_out, signup
 from tests.test_github_signin import callback, nonce_cookies, start
 
 INST = 555
@@ -139,7 +139,7 @@ def test_an_installation_linked_to_another_otto_user_is_409(client, fake_github,
 def test_installing_links_github_to_an_email_account_unless_its_taken(client, fake_github, me):
     fake_github.add_user("c0", gid=101, login="Taufik041")
     callback(client, code="c0", state=start(client))  # links 101 to me
-    client.cookies.clear()
+    sign_out(client)
     other = signup(client, email="other@example.com")
     token = fake_github.add_user("c1", gid=101, login="Taufik041")
     fake_github.add_installation(INST, "Taufik041", users=[token])
@@ -204,7 +204,7 @@ def test_a_repo_change_made_on_github_refreshes_the_caches(client, installed):
 
 
 def test_a_repo_change_made_on_github_needs_a_login(client, installed):
-    client.cookies.delete(auth.COOKIE)
+    sign_out(client)
     before = list(installed.calls)
     assert update_from_github(client).status_code == 400
     assert installed.calls == before

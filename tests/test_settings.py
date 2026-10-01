@@ -7,7 +7,7 @@ from shared.db import get_db
 from shared.events import append_event
 from shared.models import Installation, PasswordReset, Session, SessionEvent, Usage, User
 from shared.sessions import create_session, set_status
-from tests.fakes import PASSWORD, connect_github, log_in_as, signup, use_env
+from tests.fakes import PASSWORD, connect_github, log_in_as, sign_out, signup, use_env
 from tests.test_github_signin import callback, start
 from tests.test_usage import spend
 
@@ -52,7 +52,7 @@ def test_change_password(client):
     me = signup(client)
     r = client.post("/me/password", json={"current": PASSWORD, "new": "a whole new password"})
     assert r.status_code == 200
-    client.cookies.clear()
+    sign_out(client)
     assert client.post("/auth/login", json={"email": me["email"], "password": PASSWORD}).status_code == 401
     assert client.post("/auth/login", json={"email": me["email"], "password": "a whole new password"}).status_code == 200
 
@@ -85,7 +85,7 @@ def test_deleting_the_account_removes_everything_of_theirs(client, env, fake_git
     other = signup(client, email="other@example.com")["id"]
     create_session("keep000001", task="theirs", repo=None, model="m", user_id=other)
     spend(other, "keep000001", 10)
-    client.cookies.clear()
+    sign_out(client)
 
     me = signup(client, email="taufik@example.com")
     connect_github(fake_github, me["id"], 555, [REPO])
@@ -114,7 +114,7 @@ def test_deleting_the_account_removes_everything_of_theirs(client, env, fake_git
     assert auth.COOKIE not in client.cookies
     log_in_as(client, me["id"])
     assert client.get("/me").status_code == 401
-    client.cookies.clear()
+    sign_out(client)
     assert client.post("/auth/login", json={"email": "taufik@example.com", "password": PASSWORD}).status_code == 401
     assert client.get("/repos").status_code == 401
 
