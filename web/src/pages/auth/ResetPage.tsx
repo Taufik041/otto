@@ -47,7 +47,7 @@ export function ResetPage() {
           onChange={(e) => setPassword(e.target.value)}
           note={password ? <span className="flex flex-col gap-1.5"><StrengthMeter password={password} /></span> : undefined}
         />
-        <Button type="submit" size="lg" className="mt-1.5" disabled={busy || !token || !password}>
+        <Button type="submit" size="lg" className="mt-1.5" disabled={busy || !token}>
           Set password and sign in
         </Button>
       </form>

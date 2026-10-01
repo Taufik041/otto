@@ -19,12 +19,16 @@ export function SignupPage() {
   const [emailError, setEmailError] = useState<string | null>(null)
   const [pwError, setPwError] = useState<string | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
+  const [nameError, setNameError] = useState<string | null>(null)
 
   async function submit(e: FormEvent) {
     e.preventDefault()
     setTaken(false)
     setEmailError(null)
     setBanner(null)
+    setNameError(name.trim() ? null : 'Enter your name.')
+    if (!email.trim()) setEmailError('Enter your email.')
+    if (!name.trim() || !email.trim()) return
     if (password.length < MIN_PASSWORD) {
       setPwError(`Use at least ${MIN_PASSWORD} characters.`)
       return
@@ -50,7 +54,17 @@ export function SignupPage() {
       <GitHubSignIn onError={setBanner} />
       <Or />
       <form className="flex flex-col gap-3.5" onSubmit={submit} noValidate>
-        <Field label="Name" autoComplete="name" required value={name} onChange={(e) => setName(e.target.value)} />
+        <Field
+          label="Name"
+          autoComplete="name"
+          required
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value)
+            setNameError(null)
+          }}
+          error={nameError ?? undefined}
+        />
         <Field
           label="Email"
           type="email"
@@ -85,7 +99,7 @@ export function SignupPage() {
           error={pwError ?? undefined}
           note={password ? <span className="flex flex-col gap-1.5"><StrengthMeter password={password} /></span> : undefined}
         />
-        <Button type="submit" size="lg" className="mt-1.5" disabled={busy || !name.trim() || !email || !password}>
+        <Button type="submit" size="lg" className="mt-1.5" disabled={busy}>
           Create account
         </Button>
       </form>

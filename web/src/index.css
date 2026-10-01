@@ -180,6 +180,7 @@
   }
   button {
     font-family: inherit;
+    line-height: normal; /* the browser default, which the design's rows are measured with */
     cursor: pointer;
   }
   button:disabled {

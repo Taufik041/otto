@@ -38,7 +38,7 @@ export function MentionMenu({
             aria-selected={i === active}
             onClick={() => onPick(r)}
             onMouseEnter={() => onHover(i)}
-            className="flex w-full cursor-pointer items-center gap-3 rounded-[10px] text-text"
+            className="flex w-full cursor-pointer items-center gap-3 rounded-[10px] leading-[normal] text-text"
             style={{ padding: rowPad, background: i === active ? 'var(--sel)' : 'transparent' }}
           >
             <RepoIcon size={16} strokeWidth={1.6} className="shrink-0 text-muted" />

@@ -15,12 +15,16 @@ export function LoginPage() {
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [wrong, setWrong] = useState(false)
+  const [missing, setMissing] = useState<'email' | 'password' | null>(null)
   const [banner, setBanner] = useState<string | null>(
     githubErrorMessage(params.get('github_error')) ?? (params.get('error') === 'callback' ? "Sign-in didn't finish. Try again." : null),
   )
 
   async function submit(e: FormEvent) {
     e.preventDefault()
+    const empty = !email.trim() ? 'email' : !password ? 'password' : null
+    setMissing(empty)
+    if (empty) return
     setBusy(true)
     setWrong(false)
     setBanner(null)
@@ -47,7 +51,11 @@ export function LoginPage() {
           autoComplete="email"
           required
           value={email}
-          onChange={(e) => setEmail(e.target.value)}
+          onChange={(e) => {
+            setEmail(e.target.value)
+            setMissing(null)
+          }}
+          error={missing === 'email' ? 'Enter your email.' : undefined}
         />
         <Field
           label="Password"
@@ -58,15 +66,18 @@ export function LoginPage() {
           onChange={(e) => {
             setPassword(e.target.value)
             setWrong(false)
+            setMissing(null)
           }}
           aside={
             <Link to="/forgot-password" className="text-[13px]">
               Forgot password?
             </Link>
           }
-          error={wrong ? "That password isn't right. Try again or reset it." : undefined}
+          error={
+            wrong ? "That password isn't right. Try again or reset it." : missing === 'password' ? 'Enter your password.' : undefined
+          }
         />
-        <Button type="submit" size="lg" className="mt-1.5" disabled={busy || !email || !password}>
+        <Button type="submit" size="lg" className="mt-1.5" disabled={busy}>
           Sign in
         </Button>
       </form>

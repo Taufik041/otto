@@ -28,6 +28,7 @@ export function ModelMenu({
   const enabled = models.filter((m) => m.available)
   const [active, setActive] = useState(() => Math.max(0, enabled.findIndex((m) => m.id === selected)))
   const listRef = useRef<HTMLDivElement>(null)
+  const [moved, setMoved] = useState(false) // highlight a row only once the keyboard or mouse moves
 
   useEffect(() => {
     if (autoFocus) listRef.current?.focus()
@@ -37,6 +38,7 @@ export function ModelMenu({
     if (!enabled.length) return
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault()
+      setMoved(true)
       const step = e.key === 'ArrowDown' ? 1 : -1
       setActive((i) => (i + step + enabled.length) % enabled.length)
     } else if (e.key === 'Enter' || e.key === ' ') {
@@ -66,7 +68,7 @@ export function ModelMenu({
           </div>
           {g.models.map((m) => {
             const on = m.id === selected
-            const isActive = m.id === activeId
+            const isActive = moved && m.id === activeId
             return (
               <div
                 key={m.id}
@@ -75,8 +77,12 @@ export function ModelMenu({
                 aria-selected={on}
                 aria-disabled={!m.available || undefined}
                 onClick={() => m.available && onPick(m.id)}
-                onMouseEnter={() => m.available && setActive(enabled.indexOf(m))}
-                className={`flex w-full items-start gap-3 rounded-[10px] text-left text-text ${m.available ? 'hover:bg-hover' : ''}`}
+                onMouseEnter={() => {
+                  if (!m.available) return
+                  setMoved(true)
+                  setActive(enabled.indexOf(m))
+                }}
+                className={`flex w-full items-start gap-3 rounded-[10px] text-left leading-[normal] text-text ${m.available ? 'hover:bg-hover' : ''}`}
                 style={{
                   padding: rowPadding,
                   cursor: m.available ? 'pointer' : 'not-allowed',

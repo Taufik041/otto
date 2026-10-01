@@ -190,7 +190,7 @@ function ChatRow({
         to={`/c/${chat.id}`}
         onClick={onPick}
         aria-current={current ? 'page' : undefined}
-        className="flex min-w-0 flex-1 items-start gap-2.5 py-2 pl-3 pr-9 text-text hover:text-text"
+        className="flex min-w-0 flex-1 items-start gap-2.5 py-2 pl-3 pr-9 leading-normal text-text hover:text-text [&_span]:leading-[normal]"
       >
         <span
           className={cn('mt-2 size-[7px] shrink-0 rounded-full', dot === 'warn' && 'animate-pulse-dot')}

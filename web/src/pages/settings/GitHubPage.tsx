@@ -95,10 +95,11 @@ export function GitHubPage() {
           {gh.connected ? 'Add or remove repositories' : 'Install on repositories'}
           <ExternalLink size={13} strokeWidth={2} />
         </Button>
+        {gh.installations.length === 1 && <Installations installations={gh.installations} inline />}
       </div>
       {error && <p role="alert" className="-mt-4 mb-0 text-sm text-bad">{error}</p>}
 
-      {gh.installations.length > 0 && <Installations installations={gh.installations} />}
+      {gh.installations.length > 1 && <Installations installations={gh.installations} />}
     </>
   )
 }
@@ -123,7 +124,7 @@ function Repos() {
               first={i === 0}
               priv={r.private}
               pad="px-5"
-              meta={`${r.private ? 'Private' : 'Public'} · ${updatedAgo(r.updated_at).replace(/^updated /, '')}`}
+              meta={`${r.private ? 'Private' : 'Public'} · ${updatedAgo(r.updated_at)}`}
             />
           ))}
         </Card>
@@ -132,7 +133,9 @@ function Repos() {
   )
 }
 
-function Installations({ installations }: { installations: { id: number; account_login: string }[] }) {
+/** Disconnecting an installation: one is a button beside the install link, as in the design; several
+ *  are listed by account. */
+function Installations({ installations, inline = false }: { installations: { id: number; account_login: string }[]; inline?: boolean }) {
   const qc = useQueryClient()
   const [confirm, setConfirm] = useState<{ id: number; account_login: string } | null>(null)
   const [done, setDone] = useState<(Unlinked & { account_login: string }) | null>(null)
@@ -145,6 +148,54 @@ function Installations({ installations }: { installations: { id: number; account
       qc.invalidateQueries({ queryKey: keys.repos })
     },
   })
+  const dialog = (
+    <Dialog
+      open={confirm !== null}
+      onOpenChange={(o) => {
+        if (!o) {
+          setConfirm(null)
+          unlink.reset()
+        }
+      }}
+    >
+      {confirm && (
+        <DialogContent>
+          <DialogTitle>Disconnect {confirm.account_login}?</DialogTitle>
+          <DialogDescription>Otto stops seeing its repositories. You can connect it again any time.</DialogDescription>
+          {unlink.isError && <p role="alert" className="mb-0 mt-3 text-sm text-bad">{messageOf(unlink.error)}</p>}
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="outline" size="sm">
+                Cancel
+              </Button>
+            </DialogClose>
+            <Button variant="dangerSolid" size="sm" disabled={unlink.isPending} onClick={() => unlink.mutate(confirm.id)}>
+              Disconnect
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      )}
+    </Dialog>
+  )
+  const note = done && (
+    <p role="status" className="mx-1 mb-0 mt-2.5 basis-full text-sm text-muted">
+      Disconnected {done.account_login}. The App stays installed on GitHub until you{' '}
+      <a href={done.uninstall_url} target="_blank" rel="noopener noreferrer">
+        uninstall it there ›
+      </a>
+    </p>
+  )
+  if (inline) {
+    return (
+      <>
+        <button type="button" onClick={() => setConfirm(installations[0]!)} className="border-0 bg-transparent p-0 text-[15px] text-bad">
+          Disconnect
+        </button>
+        {note}
+        {dialog}
+      </>
+    )
+  }
   return (
     <div>
       <SectionLabel>Installations</SectionLabel>
@@ -167,41 +218,8 @@ function Installations({ installations }: { installations: { id: number; account
           </div>
         ))}
       </Card>
-      {done && (
-        <p role="status" className="mx-1 mb-0 mt-2.5 text-sm text-muted">
-          Disconnected {done.account_login}. The App stays installed on GitHub until you{' '}
-          <a href={done.uninstall_url} target="_blank" rel="noopener noreferrer">
-            uninstall it there ›
-          </a>
-        </p>
-      )}
-      <Dialog
-        open={confirm !== null}
-        onOpenChange={(o) => {
-          if (!o) {
-            setConfirm(null)
-            unlink.reset()
-          }
-        }}
-      >
-        {confirm && (
-          <DialogContent>
-            <DialogTitle>Disconnect {confirm.account_login}?</DialogTitle>
-            <DialogDescription>Otto stops seeing its repositories. You can connect it again any time.</DialogDescription>
-            {unlink.isError && <p role="alert" className="mb-0 mt-3 text-sm text-bad">{messageOf(unlink.error)}</p>}
-            <DialogFooter>
-              <DialogClose asChild>
-                <Button variant="outline" size="sm">
-                  Cancel
-                </Button>
-              </DialogClose>
-              <Button variant="dangerSolid" size="sm" disabled={unlink.isPending} onClick={() => unlink.mutate(confirm.id)}>
-                Disconnect
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        )}
-      </Dialog>
+      {note}
+      {dialog}
     </div>
   )
 }

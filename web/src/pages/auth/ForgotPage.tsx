@@ -15,6 +15,7 @@ export function ForgotPage() {
 
   async function submit(e: FormEvent) {
     e.preventDefault()
+    if (!email.trim()) return setError('Enter your email.')
     setBusy(true)
     setError(null)
     try {
@@ -52,7 +53,7 @@ export function ForgotPage() {
       {error && <Banner>{error}</Banner>}
       <form className="flex flex-col gap-3.5" onSubmit={submit} noValidate>
         <Field label="Email" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-        <Button type="submit" size="lg" disabled={busy || !email}>
+        <Button type="submit" size="lg" disabled={busy}>
           Send reset link
         </Button>
       </form>
