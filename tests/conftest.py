@@ -86,7 +86,7 @@ def providers(monkeypatch):
 def accounts(monkeypatch):
     """A known signing secret and limits, whatever .env says; cheap argon2 so signups are fast."""
     from argon2 import PasswordHasher
-    from gateway import auth
+    from gateway import auth, tokens
 
     cheap = PasswordHasher(time_cost=1, memory_cost=8, parallelism=1)
     monkeypatch.setattr(auth, "hasher", cheap)
@@ -95,6 +95,9 @@ def accounts(monkeypatch):
     monkeypatch.setattr(config, "FRONTEND_URL", "http://localhost:5173")
     monkeypatch.setattr(config, "COOKIE_SECURE", False)
     monkeypatch.setattr(config, "DAILY_TOKEN_LIMIT", 50000)
+    monkeypatch.setattr(config, "ACCESS_TOKEN_MINUTES", 15)
+    monkeypatch.setattr(config, "REFRESH_TOKEN_DAYS", 30)
+    monkeypatch.setattr(tokens, "_tickets", {})
 
 
 @pytest.fixture

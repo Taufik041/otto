@@ -82,6 +82,22 @@ class PasswordReset(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
 
 
+class RefreshToken(SQLModel, table=True):
+    """One refresh token. Each sign-in starts a family; /auth/refresh replaces the token with the
+    next one in its family. Only a hash of the token is stored."""
+    __tablename__ = "refresh_tokens"
+
+    id: str = Field(primary_key=True)
+    user_id: str = Field(foreign_key="users.id", index=True)
+    family_id: str = Field(index=True)
+    token_hash: str = Field(unique=True)  # sha256 of the token
+    created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
+    expires_at: datetime = Field(sa_type=sa.DateTime(timezone=True))
+    revoked_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    replaced_by_id: str | None = None  # the token that rotated this one out
+    user_agent: str | None = None
+
+
 class Installation(SQLModel, table=True):
     """A GitHub App installation a user connected to Otto: its repos are theirs to work on."""
     __tablename__ = "installations"

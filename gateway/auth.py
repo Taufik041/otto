@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select, update
 
+from gateway.tokens import check_secret
 from shared import config
 from shared.db import get_db
 from shared.models import PasswordReset, User, as_utc, utcnow
@@ -24,7 +25,6 @@ COOKIE = "otto_session"
 SESSION_TTL = timedelta(days=7)
 RESET_TTL = timedelta(hours=1)
 MIN_PASSWORD = 8
-MIN_SECRET = 32
 EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
 hasher = PasswordHasher()
@@ -33,12 +33,6 @@ router = APIRouter()
 
 
 # --- signed tokens ------------------------------------------------------------------
-
-def check_secret():
-    if not config.AUTH_SECRET or len(config.AUTH_SECRET) < MIN_SECRET:
-        raise RuntimeError(f"set AUTH_SECRET to a random string of at least {MIN_SECRET} characters, "
-                           "e.g. python -c 'import secrets; print(secrets.token_urlsafe(48))'")
-
 
 def sign(claims, audience, ttl) -> str:
     """A JWT for one purpose (audience), so a token made for one can't be used as another."""

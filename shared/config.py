@@ -123,7 +123,9 @@ CORS_ORIGINS = [o.strip() for o in os.environ.get(
     "CORS_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",") if o.strip()]
 
 # accounts
-AUTH_SECRET = os.environ.get("AUTH_SECRET")  # signs login cookies and OAuth state; at least 32 characters
+AUTH_SECRET = os.environ.get("AUTH_SECRET")  # signs access tokens and OAuth state; at least 32 characters
+ACCESS_TOKEN_MINUTES = int(os.environ.get("ACCESS_TOKEN_MINUTES", "15"))
+REFRESH_TOKEN_DAYS = int(os.environ.get("REFRESH_TOKEN_DAYS", "30"))
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173").rstrip("/")
 COOKIE_SECURE = FRONTEND_URL.startswith("https://")
 DAILY_TOKEN_LIMIT = int(os.environ.get("DAILY_TOKEN_LIMIT", "50000"))  # a new user's limit
