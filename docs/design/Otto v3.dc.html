@@ -464,7 +464,7 @@
               </div>
             </div>
           </div>
-          <div style="max-width:{{ compMax }};margin:0 auto;padding-top:8px;text-align:center;font-size:12px;color:var(--muted);">{{ hint }}</div>
+          <div style="max-width:{{ compMax }};margin:0 auto;padding-top:8px;min-height:{{ hintMinH }};box-sizing:content-box;text-align:center;font-size:12px;line-height:16px;color:var(--muted);text-wrap:balance;">{{ hint }}</div>
           <div style="display:{{ dChipsD }};max-width:{{ compMax }};margin:0 auto;padding-top:22px;flex-wrap:wrap;justify-content:center;gap:10px;">
             <sc-for list="{{ chips }}" as="c" hint-placeholder-count="4"><button onClick="{{ c.pick }}" style="height:36px;padding:0 16px;border:1px solid var(--line);background:transparent;color:var(--text);border-radius:980px;font-size:14px;cursor:pointer;transition:background .2s ease;" style-hover="background:var(--hover);" dangerouslySetInnerHTML="{{ c.html }}"></button></sc-for>
           </div>
@@ -479,12 +479,11 @@
               <div style="font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Taufik041/otto_test</div>
               <div style="font-family:var(--mono);font-size:12px;color:var(--muted);">otto/4299fa2c3f</div>
             </div>
-            <span style="flex:0 0 auto;display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);"><span style="width:7px;height:7px;border-radius:99px;background:{{ sandboxDot }};"></span>{{ sandboxLabel }}</span>
             <button onClick="{{ closeWs }}" title="Close" style="flex:0 0 auto;width:34px;height:34px;display:flex;align-items:center;justify-content:center;border:none;background:var(--tag);color:var(--text);border-radius:99px;cursor:pointer;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="{{ ic.x }}" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"></path></svg></button>
           </div>
           <div style="flex:0 0 auto;padding:12px 16px;border-bottom:1px solid var(--hair);">
             <div style="display:flex;gap:2px;padding:2px;border-radius:10px;background:var(--sel);">
-              <sc-for list="{{ wsTabs }}" as="t" hint-placeholder-count="3"><button onClick="{{ t.pick }}" style="flex:1 1 0;height:30px;border:none;border-radius:8px;background:{{ t.bg }};color:{{ t.color }};box-shadow:{{ t.shadow }};font-size:13.5px;font-weight:500;cursor:pointer;transition:background .2s ease;">{{ t.label }}</button></sc-for>
+              <sc-for list="{{ wsTabs }}" as="t" hint-placeholder-count="2"><button onClick="{{ t.pick }}" style="flex:1 1 0;height:30px;border:none;border-radius:8px;background:{{ t.bg }};color:{{ t.color }};box-shadow:{{ t.shadow }};font-size:13.5px;font-weight:500;cursor:pointer;transition:background .2s ease;">{{ t.label }}</button></sc-for>
             </div>
           </div>
           <div ref="{{ panelRef }}" style="flex:1 1 auto;min-height:0;overflow:auto;background:var(--bg);">
@@ -535,16 +534,6 @@
                   </div>
                 </sc-for>
                 <div style="display:{{ wsNoCmdsD }};padding:48px 16px;text-align:center;font-size:14px;color:var(--muted);">No commands yet.</div>
-              </div>
-            </sc-if>
-
-            <sc-if value="{{ tabBrowser }}">
-              <div style="min-height:100%;display:flex;align-items:center;justify-content:center;padding:48px 28px;">
-                <div style="max-width:340px;text-align:center;animation:ottoFade .4s ease-out both;">
-                  <svg width="44" height="44" viewBox="0 0 24 24" fill="none" style="color:var(--muted);opacity:.7;"><rect x="2.75" y="4.25" width="18.5" height="15.5" rx="2.5" stroke="currentColor" stroke-width="1.2"></rect><path d="M2.75 8.75h18.5" stroke="currentColor" stroke-width="1.2"></path></svg>
-                  <div style="margin-top:18px;font-size:21px;font-weight:600;letter-spacing:-0.015em;">Browser preview — coming soon</div>
-                  <p style="margin:8px 0 0;font-size:15px;line-height:1.5;color:var(--muted);text-wrap:pretty;">Otto will run your app in the sandbox and show the page here.</p>
-                </div>
               </div>
             </sc-if>
           </div>
@@ -690,15 +679,6 @@
                 </sc-for>
               </div>
             </div>
-            <div style="border:1px solid var(--line);border-radius:18px;padding:22px 22px 10px;">
-              <div style="display:flex;align-items:baseline;"><span style="flex:1 1 auto;font-size:17px;font-weight:600;">Active sandboxes</span><span style="font-size:14px;color:var(--muted);">{{ sbxCount }}</span></div>
-              <div style="display:{{ sbxRowD }};align-items:center;gap:12px;padding:16px 0 12px;">
-                <span style="width:8px;height:8px;border-radius:99px;background:var(--ok);flex:0 0 auto;"></span>
-                <span style="flex:1 1 auto;min-width:0;"><span style="display:block;font-size:15px;">Taufik041/otto_test</span><span style="display:block;font-family:var(--mono);font-size:12px;color:var(--muted);">otto/4299fa2c3f · warm · 12 min</span></span>
-                <button onClick="{{ stopSandbox }}" style="height:32px;padding:0 14px;border:1px solid var(--line);background:transparent;color:var(--text);border-radius:980px;font-size:13.5px;cursor:pointer;">Stop</button>
-              </div>
-              <div style="display:{{ sbxNoneD }};padding:14px 0 12px;font-size:14px;color:var(--muted);">No sandboxes running.</div>
-            </div>
           </sc-if>
 
           <sc-if value="{{ pgAppearance }}">
@@ -733,7 +713,7 @@
 </div>
 
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props="{&quot;initialScene&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;signin&quot;,&quot;signup&quot;,&quot;forgot&quot;,&quot;onboard&quot;,&quot;onboarded&quot;,&quot;empty&quot;,&quot;mention&quot;,&quot;mentionOff&quot;,&quot;models&quot;,&quot;working&quot;,&quot;done&quot;,&quot;workspace&quot;,&quot;followup&quot;,&quot;error&quot;,&quot;limit&quot;,&quot;plain&quot;,&quot;setGithub&quot;,&quot;setUsage&quot;,&quot;setAppearance&quot;],&quot;default&quot;:&quot;done&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;State&quot;},&quot;device&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;desktop&quot;,&quot;mobile&quot;],&quot;default&quot;:&quot;desktop&quot;,&quot;tsType&quot;:&quot;'desktop' | 'mobile'&quot;,&quot;section&quot;:&quot;State&quot;},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;light&quot;,&quot;dark&quot;,&quot;system&quot;],&quot;default&quot;:&quot;light&quot;,&quot;tsType&quot;:&quot;'light' | 'dark' | 'system'&quot;,&quot;section&quot;:&quot;State&quot;},&quot;autoplay&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Behavior&quot;},&quot;followupSandbox&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;warm&quot;,&quot;asleep&quot;],&quot;default&quot;:&quot;warm&quot;,&quot;tsType&quot;:&quot;'warm' | 'asleep'&quot;,&quot;section&quot;:&quot;Behavior&quot;}}">
+<script type="text/x-dc" data-dc-script data-props="{&quot;initialScene&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;signin&quot;,&quot;signup&quot;,&quot;forgot&quot;,&quot;onboard&quot;,&quot;onboarded&quot;,&quot;empty&quot;,&quot;mention&quot;,&quot;mentionOff&quot;,&quot;models&quot;,&quot;working&quot;,&quot;done&quot;,&quot;workspace&quot;,&quot;followup&quot;,&quot;error&quot;,&quot;limit&quot;,&quot;plain&quot;,&quot;setGithub&quot;,&quot;setUsage&quot;,&quot;setAppearance&quot;],&quot;default&quot;:&quot;done&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;State&quot;},&quot;device&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;desktop&quot;,&quot;mobile&quot;],&quot;default&quot;:&quot;desktop&quot;,&quot;tsType&quot;:&quot;'desktop' | 'mobile'&quot;,&quot;section&quot;:&quot;State&quot;},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;light&quot;,&quot;dark&quot;,&quot;system&quot;],&quot;default&quot;:&quot;light&quot;,&quot;tsType&quot;:&quot;'light' | 'dark' | 'system'&quot;,&quot;section&quot;:&quot;State&quot;},&quot;autoplay&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Behavior&quot;}}">
 const SCENES = [
   ["signin", "1 · Sign in (error)"], ["signup", "1 · Sign up"], ["forgot", "1 · Forgot password"],
   ["onboard", "2 · Connect GitHub"], ["onboarded", "2 · GitHub connected"],
@@ -763,7 +743,7 @@ class Component extends DCLogic {
   }, this.sceneState(this.props.initialScene || "done"));
 
   sceneState(scene) {
-    const s = { scene, draft: "", repo: null, mentionOpen: false, mq: "", mIdx: 0, modelOpen: false, wsOpen: false, wsTab: "changes", wsFile: "py", wsCmd: null, wsSel: null, profileOpen: false, moreOpen: false, drawer: false, stopped: false, expanded: {}, inbox: false, setRoot: false, sent: null, sent2: null, sentPlain: null, p: 7, t: 108, fp: 4, ft: 24, sandboxStopped: false, k: 0 };
+    const s = { scene, draft: "", repo: null, mentionOpen: false, mq: "", mIdx: 0, modelOpen: false, wsOpen: false, wsTab: "changes", wsFile: "py", wsCmd: null, wsSel: null, profileOpen: false, moreOpen: false, drawer: false, stopped: false, expanded: {}, inbox: false, setRoot: false, sent: null, sent2: null, sentPlain: null, p: 7, t: 108, fp: 4, ft: 24, k: 0 };
     if (scene === "onboard" || scene === "mentionOff") s.github = false;
     else if (!/^set/.test(scene)) s.github = true;
     if (scene === "mention" || scene === "mentionOff") { s.draft = "@"; s.mentionOpen = true; }
@@ -845,11 +825,11 @@ class Component extends DCLogic {
     if (!text && !S.repo) return;
     const sc = S.scene;
     if (sc === "done" || sc === "workspace" || (sc === "followup" && S.fp > 3)) {
-      this.setState({ scene: "followup", fp: 1, ft: 0, k: 0, sent2: text || "also add a test for exactly 11 units", draft: "", repo: null, stopped: false, modelOpen: false, mentionOpen: false });
+      this.setState({ scene: "followup", fp: 0, ft: 0, k: 0, sent2: text || "also add a test for exactly 11 units", draft: "", repo: null, stopped: false, modelOpen: false, mentionOpen: false });
       return;
     }
     if (sc === "error") { this.go("working", { p: 4, t: 62, wsOpen: S.wsOpen }); return; }
-    if (S.repo) { this.go("working", { p: 1, t: 0, sent: text || "fix the failing tests", sentRepo: S.repo }); return; }
+    if (S.repo) { this.go("working", { p: 0, t: 0, sent: text || "fix the failing tests", sentRepo: S.repo }); return; }
     this.go("plain", { sentPlain: text });
   }
 
@@ -889,6 +869,7 @@ class Component extends DCLogic {
           subD: st.sub && !live ? "block" : "none", sub: st.sub || ""
         };
       });
+      if (status === "live" && shown === 0) rows.push({ pick: noop, bg: "var(--live-bg)", iconColor: "var(--warn)", anim: "ottoSpin 1s linear infinite", iconPath: IC.spin, labelColor: "var(--muted)", label: { __html: "Setting up workspace…" }, res: { __html: "" }, subD: "none", sub: "" });
       if (failRow) rows.push({ pick: noop, bg: "var(--bad-bg)", iconColor: "var(--bad)", anim: "none", iconPath: IC.x, labelColor: "var(--text)", label: { __html: "Asked the model for the next step" }, res: { __html: '<span style="color:var(--bad);font-weight:600">No response</span>' }, subD: "block", sub: "6 tries over 40s" });
       const title = status === "live" ? 'Working in <span style="color:var(--muted);font-weight:400">Taufik041/</span>otto_test'
         : status === "done" ? doneTitle
@@ -903,7 +884,7 @@ class Component extends DCLogic {
         meta: status === "live" ? "otto/4299fa2c3f" : "Taufik041/otto_test · otto/4299fa2c3f",
         time, rot: open ? "180deg" : "0deg", chev: IC.chevDown, rows: open ? "1fr" : "0fr",
         steps: rows, openWs, panelIcon: IC.panel,
-        foot: status === "live" ? "Sandbox running" : status === "done" ? "Sandbox warm" : "Sandbox asleep"
+        foot: ""
       };
     }
 
@@ -919,7 +900,6 @@ class Component extends DCLogic {
       O({ wD: "block", w: block("main", D.MAIN, shown, mainLive ? shown - 1 : -1, mainStatus, mainTitle, mainLive ? mmss(S.t) : mainStatus === "failed" ? "1m 02s" : "", sc === "error") });
       if (sc === "working" && S.stopped) N(IC.stop, "You stopped Otto. Nothing after that step ran.");
       if (sc === "error") {
-        N(IC.key, "Rate limited, switched API key");
         O({ eD: "block", icon: IC.alert, retry: () => this.go("working", { p: 4, t: 62 }) }, true);
       }
       if (mainStatus === "done") {
@@ -931,7 +911,6 @@ class Component extends DCLogic {
         const fStatus = S.fp > 3 ? "done" : S.stopped ? "stopped" : "live";
         const fShown = Math.min(S.fp, 3);
         U(esc(S.sent2 || "also add a test for exactly 11 units"));
-        N(IC.box, this.props.followupSandbox === "asleep" ? "Sandbox woke up from otto/4299fa2c3f" : "Using the warm sandbox");
         O({ wD: "block", w: block("follow", D.FOLLOW, fShown, fLive ? fShown - 1 : -1, fStatus, '3 steps · <span style="color:var(--ok)">10 passed</span> · ' + human(S.ft), fLive ? mmss(S.ft) : "") }, true, fLive);
         if (S.stopped) N(IC.stop, "You stopped Otto. Nothing after that step ran.");
         if (fStatus === "done") {
@@ -1008,7 +987,6 @@ class Component extends DCLogic {
         bodyD: lv ? "none" : "block", passD: !lv && c.pass ? "block" : "none", pass: c.pass || "", dur: c.dur || "", checkIcon: IC.checkCircle
       };
     });
-    const sandbox = sc === "error" || sc === "limit" ? ["Asleep", "var(--idle)"] : live ? ["Running", "var(--warn)"] : ["Warm", "var(--ok)"];
 
     /* sidebar */
     const fixStatus = sc === "working" ? (S.stopped ? null : "warn") : sc === "error" ? "bad" : sc === "followup" && live ? "warn" : "ok";
@@ -1057,7 +1035,7 @@ class Component extends DCLogic {
       sceneOpts: SCENES.map(([id, label]) => ({ id, label })),
       onScene: (e) => this.go(e.target.value),
       replayD: sc === "working" || sc === "followup" ? "inline-block" : "none",
-      replay: () => (sc === "working" ? this.go("working", { p: 1, t: 0 }) : this.go("followup")),
+      replay: () => (sc === "working" ? this.go("working", { p: 0, t: 0 }) : this.go("followup")),
       deviceOpts: [["desktop", "Desktop"], ["mobile", "Mobile"]].map(([id, label]) => Object.assign({ label, pick: () => this.setState({ device: id, drawer: false }) }, seg(S.device === id))),
       themeOpts: [["light", "Light"], ["dark", "Dark"], ["system", "System"]].map(([id, label]) => Object.assign({ label, pick: () => this.setState({ theme: id }) }, seg(S.theme === id))),
       themeIcons: [["light", "Light", IC.sun], ["dark", "Dark", IC.moon], ["system", "System", IC.monitor]].map(([id, label, icon]) => Object.assign({ label, icon, pick: () => this.setState({ theme: id }) }, seg(S.theme === id))),
@@ -1149,7 +1127,8 @@ class Component extends DCLogic {
       sendBg: live ? "var(--text)" : hasText ? "var(--accent)" : "var(--sel)",
       sendColor: live ? "var(--bg)" : hasText ? "#fff" : "var(--muted)", sendCursor: live || hasText ? "pointer" : "default",
       sendIcon: live ? IC.stop : IC.up, sendFill: live ? "currentColor" : "none", sendStroke: live ? "none" : "currentColor",
-      hint: live ? "Otto is working… you can keep reading or stop it." : "Otto works in a sandbox and opens a pull request.",
+      hint: S.repo || isRepoChat || sc === "limit" ? "Otto works in a sandbox and opens a pull request. Otto uses AI models and can make mistakes, so review changes before merging." : "Otto uses AI models and can make mistakes.",
+      hintMinH: mobile ? "32px" : "16px",
       bottomFlex: isEmpty && !mobile ? "1.35 1 0" : "0 0 0px",
 
       wsOpen: isChat && isRepoChat && S.wsOpen,
@@ -1164,10 +1143,10 @@ class Component extends DCLogic {
         const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
         window.addEventListener("mousemove", move); window.addEventListener("mouseup", up);
       },
-      sandboxLabel: sandbox[0], sandboxDot: sandbox[1], closeWs: () => this.setState({ wsOpen: false }),
-      wsTabs: [["changes", "Changes"], ["terminal", "Terminal"], ["browser", "Browser"]].map(([id, label]) => Object.assign({ label, pick: () => this.setState({ wsTab: id }, () => this.scrollCmd()) }, seg(S.wsTab === id))),
+      closeWs: () => this.setState({ wsOpen: false }),
+      wsTabs: [["changes", "Changes"], ["terminal", "Terminal"]].map(([id, label]) => Object.assign({ label, pick: () => this.setState({ wsTab: id }, () => this.scrollCmd()) }, seg(S.wsTab === id))),
       panelRef: (el) => { this.panelEl = el; },
-      tabChanges: S.wsTab === "changes", tabTerminal: S.wsTab === "terminal", tabBrowser: S.wsTab === "browser",
+      tabChanges: S.wsTab === "changes", tabTerminal: S.wsTab === "terminal",
       wsFiles, wsNoFilesD: fileKeys.length ? "none" : "block", wsFileD: selF ? "flex" : "none",
       wsFilePath: selF ? selF.path : "", wsFileNote: selF ? (selF.kind === "Read" ? "Read · lines 1–12" : "Unified diff") : "",
       wsFileHtml: { __html: selF ? selF.html : "" },
@@ -1185,8 +1164,6 @@ class Component extends DCLogic {
       bars: D.USAGE14.map((v, i) => ({ h: (v / 25) * 100 + "%", bg: v ? "var(--accent)" : "var(--line)", tip: i === 13 ? "Today · 12,400 tokens" : Math.round(v * 1000).toLocaleString() + " tokens" })),
       barGap: mobile ? "4px" : "8px",
       byModel: [{ name: "OpenRouter Free", pct: "94%", tok: "388k" }, { name: "GPT-4.1 mini", pct: "6%", tok: "24k" }],
-      sbxCount: S.sandboxStopped ? "0" : "1", sbxRowD: S.sandboxStopped ? "none" : "flex", sbxNoneD: S.sandboxStopped ? "block" : "none",
-      stopSandbox: () => this.setState({ sandboxStopped: true }),
       tileCols: 3, tileH: mobile ? "132px" : "150px",
       tiles: [["light", "Light"], ["dark", "Dark"], ["system", "System"]].map(([id, label]) => {
         const on = S.theme === id;
