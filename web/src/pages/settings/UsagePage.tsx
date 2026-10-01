@@ -34,7 +34,7 @@ export function UsagePage() {
               const pct = u.month.tokens ? Math.round((m.tokens / u.month.tokens) * 100) : 0
               return (
                 <div key={m.model} className="flex items-center gap-3 border-0 border-b border-solid border-hair py-3">
-                  <span className="min-w-0 shrink-0 basis-[36%] truncate text-[14.5px]">{label(m.model)}</span>
+                  <span className="min-w-0 shrink-0 basis-[36%] text-[14.5px]">{label(m.model)}</span>
                   <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-sel" aria-hidden="true">
                     <span className="block h-full rounded-full bg-accent" style={{ width: `${pct}%` }} />
                   </span>
@@ -92,7 +92,8 @@ function Stat({ value, label }: { value: string; label: string }) {
 function Daily({ daily }: { daily: Usage['daily'] }) {
   const mobile = useIsMobile()
   const [hover, setHover] = useState<number | null>(null)
-  const max = Math.max(1, ...daily.map((d) => d.tokens))
+  // headroom above the tallest day, as in the design
+  const max = Math.max(1, ...daily.map((d) => d.tokens)) / 0.9
   const mid = daily[Math.floor((daily.length - 1) / 2)]
   const tip = (i: number) => {
     const d = daily[i]!
