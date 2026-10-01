@@ -50,7 +50,10 @@ def _entry(m) -> dict:
     if m["provider"] not in PROVIDER_URLS:
         raise ValueError(f"OTTO_MODELS: unknown provider {m['provider']!r} in {m['id']!r}; "
                          f"expected one of {', '.join(PROVIDER_URLS)}")
-    return {"id": m["id"], "provider": m["provider"], "model": m["model"], "label": m.get("label") or m["id"]}
+    entry = {"id": m["id"], "provider": m["provider"], "model": m["model"], "label": m.get("label") or m["id"]}
+    if isinstance(m.get("description"), str) and m["description"].strip():
+        entry["description"] = m["description"].strip()  # one line for the frontend's picker
+    return entry
 
 
 def model_catalog(env) -> list[dict]:
@@ -61,14 +64,14 @@ def model_catalog(env) -> list[dict]:
         except ValueError as e:
             raise ValueError(f"OTTO_MODELS is not valid JSON: {e}") from None
         if not isinstance(raw, list):
-            raise ValueError("OTTO_MODELS must be a JSON list of {id, provider, model, label}")
+            raise ValueError("OTTO_MODELS must be a JSON list of {id, provider, model, label, description}")
         models = [_entry(m) for m in raw]
         ids = [m["id"] for m in models]
         if len(set(ids)) != len(ids):
             raise ValueError(f"OTTO_MODELS has duplicate ids: {ids}")
         return models
     models = [{"id": "openrouter:openrouter/free", "provider": "openrouter", "model": "openrouter/free",
-               "label": "OpenRouter Free"}]
+               "label": "OpenRouter Free", "description": "Free, good for small tasks"}]
     for name in (n.strip() for n in env.get("OTTO_OPENAI_MODELS", "").split(",")):
         if name:
             models.append({"id": f"openai:{name}", "provider": "openai", "model": name, "label": f"OpenAI {name}"})

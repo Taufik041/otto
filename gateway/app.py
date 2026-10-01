@@ -39,6 +39,7 @@ PING_INTERVAL = 20  # seconds between WebSocket heartbeats
 IDLE = ("pending", "done", "failed", "interrupted", "stopped", "limited")  # statuses that may take a follow-up
 REPO_NAME = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
 NEW_REPO = "Start a new chat for a different repo."
+UNAVAILABLE = "Unavailable right now. Try again later."  # the picker's hint for a model without a key
 
 
 @asynccontextmanager
@@ -246,10 +247,15 @@ async def _create_sandbox(sid, repo):
 
 @app.get("/models")
 def models():
-    """The model catalog for the frontend's picker; available: its provider has an API key."""
-    return {"default_model": config.DEFAULT_MODEL,
-            "models": [{"id": m["id"], "label": m["label"], "provider": m["provider"],
-                        "available": config.is_available(m["id"])} for m in config.MODELS]}
+    """The model catalog for the frontend's picker; available: its provider has an API key. An
+    unavailable model comes with a hint to show beside it (its key is the server's business)."""
+    out = []
+    for m in config.MODELS:
+        available = config.is_available(m["id"])
+        out.append({"id": m["id"], "label": m["label"], "provider": m["provider"],
+                    "description": m.get("description"), "available": available,
+                    "hint": None if available else UNAVAILABLE})
+    return {"default_model": config.DEFAULT_MODEL, "models": out}
 
 
 @app.post("/sessions", status_code=201)

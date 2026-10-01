@@ -203,8 +203,10 @@ def test_models_reflect_the_keys_present(client, monkeypatch):
         "default_model": "openai:model-a",
         "models": [
             {"id": "openrouter:openrouter/free", "label": "OpenRouter Free", "provider": "openrouter",
-             "available": False},
-            {"id": "openai:model-a", "label": "OpenAI model-a", "provider": "openai", "available": True},
+             "description": "Free, good for small tasks", "available": False,
+             "hint": "Unavailable right now. Try again later."},
+            {"id": "openai:model-a", "label": "OpenAI model-a", "provider": "openai", "description": None,
+             "available": True, "hint": None},
         ]}
 
     use_env(monkeypatch, BOTH)

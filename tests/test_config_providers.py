@@ -27,7 +27,7 @@ def test_provider_keys():
 
 
 FREE = {"id": "openrouter:openrouter/free", "provider": "openrouter", "model": "openrouter/free",
-        "label": "OpenRouter Free"}
+        "label": "OpenRouter Free", "description": "Free, good for small tasks"}
 
 
 def test_default_catalog_has_no_invented_openai_models():
@@ -50,10 +50,11 @@ def test_custom_provider_is_listed_when_configured():
 
 def test_otto_models_replaces_the_catalog():
     models = [{"id": "fast", "provider": "openrouter", "model": "x/y:free"},
-              {"id": "big", "provider": "openai", "model": "m", "label": "Big"}]
+              {"id": "big", "provider": "openai", "model": "m", "label": "Big", "description": "Best for larger changes"}]
     catalog = config.model_catalog({"OTTO_MODELS": json.dumps(models), "OTTO_OPENAI_MODELS": "ignored"})
     assert catalog == [{"id": "fast", "provider": "openrouter", "model": "x/y:free", "label": "fast"},
-                       {"id": "big", "provider": "openai", "model": "m", "label": "Big"}]
+                       {"id": "big", "provider": "openai", "model": "m", "label": "Big",
+                        "description": "Best for larger changes"}]
 
 
 @pytest.mark.parametrize("bad", [
