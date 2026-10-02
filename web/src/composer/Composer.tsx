@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowUp, AtSign, ChevronDown, X } from 'lucide-react'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { ArrowUp, AtSign, ChevronDown, Square, X } from 'lucide-react'
+import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type Ref } from 'react'
 import { useNavigate } from 'react-router'
 import { api, goToGitHub } from '@/api'
 import { messageOf } from '@/api/errors'
@@ -23,19 +23,35 @@ export const REPO_DISCLAIMER =
 
 export type Suggestion = { text: string; repo: Repo | null; mentionAtEnd?: boolean }
 
+/** Replying in an existing chat: its model is fixed, and while Otto works Send is Stop. */
+export type Reply = {
+  sessionId: string
+  live: boolean
+  model: string | null
+  repo: string | null
+  /** the follow-up went: the chat shows it until its own event arrives */
+  onSent: (text: string, repo: string | null) => void
+}
+
+export type ComposerHandle = { mention: () => void }
+
 /**
- * The new-chat composer: a growing textarea with an inline repo chip, the model picker, the @
- * repo picker and Send. Sending creates the chat (POST /sessions) and opens it.
+ * The composer: a growing textarea with an inline repo chip, the model picker, the @ repo picker
+ * and Send. A new chat (POST /sessions) opens it; a reply (POST /sessions/{id}/messages) stays.
  */
 export function Composer({
   mobile,
   hero,
   suggestions = [],
+  reply,
+  handle,
 }: {
   mobile: boolean
   /** the empty state: a taller box, menus open below it, suggestions under (desktop) or above (phones) */
   hero: boolean
   suggestions?: Suggestion[]
+  reply?: Reply
+  handle?: Ref<ComposerHandle>
 }) {
   const me = useMe()
   const navigate = useNavigate()
@@ -76,11 +92,18 @@ export function Composer({
   const selectedModel = models.data?.models.find((m) => m.id === model)
 
   const send = useMutation({
-    mutationFn: api.createSession,
-    onSuccess: (created) => {
+    mutationFn: async (body: { message: string; repo: string | null; model: string | null }) => {
+      if (!reply) return (await api.createSession(body)).id
+      await api.followUp(reply.sessionId, { text: body.message, ...(body.repo ? { repo: body.repo } : {}) })
+      return reply.sessionId
+    },
+    onSuccess: (id, body) => {
       qc.invalidateQueries({ queryKey: keys.sessions })
       qc.invalidateQueries({ queryKey: keys.usage })
-      navigate(`/c/${created.id}`)
+      if (!reply) return navigate(`/c/${id}`)
+      reply.onSent(body.message, body.repo)
+      setDraft('')
+      setRepo(null)
     },
     onError: (e) => {
       const p = sendProblem(e)
@@ -92,13 +115,18 @@ export function Composer({
   const typed = extractRepo(draft, repos.data ?? [])
   const message = repo ? draft.trim() : typed.text
   const target = repo ?? typed.repo
-  const canSend = message.length > 0 && !send.isPending
+  const working = reply?.live === true
+  const canSend = message.length > 0 && !send.isPending && !working
+  const stop = useMutation({
+    mutationFn: () => api.stop(reply!.sessionId),
+    onError: (e) => setProblem({ kind: 'other', message: messageOf(e) }),
+  })
 
   function submit() {
     if (!canSend) return
     setProblem(null)
     setOpen(null)
-    send.mutate({ message, repo: target?.full_name ?? null, model })
+    send.mutate({ message, repo: target?.full_name ?? null, model: reply ? null : model })
   }
 
   function onChange(value: string, caret: number) {
@@ -131,6 +159,8 @@ export function Composer({
     setOpen('mention')
     ta.current?.focus()
   }
+
+  useImperativeHandle(handle, () => ({ mention: openMention }))
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.nativeEvent.isComposing) return
@@ -182,7 +212,7 @@ export function Composer({
   }
 
   const below = hero && !mobile
-  const hint = target ? REPO_DISCLAIMER : DISCLAIMER
+  const hint = target || reply?.repo ? REPO_DISCLAIMER : DISCLAIMER
   const chips = suggestions.length > 0 && (
     <SuggestionChips suggestions={suggestions} mobile={mobile} onPick={fill} />
   )
@@ -267,7 +297,7 @@ export function Composer({
               aria-controls={open === 'mention' ? 'mention-list' : undefined}
               aria-activedescendant={open === 'mention' && matches.length ? `mention-${active}` : undefined}
               aria-autocomplete="list"
-              placeholder="Message Otto. Type @ to mention a repo."
+              placeholder={working ? 'Otto is working…' : reply ? 'Reply to Otto…' : 'Message Otto. Type @ to mention a repo.'}
               onChange={(e) => onChange(e.target.value, e.target.selectionStart)}
               onKeyDown={onKeyDown}
               className="max-h-[220px] min-w-[120px] flex-[1_1_180px] resize-none border-0 bg-transparent py-0.5 text-base leading-[1.55] text-text outline-none focus-visible:outline-none"
@@ -275,18 +305,25 @@ export function Composer({
             />
           </div>
           <div className="mt-2 flex items-center gap-2">
-            <button
-              type="button"
-              aria-haspopup="listbox"
-              aria-expanded={open === 'model'}
-              disabled={!models.data}
-              onClick={() => setOpen(open === 'model' ? null : 'model')}
-              className="-ml-2 flex h-8 items-center gap-1.5 rounded-[9px] border-0 px-2.5 text-[13.5px] font-medium text-muted hover:bg-hover"
-              style={{ background: open === 'model' ? 'var(--sel)' : undefined }}
-            >
-              {selectedModel?.label ?? (models.isPending ? 'Models…' : 'No model')}
-              <ChevronDown size={13} strokeWidth={2} />
-            </button>
+            {reply ? (
+              // a chat keeps the model it started with (the gateway refuses another)
+              <span title="A chat keeps the model it started with" className="-ml-2 flex h-8 items-center px-2.5 text-[13.5px] font-medium text-muted">
+                {models.data?.models.find((m) => m.id === reply.model)?.label ?? reply.model ?? ''}
+              </span>
+            ) : (
+              <button
+                type="button"
+                aria-haspopup="listbox"
+                aria-expanded={open === 'model'}
+                disabled={!models.data}
+                onClick={() => setOpen(open === 'model' ? null : 'model')}
+                className="-ml-2 flex h-8 items-center gap-1.5 rounded-[9px] border-0 px-2.5 text-[13.5px] font-medium text-muted hover:bg-hover"
+                style={{ background: open === 'model' ? 'var(--sel)' : undefined }}
+              >
+                {selectedModel?.label ?? (models.isPending ? 'Models…' : 'No model')}
+                <ChevronDown size={13} strokeWidth={2} />
+              </button>
+            )}
             <button
               type="button"
               title="Mention a repo"
@@ -297,17 +334,30 @@ export function Composer({
               <AtSign size={17} strokeWidth={1.7} />
             </button>
             <div className="flex-1" />
-            <button
-              type="button"
-              title="Send"
-              aria-label="Send"
-              disabled={!canSend}
-              onClick={submit}
-              className={cn('flex size-[34px] items-center justify-center rounded-full border-0 transition-[background] duration-200')}
-              style={{ background: canSend ? 'var(--accent)' : 'var(--sel)', color: canSend ? '#fff' : 'var(--muted)' }}
-            >
-              <ArrowUp size={16} strokeWidth={2.2} />
-            </button>
+            {working ? (
+              <button
+                type="button"
+                title="Stop"
+                aria-label="Stop"
+                disabled={stop.isPending}
+                onClick={() => stop.mutate()}
+                className="flex size-[34px] items-center justify-center rounded-full border-0 bg-text text-bg transition-[background] duration-200"
+              >
+                <Square size={13} fill="currentColor" strokeWidth={0} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                title="Send"
+                aria-label="Send"
+                disabled={!canSend}
+                onClick={submit}
+                className={cn('flex size-[34px] items-center justify-center rounded-full border-0 transition-[background] duration-200')}
+                style={{ background: canSend ? 'var(--accent)' : 'var(--sel)', color: canSend ? '#fff' : 'var(--muted)' }}
+              >
+                <ArrowUp size={16} strokeWidth={2.2} />
+              </button>
+            )}
           </div>
         </div>
       </div>

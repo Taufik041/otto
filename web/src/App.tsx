@@ -6,11 +6,11 @@ import { ForgotPage } from './pages/auth/ForgotPage'
 import { LoginPage } from './pages/auth/LoginPage'
 import { ResetPage } from './pages/auth/ResetPage'
 import { SignupPage } from './pages/auth/SignupPage'
-import { ChatPage } from './pages/ChatPage'
 import { HomePage } from './pages/HomePage'
 import { OnboardingPage } from './pages/OnboardingPage'
 import { AppShell } from './shell/AppShell'
 
+const ChatPage = lazy(() => import('./pages/ChatPage').then((m) => ({ default: m.ChatPage })))
 const SettingsLayout = lazy(() => import('./pages/settings/SettingsLayout').then((m) => ({ default: m.SettingsLayout })))
 
 export default function App() {
@@ -25,7 +25,7 @@ export default function App() {
       <Route path="/settings/:section?" element={<RequireAuth><Suspense fallback={<div className="h-full bg-bg" />}><SettingsLayout /></Suspense></RequireAuth>} />
       <Route element={<RequireAuth><AppShell /></RequireAuth>}>
         <Route index element={<HomePage />} />
-        <Route path="/c/:id" element={<ChatPage />} />
+        <Route path="/c/:id" element={<Suspense fallback={null}><ChatPage /></Suspense>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

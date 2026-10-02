@@ -26,7 +26,12 @@ export function SendProblemCard({ problem }: { problem: SendProblem }) {
       </div>
     )
   }
-  const title = problem.kind === 'busy' ? 'Otto is busy right now.' : problem.kind === 'model' ? 'Pick another model.' : "Otto couldn't start this chat."
+  const title =
+    problem.kind === 'busy'
+      ? 'Otto is busy right now.'
+      : problem.kind === 'model'
+        ? 'Pick another model.'
+        : (problem.title ?? "Otto couldn't start this chat.")
   const Icon = problem.kind === 'model' ? Cpu : AlertTriangle
   return (
     <div role="alert" className="rounded-[18px] border border-solid border-line bg-card px-5 py-[18px] text-left animate-rise">

@@ -1,3 +1,4 @@
+import type { SessionEvent } from '@/chat/reduce'
 import { createClient } from './client'
 import type {
   Created,
@@ -16,6 +17,9 @@ import type {
 export const API_URL: string = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 export const client = createClient({ baseUrl: API_URL })
+
+/** The WebSocket origin of the API: http(s) → ws(s). */
+export const WS_URL = API_URL.replace(/^http/, 'ws').replace(/\/+$/, '')
 
 const post = <T>(path: string, body?: unknown, retry?: boolean) =>
   client.request<T>(path, { method: 'POST', body, retry })
@@ -52,6 +56,15 @@ export const api = {
   sessions: () => client.request<SessionSummary[]>('/sessions'),
   session: (id: string) => client.request<SessionDetail>(`/sessions/${encodeURIComponent(id)}`),
   createSession: (body: NewSession) => post<Created>('/sessions', body),
+  events: (id: string, afterSeq = 0) =>
+    client.request<SessionEvent[]>(`/sessions/${encodeURIComponent(id)}/events?after_seq=${afterSeq}`),
+  wsTicket: (id: string) => post<{ ticket: string }>(`/sessions/${encodeURIComponent(id)}/ws-ticket`),
+  followUp: (id: string, body: { text: string; repo?: string | null }) =>
+    post<{ id: string; status: string; repo: string | null }>(`/sessions/${encodeURIComponent(id)}/messages`, body),
+  stop: (id: string) => post<{ id: string; status: string }>(`/sessions/${encodeURIComponent(id)}/stop`),
+  rename: (id: string, title: string) =>
+    client.request<SessionSummary>(`/sessions/${encodeURIComponent(id)}`, { method: 'PATCH', body: { title } }),
+  retry: (id: string) => post<{ id: string; status: string }>(`/sessions/${encodeURIComponent(id)}/retry`),
   deleteSession: (id: string) => client.request<{ id: string }>(`/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 }
 

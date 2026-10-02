@@ -8,6 +8,8 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: { alias: { '@': path.resolve(import.meta.dirname, 'src') } },
   server: { port: 5173, strictPort: true },
+  // Shiki's grammars are lazy chunks loaded per file type; the C++ one alone is ~800 kB
+  build: { chunkSizeWarningLimit: 850 },
   test: {
     environment: 'jsdom',
     globals: true,
