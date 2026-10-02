@@ -265,7 +265,7 @@ function DeleteAccount({ open, onOpenChange }: { open: boolean; onOpenChange: (o
       <DialogContent>
         <DialogTitle>Delete your account?</DialogTitle>
         <DialogDescription>
-          Your chats, their sandboxes and your GitHub connection will be deleted. This can't be undone.
+          This deletes your chats and disconnects GitHub. It can't be undone.
         </DialogDescription>
         {del.isError && (
           <p role="alert" className="mb-0 mt-3 text-sm text-bad">

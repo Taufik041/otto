@@ -53,7 +53,6 @@ export const api = {
   session: (id: string) => client.request<SessionDetail>(`/sessions/${encodeURIComponent(id)}`),
   createSession: (body: NewSession) => post<Created>('/sessions', body),
   deleteSession: (id: string) => client.request<{ id: string }>(`/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  stopSandbox: (id: string) => post<{ id: string }>(`/sessions/${encodeURIComponent(id)}/sandbox/stop`),
 }
 
 /** Start a GitHub flow: ask the gateway for the URL (it sets the state's cookie), then go there. */

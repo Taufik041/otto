@@ -65,7 +65,6 @@ export type SessionDetail = SessionSummary & {
   repo_url: string | null
   work_branch: string | null
   created_at: string
-  sandbox_status: string | null
 }
 
 export type NewSession = { message: string; repo?: string | null; model?: string | null }
@@ -85,7 +84,6 @@ export type Usage = {
   month: { sessions: number; tokens: number; est_cost_usd: number }
   daily: { date: string; tokens: number }[]
   by_model: { model: string; tokens: number; est_cost_usd: number }[]
-  active_sandboxes: { session_id: string; title: string; repo: string; sandbox_status: string }[]
 }
 
 /** The 429 body when today's tokens are used up. */

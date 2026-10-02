@@ -40,7 +40,6 @@ const usage = {
   month: { sessions: 38, tokens: 412000, est_cost_usd: 0 },
   daily: DAILY.map((v, i) => ({ date: new Date(Date.now() - (13 - i) * 86400_000).toISOString().slice(0, 10), tokens: Math.round(v * 1000) })),
   by_model: [{ model: 'openrouter:openrouter/free', tokens: 388000, est_cost_usd: 0 }, { model: 'openai:gpt-4.1-mini', tokens: 24000, est_cost_usd: 0 }],
-  active_sandboxes: [{ session_id: 's2', title: 'Portfolio contact form', repo: 'Taufik041/portfolio', sandbox_status: 'running' }],
 }
 
 /** Answer the gateway's routes; `signedIn: false` refuses the refresh cookie. */

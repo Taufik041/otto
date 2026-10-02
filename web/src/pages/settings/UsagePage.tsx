@@ -1,11 +1,6 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { Link } from 'react-router'
-import { api } from '@/api'
-import { messageOf } from '@/api/errors'
-import { keys, useModels, useUsage } from '@/api/queries'
+import { useModels, useUsage } from '@/api/queries'
 import type { Usage } from '@/api/types'
-import { Button } from '@/components/ui/button'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { compact, number, shortDate, usd } from '@/utils/format'
 import { Card, Loading, Problem } from './parts'
@@ -48,7 +43,6 @@ export function UsagePage() {
           </div>
         )}
       </Card>
-      <Sandboxes list={u.active_sandboxes} />
     </>
   )
 }
@@ -154,54 +148,5 @@ function Daily({ daily }: { daily: Usage['daily'] }) {
         </tbody>
       </table>
     </>
-  )
-}
-
-function Sandboxes({ list }: { list: Usage['active_sandboxes'] }) {
-  const qc = useQueryClient()
-  const stop = useMutation({
-    mutationFn: api.stopSandbox,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: keys.usage })
-      qc.invalidateQueries({ queryKey: keys.sessions })
-    },
-  })
-  return (
-    <Card className="p-[22px]">
-      <div className="flex items-baseline gap-2.5">
-        <span className="flex-1 text-[17px] font-semibold">Active sandboxes</span>
-        <span className="text-[13px] text-muted">{list.length}</span>
-      </div>
-      {list.length === 0 ? (
-        <p className="mb-0 mt-2 text-sm text-muted">No sandboxes are running.</p>
-      ) : (
-        <div className="mt-3">
-          {list.map((s, i) => (
-            <div
-              key={s.session_id}
-              className="flex items-center gap-3 py-3"
-              style={{ borderTop: i ? '1px solid var(--hair)' : 'none' }}
-            >
-              <span className="size-1.5 shrink-0 rounded-full bg-ok" aria-hidden="true" />
-              <span className="min-w-0 flex-1">
-                <Link to={`/c/${s.session_id}`} className="block truncate text-[15px] text-text hover:text-text">
-                  {s.title}
-                </Link>
-                <span className="block truncate font-mono text-xs text-muted">{s.repo}</span>
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={stop.isPending && stop.variables === s.session_id}
-                onClick={() => stop.mutate(s.session_id)}
-              >
-                Stop
-              </Button>
-            </div>
-          ))}
-        </div>
-      )}
-      {stop.isError && <p role="alert" className="mb-0 mt-2 text-sm text-bad">{messageOf(stop.error)}</p>}
-    </Card>
   )
 }

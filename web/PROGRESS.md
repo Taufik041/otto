@@ -70,9 +70,10 @@ Part 1 is done. `npm run build`, `npm test` and backend `pytest -q` pass. How to
   or remove repositories", as designed. With several, they're listed under "Installations", each
   with its own Disconnect. The gateway disconnects per installation, and its answer links to
   uninstalling on GitHub.
+- **Settings › Usage shows no sandboxes:** the UI never shows sandbox internals, so the gateway's
+  `active_sandboxes` and `POST /sessions/{id}/sandbox/stop` aren't used in `web/`.
 - **Things the design doesn't show, but the spec or API needed:**
   - Settings › Account has an editable Name row and "Sign out of all devices".
-  - Settings › Usage lists active sandboxes with Stop.
   - There's a `/reset-password` page for the emailed link.
   - Sign-up and sign-in check for empty fields inline, because their buttons are never disabled.
 

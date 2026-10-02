@@ -7,7 +7,7 @@ import type { SessionSummary } from '@/api/types'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '@/components/ui/dialog'
 
-/** "Delete this chat?" DELETE /sessions/{id} stops its sandbox and deletes its history. */
+/** "Delete this chat?" DELETE /sessions/{id} stops it and deletes its history. */
 export function DeleteChatDialog({
   chat,
   onOpenChange,
@@ -41,7 +41,7 @@ export function DeleteChatDialog({
         <DialogContent aria-describedby="delete-chat-desc">
           <DialogTitle>Delete this chat?</DialogTitle>
           <DialogDescription id="delete-chat-desc">
-            “{chat.title}” and its history will be deleted, and its sandbox stopped. This can't be undone.
+            “{chat.title}” and its history will be deleted. This can't be undone.
           </DialogDescription>
           {del.isError && (
             <p role="alert" className="mb-0 mt-3 text-sm text-bad">
