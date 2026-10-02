@@ -10,6 +10,16 @@ The frontend is in `web/` (see `web/README.md`). With the gateway running on por
 It signs in with the access and refresh tokens described under "How sign-in works" below.
 `npm test` runs its tests (no network) and `npm run build` type-checks and builds it.
 
+To run a whole chat against this stack from the browser's side, with the gateway, a worker and
+`npm run dev` up:
+
+    cd web && OTTO_EMAIL=you@example.com OTTO_PASSWORD=... node scripts/e2e.mjs
+
+The script signs in, starts "@otto_test two tests are failing...", waits for the PR card, sends a
+follow-up, opens Changes and Terminal, and screenshots the chat at 1440px and 390px in light and
+dark into `web/screenshots/e2e/`. It opens a real PR. After changing `runner/`, rebuild the
+sandbox image (the image step of `scripts/dev_up.sh`), or sandboxes keep running the old code.
+
 ## Database and migrations
 
 The schema lives in `shared/models.py` and is changed only through Alembic migrations in
@@ -105,6 +115,7 @@ In the App's settings on GitHub:
 | `POST /auth/logout-all` | Bearer | revokes every refresh token and voids every access token |
 | `POST /me/password`, `POST /auth/reset` | Bearer / reset token | signs out every device, and signs this one in again (the same body as login) |
 | `POST /sessions/{id}/ws-ticket` | Bearer, the session's owner | `{ticket}`: single use, 30 seconds, for `WS /sessions/{id}/ws?ticket=...&after_seq=N` |
+| `POST /sessions/{id}/retry` | Bearer, the session's owner | runs a `failed` or `interrupted` turn again from where it stopped, with no new message (409 otherwise) |
 | `POST /auth/github/url` `{mode: "signin" \| "link"}` | none; Bearer for `link` | `{url}` to send the browser to, and the state's nonce cookie |
 | `POST /github/install-url` | Bearer | `{url}` to install the App, and the state's nonce cookie |
 | `GET /auth/github/start` | none | redirects to GitHub to sign in (for typing into the address bar) |

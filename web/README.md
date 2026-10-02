@@ -73,3 +73,68 @@ has three steps, and the first two can be skipped:
 
 Once you finish or skip, it isn't offered again in this browser
 (`localStorage` `otto.onboarded.<user id>`).
+
+## The chat (`/c/:id`)
+
+The chat page loads `GET /sessions/{id}` and `GET /sessions/{id}/events`, then follows
+`WS /sessions/{id}/ws`:
+
+- Each (re)connect takes a fresh ticket from `POST /sessions/{id}/ws-ticket` and passes
+  `after_seq` = the last seq it has.
+- A dropped socket reconnects with backoff (1s, 2s, 4s, 8s, then every 15s), and the page shows
+  "Reconnecting…" meanwhile.
+- A deleted session (close code 4404) ends it.
+
+The code is in `src/chat/live.ts` and `src/chat/useSessionView.ts`.
+
+Everything the page shows comes from one pure reducer, `src/chat/reduce.ts`, which folds the
+session's events into a view model: messages, work blocks with steps, PR cards, files changed,
+terminal entries and status. It ignores events it has already seen (by `seq`), and replays from
+the start when an older event arrives late. Its tests (`reduce.test.ts`) cover every event kind.
+
+### Events → UI
+
+| Event | Payload | What the chat shows |
+|---|---|---|
+| `session.created` | `{task, repo, model}` | The first user message, with its repo chip. A turn starts. |
+| `repo.attached` | `{repo}` | A plain chat becomes an agent chat. The turn that attached the repo shows it as a chip, and that turn and later ones get work blocks. |
+| `session.status` | `{status}` | `provisioning`/`queued`/`running` mean live. Before any step, the block shows only "Setting up workspace…". `done` finishes the block. `failed`/`interrupted` show the error card. `stopped` shows "You stopped Otto…". `limited` stops the block. Work starting again after a final status is a follow-up (a new turn), or a retry if the turn had failed (the same block continues). |
+| `llm.message` (system) | | Hidden. |
+| `llm.message` (user) | `{message}` | A user message. The task's own echo is merged with the first one. |
+| `llm.message` (assistant, with tool calls) | `{message}` | Prose. Before the block's first step it introduces the block ("On it…"); after that it's a muted note inside the block. |
+| `llm.message` (assistant, no tool calls) | `{message}` | Otto's reply, as light markdown, after the block and PR card. |
+| `llm.message` (tool) | `{message}` | Hidden; `bus.result` has the same, in full. |
+| `bus.action` + `bus.result` | `{action_id, kind, payload}` + `{action_id, ok, payload}` | A step. See the table below. |
+| `pr.opened` | `{number, html_url}` | The session's PR. |
+| `usage.limit_reached` | `{used, limit, resets_at}` | The usage-limit card. |
+| `error` | `{stage, message}` | `llm`: "The model didn't respond after N tries…" with Retry (`POST /sessions/{id}/retry`). Sandbox setup stages: "Otto couldn't set up the workspace." `destroy_sandbox`: hidden. Internals are never shown. |
+| `llm.usage`, `llm.key_rotated` | | Hidden (infrastructure). |
+| `sandbox.reused`, `sandbox.recreated` | | Hidden (infrastructure). |
+| anything else | | Ignored. |
+
+| Action kind | Step | Result | Workspace |
+|---|---|---|---|
+| `shell.exec` | Ran `cmd` | pytest's summary ("2 failed, 7 passed", red; "9 passed", green), else `exit N` on failure | Terminal: `$ cmd`, output, ✓/✗, and a "9 passed" badge |
+| `code.search` | Searched `pattern` | "N matches", with the first `file:line`s under it | Terminal: `$ rg -n -- pattern` |
+| `fs.read` | Read `path` | "lines a–b" | Changes: Read, as a line-numbered slice |
+| `fs.replace` | Edited `path` | +a −d | Changes: Edited, a numbered unified diff (from the result's `diff`) |
+| `fs.write` | Created / Wrote `path` | +a −d | Changes: Created or Edited, with a diff |
+| `git.status`, `git.diff` | Checked git status / Reviewed the diff | | Terminal |
+| `git.commit` | Committed `message`; with the push that follows: Committed and pushed `branch` | | Terminal: `$ git add -A && git commit -m …` |
+| `git.push` | Pushed `branch`, or Pushed to pull request `#n` once there's a PR | | Terminal: `$ git push -u origin branch` |
+| `git.open_pr` | Opened pull request `#n` | | Not in the Terminal: it's an API call, not a command |
+
+A failed action shows red, with "failed" and its first error line. An action with no result when
+the turn ended shows "Stopped".
+
+**The PR card** comes after the block of the turn that opened the PR ("Pull request opened") or
+pushed to it ("Pull request updated"). It shows:
+
+- the title from `git.open_pr`
+- `#number` and the repo
+- branch → base, from `git.push`/`git.open_pr`
+- `+additions −deletions` and the file count, from the latest push's `diffstat`
+- "N tests passed", from the latest pytest run with no failures
+
+The diff, its line counts, `diffstat`, `base` and `title` are fields the runner adds to its
+results for the UI. The brain leaves them out of what the model sees.
