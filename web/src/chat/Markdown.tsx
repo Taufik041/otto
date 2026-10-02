@@ -28,10 +28,10 @@ function inline(nodes: Inline[]): ReactNode[] {
 }
 
 /** Otto's prose: 16px, 1.65 line height, paragraphs 12px apart, as in the design. */
-export function Markdown({ text }: { text: string }) {
+export function Markdown({ text, className = 'text-base leading-[1.65]' }: { text: string; className?: string }) {
   const blocks = parseMarkdown(text)
   return (
-    <div className="text-base leading-[1.65] text-pretty [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+    <div className={`${className} text-pretty [&>*:first-child]:mt-0 [&>*:last-child]:mb-0`}>
       {blocks.map((b, i) => {
         switch (b.t) {
           case 'p':

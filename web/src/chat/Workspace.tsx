@@ -171,7 +171,7 @@ function FileView({ file, selected }: { file: FileChange; selected: string | nul
 function Diff({ diff, truncated, lang }: { diff: string; truncated: boolean; lang: string | null }) {
   const rows = parseDiff(diff)
   const code = rows.filter((r) => r.type === 'ctx' || r.type === 'add' || r.type === 'del').map((r) => r.text)
-  const tokens = useTokens(code.join('\n'), lang)
+  const tokens = useTokens(code.join('\n'), lang, true)
   let n = 0
   return (
     <>
@@ -213,7 +213,7 @@ function Diff({ diff, truncated, lang }: { diff: string; truncated: boolean; lan
 
 function Slice({ start, text, lang }: { start: number; text: string; lang: string | null }) {
   const lines = text.replace(/\n$/, '').split('\n')
-  const tokens = useTokens(lines.join('\n'), lang)
+  const tokens = useTokens(lines.join('\n'), lang, true)
   return (
     <>
       {lines.map((l, i) => (

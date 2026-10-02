@@ -81,8 +81,23 @@ export async function tokenize(code: string, lang: string, theme: 'light' | 'dar
   }
 }
 
-/** Tokens for `code` by line, or null until (or unless) they're ready. */
-export function useTokens(code: string, lang: string | null): Token[][] | null {
+/** Each line tokenized on its own. Diff hunks and read slices start mid-file (perhaps inside a
+ *  string or a docstring), so carrying state across their lines would color them wrong. */
+export async function tokenizeLines(lines: string[], lang: string, theme: 'light' | 'dark'): Promise<Token[][] | null> {
+  const id = grammarFor(lang)
+  if (!id) return null
+  try {
+    const h = await load()
+    if (!h.getLoadedLanguages().includes(id)) await h.loadLanguage((await GRAMMARS[id]!()).default)
+    return lines.map((l) => h.codeToTokensBase(l, { lang: id, theme: THEMES[theme] })[0] ?? [])
+  } catch {
+    return null
+  }
+}
+
+/** Tokens for `code` by line, or null until (or unless) they're ready. `perLine`: no state across
+ *  lines (for fragments of a file). */
+export function useTokens(code: string, lang: string | null, perLine = false): Token[][] | null {
   const { theme } = useTheme()
   const id = grammarFor(lang)
   const [tokens, setTokens] = useState<{ key: string; lines: Token[][] | null } | null>(null)
@@ -90,10 +105,11 @@ export function useTokens(code: string, lang: string | null): Token[][] | null {
   useEffect(() => {
     if (!id) return
     let live = true
-    void tokenize(code, id, theme).then((lines) => live && setTokens({ key, lines }))
+    const run = perLine ? tokenizeLines(code.split('\n'), id, theme) : tokenize(code, id, theme)
+    void run.then((lines) => live && setTokens({ key, lines }))
     return () => {
       live = false
     }
-  }, [code, id, theme, key])
+  }, [code, id, theme, key, perLine])
   return tokens?.key === key ? tokens.lines : null
 }

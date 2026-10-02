@@ -45,6 +45,8 @@ export type StepIcon = 'run' | 'search' | 'file' | 'edit' | 'push' | 'pr' | 'com
 export type Step = {
   id: string
   icon: StepIcon
+  /** the design's red row for a model that stopped answering (from the turn's error event) */
+  modelFailed?: boolean
   verb: string
   now: string
   code: string | null
@@ -61,7 +63,7 @@ export type Step = {
 }
 
 export type Note = { id: string; note: string }
-export type BlockStatus = 'setup' | 'live' | 'done' | 'failed' | 'stopped'
+export type BlockStatus = 'setup' | 'live' | 'done' | 'failed' | 'stopped' | 'paused'
 export type WorkBlock = {
   id: string
   status: BlockStatus
@@ -547,7 +549,8 @@ function stepOf(a: Action, ctx: Ctx): Step {
 function blockStatus(t: Turn, steps: number): BlockStatus {
   if (t.outcome === null) return steps ? 'live' : 'setup'
   if (t.outcome === 'done') return 'done'
-  if (t.outcome === 'stopped' || t.outcome === 'limited') return 'stopped'
+  if (t.outcome === 'stopped') return 'stopped'
+  if (t.outcome === 'limited') return 'paused' // the daily limit: the limit card says why
   return 'failed'
 }
 
@@ -692,7 +695,29 @@ export function view(s: State): View {
       }
     }
 
-    if (t.agent) {
+    // the model gave up mid-turn: the block ends with the design's red row
+    if (t.error?.stage === 'llm' && (t.outcome === 'failed' || t.outcome === 'interrupted') && !live) {
+      const tries = t.error.message.match(/after (\d+) attempts/)?.[1]
+      rows.push({
+        id: `${t.id}-llm`,
+        icon: 'git',
+        modelFailed: true,
+        verb: 'Asked the model for the next step',
+        now: 'Asking the model for the next step',
+        code: null,
+        ok: false,
+        res: { text: 'No response', tone: 'bad', strong: true },
+        add: null,
+        del: null,
+        sub: tries ? `${tries} tries` : null,
+        target: null,
+        tests: null,
+      })
+    }
+
+    // a turn the daily limit stopped before it did anything: just the limit card
+    const nothingDone = t.outcome === 'limited' && stepCount === 0
+    if (t.agent && !nothingDone) {
       const status = blockStatus(t, stepCount)
       items.push({
         kind: 'work',
@@ -760,7 +785,8 @@ export function view(s: State): View {
     model: s.model,
     task: s.task,
     items,
-    files: [...files.values()],
+    // changed files first (as touched), then the ones only read
+    files: [...files.values()].sort((a, b) => Number(a.kind === 'Read') - Number(b.kind === 'Read')),
     terminal,
     pr: known.pr,
     awaitingUser: s.restart !== null && !s.restart.afterFailure,

@@ -63,11 +63,11 @@ describe('a run on a repo, start to PR', () => {
   it('Changes: edited files with their diffs, reads as line-numbered slices', () => {
     const { files } = v(mainRun().events)
     expect(files.map((f) => [f.path, f.kind, f.add, f.del])).toEqual([
+      ['src/inventory/pricing.py', 'Edited', 1, 1], // changed files first
       ['docs/PRICING.md', 'Read', 0, 0],
-      ['src/inventory/pricing.py', 'Edited', 1, 1],
     ])
-    expect(files[0]!.entries).toEqual([{ id: 'a3', type: 'read', start: 1, text: '# Pricing\n' }])
-    expect(files[1]!.entries).toEqual([{ id: 'a4', type: 'diff', diff: DIFF, truncated: false }])
+    expect(files[0]!.entries).toEqual([{ id: 'a4', type: 'diff', diff: DIFF, truncated: false }])
+    expect(files[1]!.entries).toEqual([{ id: 'a3', type: 'read', start: 1, text: '# Pricing\n' }])
   })
 
   it('Terminal: every real command with its exit status; no PR "command"', () => {
@@ -124,6 +124,10 @@ describe('endings', () => {
     const view_ = v(l.events)
     expect(kinds(view_.items)).toEqual(['user', 'work', 'error'])
     expect(work(view_.items)[0]!.status).toBe('failed')
+    expect(work(view_.items)[0]!.stepCount).toBe(1) // the red row isn't a step
+    expect(work(view_.items)[0]!.rows.at(-1)).toMatchObject({
+      modelFailed: true, verb: 'Asked the model for the next step', res: { text: 'No response' }, sub: '6 tries',
+    })
     expect(view_.items[2]).toMatchObject({
       message: "The model didn't respond after 6 tries. Nothing was committed. Retry to continue from the last step.",
     })
@@ -150,6 +154,11 @@ describe('endings', () => {
     const view_ = v(l.events)
     expect(view_.items.find((i) => i.kind === 'limit')).toMatchObject({ used: 50000, limit: 50000 })
     expect(view_.items.some((i) => i.kind === 'error')).toBe(false)
+    expect(kinds(view_.items)).toEqual(['user', 'limit']) // it did nothing: no block
+
+    const midway = log().created('t').status('running').act('git.status', {})
+      .add('usage.limit_reached', { used: 50000, limit: 50000, resets_at: 'x' }).status('limited')
+    expect(work(v(midway.events).items)[0]!.status).toBe('paused')
   })
 })
 

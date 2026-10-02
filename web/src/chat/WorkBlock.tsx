@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { ownerOf, shortName } from '@/utils/mention'
 import { Glyph, IC } from './icons'
+import { Markdown } from './Markdown'
 import type { Note, Step, WorkBlock as Block } from './reduce'
 
 /** "1m 48s", "38s" */
@@ -75,6 +76,7 @@ export function WorkBlock({
     done: { color: 'var(--ok)', icon: IC.checkCircle, spin: false },
     failed: { color: 'var(--bad)', icon: IC.alert, spin: false },
     stopped: { color: 'var(--idle)', icon: IC.x, spin: false },
+    paused: { color: 'var(--idle)', icon: IC.x, spin: false },
   }[block.status]
 
   const title: ReactNode = live ? (
@@ -93,7 +95,7 @@ export function WorkBlock({
       )}
       {` · ${human(elapsed)}`}
     </>
-  ) : block.status === 'failed' ? (
+  ) : block.status === 'failed' || block.status === 'paused' ? (
     `Stopped after ${steps}`
   ) : (
     `You stopped Otto after ${steps}`
@@ -164,7 +166,9 @@ function NoteRow({ note }: { note: Note }) {
   return (
     <div className="flex gap-3 px-4 py-1.5 animate-rise">
       <span className="w-5 shrink-0" />
-      <span className="min-w-0 text-[14px] italic text-muted text-pretty">{note.note}</span>
+      <div className="min-w-0 flex-1 text-muted">
+        <Markdown text={note.note} className="text-[14px] leading-normal" />
+      </div>
     </div>
   )
 }
@@ -172,6 +176,7 @@ function NoteRow({ note }: { note: Note }) {
 function StepRow({ step, live, selected, onOpen }: { step: Step; live: boolean; selected: boolean; onOpen: (s: Step) => void }) {
   const running = step.ok === null && live
   const halted = step.ok === false && step.res?.text === 'Stopped'
+  const failedModel = step.modelFailed === true
   const color = running
     ? 'var(--warn)'
     : halted
@@ -190,10 +195,10 @@ function StepRow({ step, live, selected, onOpen }: { step: Step; live: boolean; 
       onClick={() => onOpen(step)}
       onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onOpen(step))}
       className="flex cursor-pointer items-start gap-3 px-4 py-2 transition-[background] duration-200 animate-rise hover:bg-hover"
-      style={{ background: running ? 'var(--live-bg)' : selected ? 'var(--sel)' : undefined }}
+      style={{ background: running ? 'var(--live-bg)' : failedModel ? 'var(--bad-bg)' : selected ? 'var(--sel)' : undefined }}
     >
       <span className="flex w-5 shrink-0 justify-center pt-0.5" style={{ color }}>
-        <Glyph d={running ? IC.spin : halted ? IC.x : ICON[step.icon]} className={running ? 'animate-spin-slow' : undefined} />
+        <Glyph d={running ? IC.spin : halted || failedModel ? IC.x : ICON[step.icon]} className={running ? 'animate-spin-slow' : undefined} />
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex flex-wrap items-baseline gap-x-2.5">
