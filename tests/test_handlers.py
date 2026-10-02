@@ -306,3 +306,55 @@ def test_git_commit_message_is_not_shell_expanded(ws):
     log = subprocess.run(["git", "log", "--format=%s"], cwd=ws, capture_output=True, text=True).stdout
     assert log.strip() == msg
     assert not os.path.exists(os.path.join(ws, "pwned"))
+
+
+# --- what the UI shows of an edit: a unified diff, lossless, relative to the workspace ----------
+
+def test_fs_replace_returns_a_unified_diff(ws):
+    os.makedirs(os.path.join(ws, "src"))
+    write(ws, "src/p.py", "".join(f"l{i}\n" for i in range(1, 11)))
+    r = call("fs.replace", {"path": "src/p.py", "old_str": "l5\n", "new_str": "L5\nL5b\n"})
+    assert r["exit_code"] == 0
+    assert r["diff"] == ("--- a/src/p.py\n+++ b/src/p.py\n@@ -2,7 +2,8 @@\n"
+                         " l2\n l3\n l4\n-l5\n+L5\n+L5b\n l6\n l7\n l8\n")
+    assert (r["added"], r["removed"]) == (2, 1)
+
+
+def test_fs_replace_diff_of_an_absolute_workspace_path(ws):
+    write(ws, "f.txt", "a = 1\n")
+    r = call("fs.replace", {"path": os.path.join(ws, "f.txt"), "old_str": "1", "new_str": "2"})
+    assert r["diff"].startswith("--- a/f.txt\n+++ b/f.txt\n")
+
+
+def test_fs_replace_diff_marks_a_missing_final_newline(ws):
+    write(ws, "f.txt", "a\nb")
+    r = call("fs.replace", {"path": "f.txt", "old_str": "b", "new_str": "c"})
+    assert r["diff"].endswith("-b\n\\ No newline at end of file\n+c\n\\ No newline at end of file\n")
+
+
+def test_fs_write_new_file_diff(ws):
+    r = call("fs.write", {"path": "n.txt", "content": "x\ny\n"})
+    assert r["created"] is True
+    assert r["diff"] == "--- /dev/null\n+++ b/n.txt\n@@ -0,0 +1,2 @@\n+x\n+y\n"
+    assert (r["added"], r["removed"]) == (2, 0)
+
+
+def test_fs_write_overwrite_diff(ws):
+    write(ws, "f.txt", "a\nb\n")
+    r = call("fs.write", {"path": "f.txt", "content": "a\nc\n"})
+    assert r["created"] is False
+    assert (r["added"], r["removed"]) == (1, 1)
+    assert "-b\n+c\n" in r["diff"]
+
+
+def test_diff_is_capped_on_a_line_boundary(ws):
+    big = "".join(f"line {i}\n" for i in range(5000))
+    r = call("fs.write", {"path": "big.txt", "content": big})
+    assert len(r["diff"]) <= 10_000 and r["diff"].endswith("\n") and r["diff_truncated"] is True
+    assert r["added"] == 5000  # the counts are of the whole change
+
+
+def test_failed_edits_carry_no_diff(ws):
+    write(ws, "f.txt", "a\n")
+    r = call("fs.replace", {"path": "f.txt", "old_str": "zzz", "new_str": "y"})
+    assert "diff" not in r

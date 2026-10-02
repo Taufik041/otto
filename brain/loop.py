@@ -10,6 +10,8 @@ from shared.sessions import create_session, get_session, record_pr, set_status, 
 
 TOOL_CONTENT_LIMIT = 20000
 TRUNCATED = "\n[... truncated]"
+# result fields the runner adds for the UI only (kept in bus.result); the model never sees them
+UI_ONLY = ("diff", "diff_truncated", "added", "removed", "created", "diffstat", "base", "title")
 
 
 class LimitReached(Exception):
@@ -21,9 +23,10 @@ class LimitReached(Exception):
 
 
 def tool_content(result, limit=TOOL_CONTENT_LIMIT) -> str:
-    """json.dumps(result), trimming stdout/stderr (not the JSON text) so it stays valid JSON."""
-    content = json.dumps(result)
-    r = dict(result)
+    """json.dumps(result) without the UI_ONLY fields, trimming stdout/stderr (not the JSON text) so
+    it stays valid JSON."""
+    r = {k: v for k, v in result.items() if k not in UI_ONLY}
+    content = json.dumps(r)
     keys = [k for k in ("stdout", "stderr") if isinstance(r.get(k), str)]
     marker_len = len(json.dumps(TRUNCATED)) - 2  # escaped length, without the quotes
     while len(content) > limit and keys:

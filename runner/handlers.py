@@ -1,4 +1,4 @@
-import base64, json, os, subprocess
+import base64, difflib, json, os, subprocess
 import urllib.error, urllib.parse, urllib.request
 
 from shared import config
@@ -85,6 +85,33 @@ def _lines(text) -> list:
     return lines
 
 
+def _diff(full, before, after) -> dict:
+    """The change to one file, for the UI: a unified diff (3 lines of context, paths relative to
+    the workspace, git-style "\\ No newline" markers) and its line counts. The counts are of the
+    whole change; the diff text is capped at CAP on a line boundary."""
+    rel = os.path.relpath(full, os.path.realpath(config.WORKSPACE))
+    old, new = _lines(before or ""), _lines(after)
+    out, added, removed = [], 0, 0
+    for line in difflib.unified_diff(old, new, "/dev/null" if before is None else f"a/{rel}", f"b/{rel}", n=3):
+        if line.startswith("+") and not line.startswith("+++"):
+            added += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            removed += 1
+        if line.startswith(("---", "+++")):
+            line = line.rstrip() + "\n"  # difflib adds a trailing tab+date only when given dates
+        out.append(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n")
+    text, truncated = "", False
+    for line in out:
+        if len(text) + len(line) > CAP:
+            truncated = True
+            break
+        text += line
+    result = {"diff": text, "added": added, "removed": removed}
+    if truncated:
+        result["diff_truncated"] = True
+    return result
+
+
 def _io_error(path, e) -> dict:
     return {"exit_code": 1, "stdout": "", "stderr": f"cannot access {path}: {e}"}
 
@@ -125,6 +152,10 @@ def handle_fs_write(payload) -> dict:
     except OSError:
         old_size = 0
     new_size = len(content.encode())
+    try:
+        before = _read_text(path)
+    except (OSError, UnicodeDecodeError):
+        before = None  # a new file (or one we can't show): diffed as created
 
     if old_size > 0 and new_size < old_size * 0.5:
         return {"exit_code": 1, "stdout": "",
@@ -137,7 +168,8 @@ def handle_fs_write(payload) -> dict:
         _write_text(path, content)
     except OSError as e:
         return _io_error(path, e)
-    return {"exit_code": 0, "stdout": f"wrote {new_size} bytes to {path}", "stderr": ""}
+    return {"exit_code": 0, "stdout": f"wrote {new_size} bytes to {path}", "stderr": "",
+            "created": before is None, **_diff(path, before, content)}
 
 def handle_code_search(payload) -> dict:
     pattern = payload["pattern"]
@@ -196,7 +228,8 @@ def handle_fs_replace(payload) -> dict:
         _write_text(path, updated)
     except OSError as e:
         return _io_error(path, e)
-    return {"exit_code": 0, "stdout": f"replaced 1 occurrence in {path}", "stderr": ""}
+    return {"exit_code": 0, "stdout": f"replaced 1 occurrence in {path}", "stderr": "",
+            **_diff(path, content, updated)}
 
 def _current_branch():
     r = _run_argv(["git", "symbolic-ref", "--short", "-q", "HEAD"])
@@ -230,7 +263,29 @@ def handle_git_push(payload=None) -> dict:
                   timeout=120, env={"GIT_TERMINAL_PROMPT": "0"})
     r = _scrub(r, [token, basic])
     r["branch"] = branch
+    if r["exit_code"] == 0:
+        base = _default_branch()
+        r["base"] = base
+        if (stat := _diffstat(base)) is not None:
+            r["diffstat"] = stat
     return r
+
+
+def _diffstat(base) -> dict | None:
+    """What the branch changes against origin/<base>: {files, additions, deletions} (binary files
+    count as files with no lines). None if git can't tell."""
+    r = _run_argv(["git", "diff", "--numstat", f"origin/{base}...HEAD"])
+    if r["exit_code"] != 0:
+        return None
+    files = additions = deletions = 0
+    for line in r["stdout"].splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        files += 1
+        additions += int(parts[0]) if parts[0].isdigit() else 0
+        deletions += int(parts[1]) if parts[1].isdigit() else 0
+    return {"files": files, "additions": additions, "deletions": deletions}
 
 
 def _error(stderr) -> dict:
@@ -304,7 +359,8 @@ def handle_git_open_pr(payload) -> dict:
         return _scrub(_error(f"GitHub API request failed: {e}"), [token])
 
     return {"exit_code": 0, "stdout": pr["html_url"], "stderr": "",
-            "number": pr["number"], "html_url": pr["html_url"]}
+            "number": pr["number"], "html_url": pr["html_url"],
+            "title": pr.get("title") or payload["title"], "base": base}
 
 
 REGISTRY = {

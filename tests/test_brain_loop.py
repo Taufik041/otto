@@ -262,3 +262,14 @@ async def test_missing_required_parameter_is_answered_without_the_bus(monkeypatc
          "stderr": "missing required parameter(s): old_str, new_str. fs_replace takes: path, old_str, new_str"},
         {"exit_code": 0, "stdout": "ran git.status", "stderr": ""},
     ]
+
+
+def test_tool_content_leaves_out_what_only_the_ui_shows():
+    # the runner adds diffs and stats for the UI (stored in bus.result); the model sees what it always did
+    result = {"exit_code": 0, "stdout": "replaced 1 occurrence in /workspace/a.py", "stderr": "",
+              "diff": "--- a/a.py\n+++ b/a.py\n", "diff_truncated": True, "added": 1, "removed": 1,
+              "created": False, "diffstat": {"files": 1, "additions": 1, "deletions": 1}, "base": "main",
+              "title": "Fix", "number": 3, "html_url": "u", "branch": "otto/s1"}
+    assert json.loads(loop.tool_content(result)) == {
+        "exit_code": 0, "stdout": "replaced 1 occurrence in /workspace/a.py", "stderr": "",
+        "number": 3, "html_url": "u", "branch": "otto/s1"}
