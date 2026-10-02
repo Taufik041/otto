@@ -230,7 +230,7 @@ def test_list_get_and_events(client, env):
     one = client.get(f"/sessions/{a}").json()
     assert one["id"] == a and one["sandbox_status"] == "running"
     assert (one["task"], one["repo_url"]) == ("first", REPO_URL)
-    assert one["work_branch"] is None and one["pr_url"] is None
+    assert one["work_branch"] == f"otto/{a}" and one["pr_url"] is None
     assert client.get("/sessions/nope").status_code == 404
 
     evs = client.get(f"/sessions/{a}/events").json()
@@ -579,3 +579,68 @@ def test_ws_stream_error_closes_with_1011(client, monkeypatch):
             ws.receive_json()
     assert e.value.code == 1011
     assert WS not in live._subscribers
+
+
+# --- the work branch and retry --------------------------------------------------------------
+
+def test_a_repo_session_reports_its_work_branch_before_any_pr(client, env):
+    sid = client.post("/sessions", json={"repo": REPO, "message": "t"}).json()["id"]
+    assert client.get(f"/sessions/{sid}").json()["work_branch"] == f"otto/{sid}"
+    plain = client.post("/sessions", json={"message": "hi"}).json()["id"]
+    assert client.get(f"/sessions/{plain}").json()["work_branch"] is None
+
+
+@pytest.mark.parametrize("status", ["failed", "interrupted"])
+def test_retry_continues_a_failed_session_in_its_warm_sandbox(client, env, status):
+    ch, orch, runners = env
+    sid = finished_session(client.user_id, status=status)
+    orch.status[sid] = "running"
+    runners.alive.add(sid)
+
+    r = client.post(f"/sessions/{sid}/retry")
+
+    assert r.status_code == 202 and r.json() == {"id": sid, "status": "queued"}
+    assert jobs(ch) == [{"type": "retry", "session_id": sid}]
+    assert get_session(sid).status == "queued"
+    assert "llm.message" not in types(sid)  # no new user message
+
+
+def test_retry_recreates_a_dead_sandbox(client, env):
+    ch, orch, _ = env
+    sid = finished_session(client.user_id, status="failed")
+    assert client.post(f"/sessions/{sid}/retry").status_code == 202
+    assert orch.calls == [("remove", sid), ("create", sid, REPO_URL, INST)]
+    assert jobs(ch) == [{"type": "retry", "session_id": sid}]
+
+
+def test_retry_of_a_plain_chat_needs_no_sandbox(client, env):
+    ch, orch, _ = env
+    sid = client.post("/sessions", json={"message": "hi"}).json()["id"]
+    set_status(sid, "failed")
+    assert client.post(f"/sessions/{sid}/retry").status_code == 202
+    assert orch.calls == [] and jobs(ch)[-1] == {"type": "retry", "session_id": sid}
+
+
+@pytest.mark.parametrize("status", ["done", "stopped", "running", "queued", "limited"])
+def test_only_a_failed_or_interrupted_session_can_be_retried(client, env, status):
+    ch, orch, _ = env
+    sid = finished_session(client.user_id, status=status)
+    r = client.post(f"/sessions/{sid}/retry")
+    assert r.status_code == 409 and jobs(ch) == [] and orch.calls == []
+    assert get_session(sid).status == status
+
+
+def test_retry_respects_the_daily_limit(client, env):
+    sid = finished_session(client.user_id, status="failed")
+    with get_db() as s:
+        s.add(Usage(session_id=sid, user_id=client.user_id, provider="p", model="m",
+                    prompt_tokens=10**9, completion_tokens=0))
+    r = client.post(f"/sessions/{sid}/retry")
+    assert r.status_code == 429 and r.json()["code"] == "daily_limit"
+    assert get_session(sid).status == "failed"
+
+
+def test_retry_of_someone_elses_session_is_404(client, env):
+    other = make_user("other@example.com")
+    sid = finished_session(other.id, status="failed")
+    assert client.post(f"/sessions/{sid}/retry").status_code == 404

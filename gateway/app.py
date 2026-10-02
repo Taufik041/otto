@@ -26,17 +26,18 @@ from gateway import auth, github_app, live, tokens
 from orchestrator import sandbox
 from shared import config, usage
 from shared.accounts import delete_account
-from shared.bus import SESSIONS_QUEUE, actions_queue, chat_job, resume_job, results_queue, start_job
+from shared.bus import SESSIONS_QUEUE, actions_queue, chat_job, results_queue, resume_job, retry_job, start_job
 from shared.db import get_engine, init_db
 from shared.events import append_event, load_events, redact
 from shared.models import User, as_utc, utcnow
 from shared.sessions import (ACTIVE, attach_repo, count_active_agents, create_session, delete_session, get_session,
                              list_sessions, repo_sessions_since, set_status, set_title, sweep_stale_sessions,
-                             transition)
+                             transition, work_branch)
 
 PING_TIMEOUT = 5  # seconds to wait for a warm runner to answer control.ping / control.shutdown
 PING_INTERVAL = 20  # seconds between WebSocket heartbeats
 IDLE = ("pending", "done", "failed", "interrupted", "stopped", "limited")  # statuses that may take a follow-up
+RETRYABLE = ("failed", "interrupted")  # a turn that ended in an error, which POST .../retry runs again
 REPO_NAME = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
 NEW_REPO = "Start a new chat for a different repo."
 UNAVAILABLE = "Unavailable right now. Try again later."  # the picker's hint for a model without a key
@@ -289,7 +290,8 @@ def sessions(user: User = Depends(auth.current_user)):
 @app.get("/sessions/{sid}")
 async def session(sid: str, user: User = Depends(auth.current_user)):
     row = _row(sid, user)
-    return {**_summary(row), "task": row.task, "repo_url": row.repo_url, "work_branch": row.work_branch,
+    branch = row.work_branch or (work_branch(sid) if row.repo else None)
+    return {**_summary(row), "task": row.task, "repo_url": row.repo_url, "work_branch": branch,
             "created_at": as_utc(row.created_at), "sandbox_status": await _status(sid) if row.repo else None}
 
 
@@ -430,6 +432,32 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_
         _fail(sid, "sandbox", e)
     await _enqueue(ch, sid, resume_job(sid, body.text))
     return {"id": sid, "status": "queued", "repo": repo["full_name"]}
+
+
+@app.post("/sessions/{sid}/retry", status_code=202)
+async def retry(sid: str, user: User = Depends(auth.current_user)):
+    """Run a failed (or interrupted) turn again from where it stopped, with no new message: the
+    error card's Retry. Other statuses are 409."""
+    ch = app.state.ch
+    row = _row(sid, user)
+    _within_limit(user)
+    repo = await _repo_for(user, row.repo) if row.repo else None
+    async with app.state.create_lock:  # count + claim as one step within this gateway
+        if row.status not in RETRYABLE:
+            raise HTTPException(409, f"session {sid} is {row.status}; only a failed session can be retried")
+        if repo:
+            _room_for_an_agent(user)
+        if not transition(sid, "provisioning", RETRYABLE):
+            raise HTTPException(409, f"session {sid} is {_row(sid, user).status}; only a failed session can be retried")
+    if repo:
+        try:
+            await _wake_sandbox(ch, sid, repo)
+        except HTTPException:
+            raise
+        except Exception as e:
+            _fail(sid, "sandbox", e)
+    await _enqueue(ch, sid, retry_job(sid))
+    return {"id": sid, "status": "queued"}
 
 
 async def _wake_sandbox(ch, sid, repo):

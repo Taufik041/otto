@@ -53,6 +53,11 @@ def set_title(sid, title):
         s.exec(update(Session).where(Session.id == sid).values(title=title))
 
 
+def work_branch(sid) -> str:
+    """The branch a repo session works on: infra/entrypoint.sh checks out otto/<session id>."""
+    return f"otto/{sid}"
+
+
 def record_pr(sid, number, html_url):
     """The session's PR is open: emit pr.opened and note the PR and branch on the Session row."""
     with get_db() as s:
@@ -60,7 +65,7 @@ def record_pr(sid, number, html_url):
         if row is None:
             raise LookupError(f"no session {sid!r}")
         row.pr_url = html_url
-        row.work_branch = f"otto/{sid}"
+        row.work_branch = work_branch(sid)
         row.updated_at = utcnow()
         s.add(row)
     append_event(sid, "pr.opened", {"number": number, "html_url": html_url})

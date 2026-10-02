@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from shared.bus import SESSIONS_QUEUE, make_result, resume_job, results_queue, start_job
+from shared.bus import SESSIONS_QUEUE, chat_job, make_result, resume_job, results_queue, retry_job, start_job
 from shared.events import load_events
 from shared.sessions import create_session, get_session, transition
 from brain import loop, providers, worker
@@ -169,3 +169,60 @@ async def test_a_session_deleted_during_its_turn_ends_quietly(monkeypatch, capsy
     assert get_session("aaaa") is None
     assert get_session("bbbb").status == "done"
     assert "session aaaa was deleted" in capsys.readouterr().out
+
+
+# --- retry: the error card's Retry continues the turn, with no new message ---------------------
+
+def user_and_assistant(sid):
+    msgs = [e.payload["message"] for e in load_events(sid) if e.type == "llm.message"]
+    return [(m["role"], m["content"]) for m in msgs if m["role"] in ("user", "assistant")]
+
+
+@pytest.mark.asyncio
+async def test_retry_continues_a_failed_turn_without_a_new_message(monkeypatch):
+    session("aaaa", "task A")
+    script = {"task A": []}  # the first LLM call raises
+    fake_llm(monkeypatch, script)
+    ch, conn = fake_bus()
+    await run_worker(ch, conn, [start_job("aaaa")])
+    assert get_session("aaaa").status == "failed"
+
+    script["task A"].append(llm_final("fixed it"))
+    assert transition("aaaa", "queued", {"failed"})  # as the gateway does
+    await run_worker(ch, conn, [retry_job("aaaa")])
+
+    assert user_and_assistant("aaaa") == [("user", "task A"), ("assistant", "fixed it")]
+    assert get_session("aaaa").status == "done"
+
+
+@pytest.mark.asyncio
+async def test_retry_of_a_session_that_never_started_runs_its_task(monkeypatch):
+    session("aaaa", "task A")  # e.g. its sandbox failed to start: no conversation yet
+    fake_llm(monkeypatch, {"task A": [llm_final("done")]})
+    ch, conn = fake_bus()
+
+    await run_worker(ch, conn, [retry_job("aaaa")])
+
+    assert user_and_assistant("aaaa") == [("user", "task A"), ("assistant", "done")]
+
+
+@pytest.mark.asyncio
+async def test_retry_of_a_plain_chat_answers_again(monkeypatch):
+    create_session("cccc", task="what is a closure?", repo=None, model="m", status="queued")
+    script = {"what is a closure?": []}
+    fake_llm(monkeypatch, script)
+    ch, conn = fake_bus()
+    await run_worker(ch, conn, [chat_job("cccc")])
+    assert get_session("cccc").status == "failed"
+
+    script["what is a closure?"].append(llm_final("A function with its scope."))
+    assert transition("cccc", "queued", {"failed"})
+    await run_worker(ch, conn, [retry_job("cccc")])
+
+    assert user_and_assistant("cccc") == [("user", "what is a closure?"), ("assistant", "A function with its scope.")]
+    assert ch.default_exchange.published == [] or all(not k.endswith(".actions") for k, _ in ch.default_exchange.published)
+
+
+def test_retry_jobs_parse():
+    assert worker.parse_job(json.dumps({"type": "retry", "session_id": "s"})) == {"type": "retry", "session_id": "s"}
+    assert worker.parse_job(json.dumps({"type": "retry"})) is None

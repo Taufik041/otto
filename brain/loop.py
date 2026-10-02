@@ -94,14 +94,31 @@ def use_system(sid, messages, content):
     append_event(sid, "llm.message", {"message": message})
 
 
+def has_conversation(sid) -> bool:
+    """Whether the session has stored messages to resume (a session whose sandbox never started
+    has none)."""
+    return any(e.type == "llm.message" for e in load_events(sid))
+
+
 async def resume_session(ch, results, sid, text):
-    """Continue a stored session with a new user message. Returns the final messages list.
+    """Continue a stored session with a new user message, or (text None: a retry) from where its
+    last turn stopped. Returns the final messages list.
 
     A plain chat that just got a repo continues here, under the agent's prompt."""
     messages = replay(sid)
     use_system(sid, messages, SYSTEM)
-    add_message(sid, messages, {"role": "user", "content": text})
+    if text is not None:
+        add_message(sid, messages, {"role": "user", "content": text})
     return await run_loop(ch, results, sid, messages)
+
+
+async def retry_chat(sid):
+    """A plain chat's failed turn, again: the model answers the stored conversation as it is."""
+    if not has_conversation(sid):
+        return await chat_session(sid)
+    messages = replay(sid)
+    use_system(sid, messages, CHAT_SYSTEM)
+    return await _turn(sid, messages, lambda record: _chat_step(sid, messages, record))
 
 
 async def chat_session(sid, text=None):
