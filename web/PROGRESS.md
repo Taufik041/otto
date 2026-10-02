@@ -1,6 +1,7 @@
-# Otto web: Part 1 progress
+# Otto web: progress
 
-Part 1 is done. `npm run build`, `npm test` and backend `pytest -q` pass. How to run it is in `README.md`.
+Parts 1 and 2 are done. `npm run build`, `npm test` (94 tests) and backend `pytest -q` (518 passed,
+5 skipped) pass. How to run it is in `README.md`; the chat's event → UI mapping is there too.
 
 ## Done
 
@@ -52,14 +53,41 @@ Part 1 is done. `npm run build`, `npm test` and backend `pytest -q` pass. How to
 - **Screenshots:** `npm run screenshots` captures the main screens, and they were compared with
   the mockup at 1440 and 390 in light and dark.
 
-## Next (Part 2)
+## Part 2: the chat (`/c/:id`)
 
-- The conversation at `/c/:id`:
-  - Events over the WebSocket (`POST /sessions/{id}/ws-ticket`).
-  - Work blocks and the PR card.
-  - Follow-ups with `POST /sessions/{id}/messages`.
-  - Stop and Rename in the "⋯" menu.
-- The workspace panel: Changes and Terminal.
+- **Backend additions (their own commits, with tests):**
+  - `ed689f0`: runner results carry what the UI shows:
+    - `fs.replace`/`fs.write`: a unified `diff` (capped on a line boundary, with
+      `diff_truncated`), `added`/`removed`, and `created` for `fs.write`
+    - `git.push`: `base` and `diffstat` `{files, additions, deletions}`
+    - `git.open_pr`: `title` and `base`
+    - the brain strips these display-only fields before the model sees a tool result, so the
+      model's input is unchanged
+  - `cd14d8d`:
+    - `GET /sessions/{id}` gives a repo session its `otto/<id>` work branch from the start
+    - `POST /sessions/{id}/retry` runs a failed or interrupted turn again with no new message
+      (a `retry` job, handled by the brain)
+- **One pure reducer** (`src/chat/reduce.ts`) turns events into the view, with tests for every
+  event kind. Infrastructure events are hidden.
+- **Live updates** (`src/chat/live.ts`): events load over HTTP, then the WebSocket takes over with
+  a fresh ticket, `after_seq` and backoff. Duplicates are dropped by seq, and "Reconnecting…" shows
+  while the socket is down.
+- **The chat column:**
+  - user messages with repo chips; Otto's prose as light markdown
+  - work blocks: live spinner and timer, collapsed to "N steps · 9 passed · 1m 48s" when done
+  - PR cards, opened and updated
+  - the error card with Retry, the limit card, the stopped note, and the mention nudge in plain
+    chats
+- **The composer in a chat:** Stop while Otto works; follow-ups between turns; 409 and 429 shown
+  inline.
+- **The workspace panel:**
+  - Changes: numbered unified diffs and read slices, colored by Shiki (VS Code Light+ / Dark+,
+    lazy-loaded)
+  - Terminal: `$ cmd`, output, ✓/✗, and the "N passed" badge
+  - a resizable side panel on desktop and a full-screen sheet on mobile
+- **Real-backend run** (`scripts/e2e.mjs`): sign in, "@otto_test two tests are failing...", watch
+  it work, follow-ups, Changes and Terminal, then screenshots at 1440 and 390 in light and dark.
+  It opened Taufik041/otto_test#8.
 
 ## Differences from the design
 
@@ -72,6 +100,19 @@ Part 1 is done. `npm run build`, `npm test` and backend `pytest -q` pass. How to
   uninstalling on GitHub.
 - **Settings › Usage shows no sandboxes:** the UI never shows sandbox internals, so the gateway's
   `active_sandboxes` and `POST /sessions/{id}/sandbox/stop` aren't used in `web/`.
+- **The chat keeps its model:** in a chat, the composer shows the model as a label with no menu,
+  because the gateway refuses a model change on follow-ups.
+- **The model-failed row says "6 tries", not "6 tries over 40s":** the error event has the attempt
+  count but not the time.
+- **No "Using the warm sandbox" notice,** and no other sandbox notices: infrastructure events are
+  hidden, as specified.
+- **The Terminal has no `gh pr create` entry:** the PR is opened through the GitHub API, not a
+  command, so there is none to show.
+- **A read step has no quoted line under it** (the mockup quotes the relevant line): the events
+  don't say which line mattered. It shows "lines a–b" instead.
+- **A follow-up's message appears when it's sent,** before its own event arrives: the backend
+  writes it only when the worker starts the turn. After a reload in that window, the turn shows
+  "Setting up workspace…" without the message for a moment.
 - **Things the design doesn't show, but the spec or API needed:**
   - Settings › Account has an editable Name row and "Sign out of all devices".
   - There's a `/reset-password` page for the emailed link.
