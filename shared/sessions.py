@@ -47,6 +47,23 @@ def attach_repo(sid, repo) -> bool:
     return moved
 
 
+def set_model(sid, model) -> str | None:
+    """Switch the session to another catalog model for its next turns (the brain reads it at every
+    LLM call). Emits session.model_changed {from, to}; returns the previous model, or None if it
+    was the same already."""
+    with get_db() as s:
+        row = s.get(Session, sid)
+        if row is None:
+            raise LookupError(f"no session {sid!r}")
+        previous = row.model
+        if previous == model:
+            return None
+        row.model = model
+        s.add(row)
+    append_event(sid, "session.model_changed", {"from": previous, "to": model})
+    return previous
+
+
 def set_title(sid, title):
     """Rename; doesn't count as activity, so the chat keeps its place in the list."""
     with get_db() as s:

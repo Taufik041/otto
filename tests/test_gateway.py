@@ -186,15 +186,48 @@ def test_follow_up_keeps_the_sessions_model(client, env, monkeypatch):
     assert jobs(env[0])[-1] == {"type": "resume", "session_id": sid, "text": "more"}  # no model in the job
 
 
-def test_follow_up_cannot_switch_the_model(client, env, monkeypatch):
+def test_a_follow_up_can_switch_the_model(client, env, monkeypatch):
     use_env(monkeypatch, BOTH)
     sid = client.post("/sessions", json={"repo": REPO, "message": "t", "model": "openai:model-a"}).json()["id"]
     set_status(sid, "done")
 
     r = client.post(f"/sessions/{sid}/messages", json={"text": "more", "model": "openrouter:openrouter/free"})
 
-    assert r.status_code == 422 and "fixed" in r.text
-    assert get_session(sid).model == "openai:model-a" and get_session(sid).status == "done"
+    assert r.status_code == 202
+    assert get_session(sid).model == "openrouter:openrouter/free"
+    assert client.get(f"/sessions/{sid}").json()["model"] == "openrouter:openrouter/free"
+    evs = [(e.type, e.payload) for e in load_events(sid) if e.type in ("session.model_changed", "llm.message")]
+    assert evs[-2:] == [  # the switch, then the message it applies to
+        ("session.model_changed", {"from": "openai:model-a", "to": "openrouter:openrouter/free"}),
+        ("llm.message", {"message": {"role": "user", "content": "more"}}),
+    ]
+    assert jobs(env[0])[-1] == {"type": "resume", "session_id": sid, "text": "more"}  # the brain reads the row
+
+
+def test_the_same_model_again_is_no_switch(client, env, monkeypatch):
+    use_env(monkeypatch, BOTH)
+    sid = client.post("/sessions", json={"repo": REPO, "message": "t", "model": "openai:model-a"}).json()["id"]
+    set_status(sid, "done")
+    assert client.post(f"/sessions/{sid}/messages", json={"text": "more", "model": "openai:model-a"}).status_code == 202
+    assert "session.model_changed" not in types(sid)
+
+
+@pytest.mark.parametrize("model", ["nope", "openai:not-in-catalog", "openai:model-b"])
+def test_switching_to_an_unknown_or_unavailable_model_is_400(client, env, monkeypatch, model):
+    use_env(monkeypatch, {"OPENROUTER_API_KEY": "orkey-one", "OTTO_OPENAI_MODELS": "model-b"})  # no OpenAI key
+    sid = client.post("/sessions", json={"repo": REPO, "message": "t"}).json()["id"]
+    set_status(sid, "done")
+    before = types(sid)
+
+    r = client.post(f"/sessions/{sid}/messages", json={"text": "more", "model": model})
+
+    assert r.status_code == 400
+    # the same shape as POST /sessions' model error: FastAPI's validation detail list
+    [d] = r.json()["detail"]
+    assert d["loc"] == ["body", "model"] and "unknown or unavailable model" in d["msg"]
+    row = get_session(sid)
+    assert (row.model, row.status) == ("openrouter:openrouter/free", "done")  # nothing changed, not claimed
+    assert types(sid) == before
 
 
 def test_models_reflect_the_keys_present(client, monkeypatch):

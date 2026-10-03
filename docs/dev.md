@@ -27,6 +27,12 @@ sandbox image (the image step of `scripts/dev_up.sh`), or sandboxes keep running
   repo, this comes after `repo.attached`. Then the gateway wakes or creates the sandbox and queues
   the job. The worker continues from the stored message and doesn't add it again, so the
   conversation (`rebuild_messages`) has it exactly once.
+- **A follow-up may switch the model.** `POST /sessions/{id}/messages` takes an optional
+  `model` (a catalog id from `GET /models`). An unknown or unavailable one is a 400, with the
+  same `detail` shape POST /sessions gives it, and changes nothing. A different one updates the
+  session's model and appends `session.model_changed {from, to}` before the user message. The
+  brain reads the session's model at every LLM call, and the history goes to the new model as it
+  is (every provider speaks the same chat format).
 - **Every agent turn ends with a deterministic finish** (`brain/loop.py`, `finish`). After the
   model's final message, and before the status becomes `done`, the brain does what the model left
   undone:

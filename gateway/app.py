@@ -31,7 +31,8 @@ from shared.db import get_engine, init_db
 from shared.events import append_event, load_events, redact
 from shared.models import User, as_utc, utcnow
 from shared.sessions import (ACTIVE, attach_repo, count_active_agents, create_session, delete_session, get_session,
-                             list_sessions, repo_sessions_since, set_status, set_title, sweep_stale_sessions,
+                             list_sessions, repo_sessions_since, set_model, set_status, set_title,
+                             sweep_stale_sessions,
                              transition, work_branch)
 
 PING_TIMEOUT = 5  # seconds to wait for a warm runner to answer control.ping / control.shutdown
@@ -91,6 +92,13 @@ app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_cred
                    allow_methods=["*"], allow_headers=["*"])
 
 
+def unavailable_model(model) -> HTTPException:
+    """400 with the body POST /sessions gives an unavailable model (FastAPI's validation detail),
+    for a follow-up that asks for one."""
+    return HTTPException(400, [{"type": "value_error", "loc": ["body", "model"], "input": model,
+                                "msg": f"Value error, unknown or unavailable model {model!r}; see GET /models"}])
+
+
 def repo_name(v):
     """"owner/name" (a leading @ is fine); ValueError (422) for anything else."""
     if v is None:
@@ -119,16 +127,9 @@ class NewSession(BaseModel):
 class FollowUp(BaseModel):
     text: str = Field(min_length=1)
     repo: str | None = None  # attaches a repo to a plain chat; the chat's own repo is fine too
-    model: str | None = None  # only to refuse it: a session stays on the model it was created with
+    model: str | None = None  # a catalog id: the chat continues on it from this message on
 
     _repo = field_validator("repo")(repo_name)
-
-    @field_validator("model")
-    @classmethod
-    def no_switching(cls, v):
-        if v is not None:
-            raise ValueError("a session's model is fixed at creation; start a new session for another model")
-        return v
 
 
 class Rename(BaseModel):
@@ -402,6 +403,8 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_
     the agent takes over. A chat keeps its first repo: another one is 409."""
     ch = app.state.ch
     row = _row(sid, user)
+    if body.model is not None and not config.is_available(body.model):
+        raise unavailable_model(body.model)
     _within_limit(user)
     if body.repo and row.repo and body.repo.lower() != row.repo.lower():
         raise HTTPException(409, NEW_REPO)
@@ -413,6 +416,7 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_
         if not transition(sid, "provisioning", IDLE):
             raise HTTPException(409, f"session {sid} is {_row(sid, user).status}; wait until it finishes")
     if repo is None:
+        _switch_model(sid, body.model)
         _store_follow_up(sid, body.text)
         await _enqueue(ch, sid, chat_job(sid, body.text))
         return {"id": sid, "status": "queued", "repo": None}
@@ -422,6 +426,7 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_
         if get_session(sid).repo.lower() != repo["full_name"].lower():
             transition(sid, row.status, {"provisioning"})
             raise HTTPException(409, NEW_REPO)
+    _switch_model(sid, body.model)
     _store_follow_up(sid, body.text)  # after repo.attached, so the message belongs to the agent's turn
     try:
         if attaching:
@@ -460,6 +465,13 @@ async def retry(sid: str, user: User = Depends(auth.current_user)):
             _fail(sid, "sandbox", e)
     await _enqueue(ch, sid, retry_job(sid))
     return {"id": sid, "status": "queued"}
+
+
+def _switch_model(sid, model):
+    """A follow-up that names another model moves the chat to it (session.model_changed, before
+    the message it applies to). Its history goes to the new model as it is."""
+    if model is not None:
+        set_model(sid, model)
 
 
 def _store_follow_up(sid, text):

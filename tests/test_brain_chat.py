@@ -19,7 +19,8 @@ def fake_llm(monkeypatch, responses):
 
     class Completions:
         async def create(self, **kw):
-            requests.append({"messages": json.loads(json.dumps(kw["messages"])), "tools": kw.get("tools")})
+            requests.append({"messages": json.loads(json.dumps(kw["messages"])), "tools": kw.get("tools"),
+                             "model": kw.get("model")})
             r = responses.pop(0)
             if isinstance(r, BaseException):
                 raise r
@@ -159,3 +160,21 @@ def test_the_agent_prompt_requires_commit_push_and_pr_before_the_summary():
     finish = SYSTEM[SYSTEM.index("When the task is done"):]
     assert "MUST" in finish
     assert finish.index("git_commit") < finish.index("git_push") < finish.index("git_open_pr") < finish.index("final summary")
+
+
+@pytest.mark.asyncio
+async def test_each_turn_reads_the_sessions_model_so_a_switch_applies_to_the_next_one(monkeypatch):
+    from tests.fakes import use_env
+    from shared.sessions import set_model
+
+    use_env(monkeypatch, {"OPENROUTER_API_KEY": "or", "OPENAI_API_KEY": "oai", "OTTO_OPENAI_MODELS": "model-a"})
+    sid = chat()
+    requests = fake_llm(monkeypatch, [llm_final("first"), llm_final("second")])
+    await loop.chat_session(sid)
+
+    set_model(sid, "openai:model-a")  # as the gateway does on a follow-up that switches
+    await loop.chat_session(sid, "and again?")
+
+    assert [r["model"] for r in requests] == ["openrouter/free", "model-a"]
+    # the history goes to the new model as it is
+    assert [m["content"] for m in requests[1]["messages"]] == [CHAT_SYSTEM, "what is a closure?", "first", "and again?"]
