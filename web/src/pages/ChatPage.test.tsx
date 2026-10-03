@@ -118,7 +118,7 @@ it('goes live over the WebSocket after the stored events, and hides infrastructu
 
   expect(await screen.findByText('Running')).toBeInTheDocument()
   expect(screen.getAllByText('pytest')).toHaveLength(1) // the duplicate seq is dropped
-  expect(document.body.textContent).not.toMatch(/recreated|reused|warm sandbox|previous/i)
+  expect(document.body.textContent).not.toMatch(/recreated|reused|warm sandbox/i) // ("previous" would match the sidebar's "Previous 7 days")
   expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument()
 })
 
