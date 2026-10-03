@@ -6,6 +6,7 @@ from brain.bus import bus_call, start_consumer, stop_consumer
 from brain.resume import rebuild_messages
 from shared.events import append_event, load_events
 from shared.github import parse_repo
+from shared.models import make_title
 from shared.sessions import create_session, get_session, record_pr, set_status, transition
 
 TOOL_CONTENT_LIMIT = 20000
@@ -14,6 +15,14 @@ TRUNCATED = "\n[... truncated]"
 # never sees them
 UI_ONLY = ("diff", "diff_truncated", "added", "removed", "created", "diffstat", "base", "title",
            "dirty", "ahead", "work")
+
+
+# actions that can leave work to finish: edits, writes, commands, and commits not yet pushed
+CHANGES = ("fs.write", "fs.replace", "shell.exec", "git.commit")
+
+
+class FinishFailed(Exception):
+    """A step of the end-of-turn finish failed; its error event is recorded already."""
 
 
 class LimitReached(Exception):
@@ -141,9 +150,52 @@ async def run_loop(ch, results, sid, messages):
     """Drive the model from `messages` until it answers without tool calls (or the step cap)."""
     pending, consumer = start_consumer(results)
     try:
-        return await _turn(sid, messages, lambda record: _steps(ch, pending, sid, messages, record))
+        return await _turn(sid, messages, lambda record: _agent_turn(ch, pending, sid, messages, record))
     finally:
         await stop_consumer(pending, consumer)
+
+
+async def _agent_turn(ch, pending, sid, messages, record):
+    """The model's steps, then the finish (unless the session was stopped or changed nothing)."""
+    stopped, changed = await _steps(ch, pending, sid, messages, record)
+    if not stopped and changed and not _stopped(sid):
+        await finish(ch, pending, sid, messages, record)
+
+
+def _last(messages, role) -> str:
+    return next((m.get("content") or "" for m in reversed(messages)
+                 if m.get("role") == role and (m.get("content") or "").strip()), "")
+
+
+async def finish(ch, pending, sid, messages, record):
+    """End an agent turn deterministically, whatever the model left undone: commit uncommitted
+    changes (the message from this turn's request), push if the branch is ahead of the remote, and
+    open the PR if there is none yet (title from the task, body: the model's final message). Each
+    step is an ordinary bus action, so it shows as an event row. A failed step records an error
+    and raises FinishFailed."""
+    async def act(kind, args):
+        result = await bus_call(ch, pending, sid, kind, args, record=record)
+        if result.get("exit_code") != 0:
+            why = (result.get("stderr") or result.get("stdout") or "failed").strip()
+            record("error", {"stage": "finish", "message": f"{kind}: {why}"[:2000]})
+            raise FinishFailed(kind)
+        return result
+
+    state = await act("git.status", {})
+    if "dirty" not in state:
+        return  # a sandbox from before the finish: it can't say, so leave it as the model did
+    row = get_session(sid)
+    dirty, ahead, work = state["dirty"], state.get("ahead"), state.get("work") or 0
+    if dirty:
+        await act("git.commit", {"message": make_title(_last(messages, "user") or row.task)})
+        work += 1
+    if dirty or ahead is None or ahead > 0:
+        await act("git.push", {})
+    if row.pr_url is None and work > 0:
+        body = _last(messages, "assistant") or f"Changes by Otto for: {row.task}"
+        pr = await act("git.open_pr", {"title": make_title(row.task), "body": body})
+        if pr.get("html_url"):
+            record_pr(sid, pr.get("number"), pr["html_url"])
 
 
 async def _turn(sid, messages, steps):
@@ -166,6 +218,9 @@ async def _turn(sid, messages, steps):
         record("error", {"stage": "llm", "message": str(e)})
         transition(sid, "failed", {"running"})
         raise
+    except FinishFailed:
+        transition(sid, "failed", {"running"})  # the error event says which step and why
+        return messages
     except Exception:
         transition(sid, "failed", {"running"})
         raise
@@ -198,11 +253,15 @@ def _stopped(sid) -> bool:
     return row is not None and row.status == "stopped"
 
 
-async def _steps(ch, pending, sid, messages, record):
+async def _steps(ch, pending, sid, messages, record) -> tuple[bool, bool]:
+    """The model's steps until it answers without tool calls (or the step cap). Returns
+    (stopped, changed): whether the session was stopped, and whether a step could have changed the
+    workspace (see CHANGES)."""
+    changed = False
     for step in range(20):
         if _stopped(sid):
             print(f"[brain] session {sid} was stopped")
-            return
+            return True, changed
         resp = await _complete(sid, record, messages, tools=TOOLS)
         m = resp.choices[0].message
 
@@ -210,7 +269,7 @@ async def _steps(ch, pending, sid, messages, record):
             print(f"\n[otto] {m.content}")
             # "" rather than None: the API rejects an assistant message with neither content nor tool calls
             add_message(sid, messages, {"role": "assistant", "content": m.content or ""})
-            return
+            return False, changed
 
         if m.content:
             print(f"[thinking] {m.content}")
@@ -239,6 +298,7 @@ async def _steps(ch, pending, sid, messages, record):
                     if problem := missing_args(name, args):
                         result = {"exit_code": 1, "stdout": "", "stderr": problem}
                     else:
+                        changed = changed or kind in CHANGES
                         result = await bus_call(ch, pending, sid, kind, args, record=record)
                 except Exception as e:
                     result = {"exit_code": 1, "stdout": "", "stderr": str(e)}
@@ -249,3 +309,4 @@ async def _steps(ch, pending, sid, messages, record):
                                         "content": tool_content(result)})
 
     print("[stopped] iteration cap")
+    return False, changed

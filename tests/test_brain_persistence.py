@@ -52,7 +52,9 @@ async def test_rebuild_round_trip_after_two_tool_turns(monkeypatch):
         "session.created", "llm.message", "llm.message", "session.status",
         "llm.message", "bus.action", "bus.result", "llm.message", "bus.action", "bus.result", "llm.message",
         "llm.message", "bus.action", "bus.result", "llm.message",
-        "llm.message", "session.status"]
+        "llm.message",
+        "bus.action", "bus.result",  # the finish's git.status (this fake runner can't say more)
+        "session.status"]
     evs = load_events("s1")
     assert [e.seq for e in evs] == list(range(1, len(evs) + 1))
     assert evs[0].payload == {"task": "fix it", "repo": None, "model": "openrouter:openrouter/free"}

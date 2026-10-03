@@ -82,7 +82,8 @@ async def test_two_sessions_run_concurrently_without_crosstalk(monkeypatch):
     for sid, expected in (("aaaa", ["aaaa:a.py", "aaaa:a2.py"]), ("bbbb", ["bbbb:echo b"])):
         evs = load_events(sid)
         stdouts = [e.payload["payload"]["stdout"] for e in evs if e.type == "bus.result"]
-        assert stdouts == expected
+        # bbbb ran a command, so its turn ends with the finish's git.status (no path or cmd: "bbbb:")
+        assert stdouts == expected + ([f"{sid}:"] if sid == "bbbb" else [])
         tools = [m["content"] for m in (e.payload["message"] for e in evs if e.type == "llm.message")
                  if m["role"] == "tool"]
         assert [json.loads(c)["stdout"] for c in tools] == expected
