@@ -10,8 +10,10 @@ from shared.sessions import create_session, get_session, record_pr, set_status, 
 
 TOOL_CONTENT_LIMIT = 20000
 TRUNCATED = "\n[... truncated]"
-# result fields the runner adds for the UI only (kept in bus.result); the model never sees them
-UI_ONLY = ("diff", "diff_truncated", "added", "removed", "created", "diffstat", "base", "title")
+# result fields the runner adds for the UI and the brain's finish (kept in bus.result); the model
+# never sees them
+UI_ONLY = ("diff", "diff_truncated", "added", "removed", "created", "diffstat", "base", "title",
+           "dirty", "ahead", "work")
 
 
 class LimitReached(Exception):

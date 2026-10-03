@@ -249,3 +249,25 @@ def test_a_failed_push_has_no_diffstat(repo, monkeypatch):
     monkeypatch.setattr(config, "GITHUB_TOKEN", None)
     r = REGISTRY["git.push"]({})
     assert r["exit_code"] == 1 and "diffstat" not in r
+
+
+# --- git.status for the brain's finish: dirty, and commits ahead of the remote ------------------
+
+def test_status_reports_dirty_and_ahead_before_any_push(repo):
+    ws, _ = repo
+    git("remote", "set-head", "origin", "main", cwd=ws)
+    r = REGISTRY["git.status"]({})
+    assert r["exit_code"] == 0 and "On branch otto/s1" in r["stdout"]
+    # one commit on otto/s1, no upstream yet: ahead of origin/main by 1, the branch's work is 1
+    assert (r["dirty"], r["ahead"], r["work"], r["base"]) == (False, 1, 1, "main")
+
+    open(os.path.join(ws, "new.txt"), "w").write("x\n")
+    assert REGISTRY["git.status"]({})["dirty"] is True
+
+
+def test_status_after_a_push_is_not_ahead(repo):
+    ws, _ = repo
+    git("remote", "set-head", "origin", "main", cwd=ws)
+    assert REGISTRY["git.push"]({})["exit_code"] == 0
+    r = REGISTRY["git.status"]({})
+    assert (r["dirty"], r["ahead"], r["work"]) == (False, 0, 1)

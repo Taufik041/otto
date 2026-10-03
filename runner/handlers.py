@@ -185,7 +185,26 @@ def handle_code_search(payload) -> dict:
     return {"exit_code": r["exit_code"], "stdout": out, "stderr": r["stderr"]}
 
 def handle_git_status(payload=None) -> dict:
-    return _run_argv(["git", "status"])
+    """`git status`, plus what the brain's end-of-turn finish needs: dirty (uncommitted changes),
+    ahead (commits not on the branch's upstream, or not on origin/<base> before the first push),
+    work (the branch's commits not on origin/<base>) and base. ahead/work are None if git can't
+    tell."""
+    r = _run_argv(["git", "status"])
+    if r["exit_code"] != 0:
+        return r
+    base = _default_branch()
+    upstream = _run_argv(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+    against = upstream["stdout"].strip() if upstream["exit_code"] == 0 else f"origin/{base}"
+    r["dirty"] = bool(_run_argv(["git", "status", "--porcelain"])["stdout"].strip())
+    r["ahead"] = _count(f"{against}..HEAD")
+    r["work"] = _count(f"origin/{base}..HEAD")
+    r["base"] = base
+    return r
+
+
+def _count(revs) -> int | None:
+    r = _run_argv(["git", "rev-list", "--count", revs])
+    return int(r["stdout"].strip()) if r["exit_code"] == 0 and r["stdout"].strip().isdigit() else None
 
 def handle_git_diff(payload=None) -> dict:
     return _run_argv(["git", "diff"])
