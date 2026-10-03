@@ -107,7 +107,7 @@ the start when an older event arrives late. Its tests (`reduce.test.ts`) cover e
 | `bus.action` + `bus.result` | `{action_id, kind, payload}` + `{action_id, ok, payload}` | A step. See the table below. |
 | `pr.opened` | `{number, html_url}` | The session's PR. |
 | `usage.limit_reached` | `{used, limit, resets_at}` | The usage-limit card. |
-| `error` | `{stage, message}` | `llm`: "The model didn't respond after N tries…" with Retry (`POST /sessions/{id}/retry`). Sandbox setup stages: "Otto couldn't set up the workspace." `destroy_sandbox`: hidden. Internals are never shown. |
+| `error` | `{stage, step?, message}` | The error card with Retry (`POST /sessions/{id}/retry`), titled by what failed: `llm` → "Otto couldn't finish." (the model didn't respond after N tries); `create_sandbox`/`sandbox`/`enqueue` → "Otto couldn't set up the workspace."; `finish` with `step` `git.commit` → "Otto couldn't commit the changes.", `git.push` → "Otto couldn't push to GitHub.", `git.open_pr` → "Otto couldn't open the pull request."; anything else, or a failed turn with no error event → "Something went wrong." `destroy_sandbox`: hidden. The error's message is never shown. |
 | `llm.usage`, `llm.key_rotated` | | Hidden (infrastructure). |
 | `sandbox.reused`, `sandbox.recreated` | | Hidden (infrastructure). |
 | anything else | | Ignored. |

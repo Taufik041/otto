@@ -1,4 +1,4 @@
-import { emptyState, errorMessage, reduce, testSummary, view, type Item, type SessionEvent, type Step } from './reduce'
+import { emptyState, errorCopy, reduce, testSummary, view, type Item, type SessionEvent, type Step } from './reduce'
 import { call, DIFF, log, mainRun, PYTEST_FAIL, PYTEST_OK } from '@/test/events'
 
 const v = (events: SessionEvent[]) => view(reduce(emptyState(), events))
@@ -129,6 +129,7 @@ describe('endings', () => {
       modelFailed: true, verb: 'Asked the model for the next step', res: { text: 'No response' }, sub: '6 tries',
     })
     expect(view_.items[2]).toMatchObject({
+      title: "Otto couldn't finish.",
       message: "The model didn't respond after 6 tries. Nothing was committed. Retry to continue from the last step.",
     })
   })
@@ -138,13 +139,16 @@ describe('endings', () => {
       .add('error', { stage: 'create_sandbox', message: 'ApiException: k8s said 500' })
       .status('failed')
     const err = v(l.events).items.find((i) => i.kind === 'error')
-    expect(err).toMatchObject({ message: "Otto couldn't set up the workspace. Retry to try again." })
+    expect(err).toMatchObject({ title: "Otto couldn't set up the workspace.", message: 'Retry to try again.' })
     expect(JSON.stringify(v(l.events))).not.toContain('k8s')
   })
 
   it('interrupted is retryable too', () => {
     const l = log().created('t').status('running').status('interrupted')
-    expect(v(l.events).items.find((i) => i.kind === 'error')).toMatchObject({ message: expect.stringMatching(/^Otto was interrupted/) })
+    expect(v(l.events).items.find((i) => i.kind === 'error')).toMatchObject({
+      title: 'Something went wrong.',
+      message: expect.stringMatching(/^Otto was interrupted/),
+    })
   })
 
   it('the daily limit: the limit card', () => {
@@ -292,7 +296,56 @@ describe('helpers', () => {
     expect(testSummary('hello')).toBeNull()
   })
 
-  it('errorMessage stays plain', () => {
-    expect(errorMessage('llm', 'boom', true)).toBe("The model didn't respond. Retry to continue from the last step.")
+  it('errorCopy stays plain', () => {
+    expect(errorCopy({ stage: 'llm', step: null, message: 'boom' }, 'failed', true)).toEqual({
+      title: "Otto couldn't finish.",
+      message: "The model didn't respond. Retry to continue from the last step.",
+    })
+  })
+})
+
+describe('the error card names what failed', () => {
+  /** a turn that edited a file, then failed with this error event (or none) */
+  function failedWith(error: Record<string, unknown> | null) {
+    const l = log().created('fix it').status('running')
+      .act('fs.replace', { path: 'a.py', old_str: 'x', new_str: 'y' }, { exit_code: 0, stdout: '', stderr: '', diff: '+y', added: 1, removed: 1 })
+      .msg('assistant', 'Fixed.')
+    if (error) l.add('error', error)
+    l.status('failed')
+    const card = v(l.events).items.find((i) => i.kind === 'error')
+    expect(card).toBeDefined()
+    return card as Extract<Item, { kind: 'error' }>
+  }
+
+  it.each([
+    ['create_sandbox', "Otto couldn't set up the workspace."],
+    ['sandbox', "Otto couldn't set up the workspace."],
+    ['enqueue', "Otto couldn't set up the workspace."],
+  ])('setup stage %s', (stage, title) => {
+    expect(failedWith({ stage, message: 'ApiException: k8s 500' })).toMatchObject({ title, message: 'Retry to try again.' })
+  })
+
+  it.each([
+    ['git.commit', "Otto couldn't commit the changes."],
+    ['git.push', "Otto couldn't push to GitHub."],
+    ['git.open_pr', "Otto couldn't open the pull request."],
+  ])('finish step %s', (step, title) => {
+    const card = failedWith({ stage: 'finish', step, message: `${step}: rejected by GitHub (token ghs_x)` })
+    expect(card).toMatchObject({ title, message: 'Retry to try again.' })
+    expect(JSON.stringify(card)).not.toMatch(/rejected|ghs_/) // never the raw error
+  })
+
+  it.each([
+    ['a finish step with no copy of its own', { stage: 'finish', step: 'git.status', message: 'git.status: fatal' }],
+    ['a finish error that names no step', { stage: 'finish', message: 'git.push: rejected' }],
+    ['an unknown stage', { stage: 'something.new', message: 'boom' }],
+    ['no error event at all', null],
+  ])('anything else: %s', (_, error) => {
+    // this turn edited but never committed, which the card says
+    expect(failedWith(error)).toMatchObject({ title: 'Something went wrong.', message: 'Nothing was committed. Retry to continue from the last step.' })
+  })
+
+  it('every one offers Retry: the card is the error item, which always renders Retry', () => {
+    expect(failedWith({ stage: 'finish', step: 'git.push', message: '' }).kind).toBe('error')
   })
 })

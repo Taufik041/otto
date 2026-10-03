@@ -53,14 +53,14 @@ function Otto({ avatar, spinning, pb = 16, children }: { avatar: boolean; spinni
   )
 }
 
-function ErrorCard({ sessionId, message }: { sessionId: string; message: string }) {
+function ErrorCard({ sessionId, title, message }: { sessionId: string; title: string; message: string }) {
   const retry = useMutation({ mutationFn: () => api.retry(sessionId) })
   return (
     <div role="alert" className="rounded-[18px] border border-solid border-line bg-card px-5 py-[18px]">
       <div className="flex items-start gap-3">
         <Glyph d={IC.alert} size={18} width={1.8} className="mt-0.5 shrink-0 text-bad" />
         <div className="min-w-0 flex-1">
-          <div className="text-[15px] font-semibold">Otto couldn't finish.</div>
+          <div className="text-[15px] font-semibold">{title}</div>
           <div className="mt-[3px] text-[15px] leading-normal text-muted text-pretty">{message}</div>
           <button
             type="button"
@@ -138,7 +138,7 @@ export function Thread(p: ThreadProps) {
           case 'error':
             return (
               <Otto key={it.id} avatar spinning={false}>
-                <ErrorCard sessionId={p.sessionId} message={it.message} />
+                <ErrorCard sessionId={p.sessionId} title={it.title} message={it.message} />
               </Otto>
             )
           case 'limit':

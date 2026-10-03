@@ -99,7 +99,7 @@ export type Item =
   | { kind: 'work'; id: string; block: WorkBlock; avatar: boolean }
   | { kind: 'pr'; id: string; pr: PrCard }
   | { kind: 'stopped'; id: string }
-  | { kind: 'error'; id: string; message: string }
+  | { kind: 'error'; id: string; title: string; message: string }
   | { kind: 'limit'; id: string; used: number; limit: number; resetsAt: string }
   | { kind: 'nudge'; id: string }
 
@@ -154,7 +154,7 @@ type Turn = {
   startedAt: string
   endedAt: string | null
   outcome: Status | null
-  error: { stage: string; message: string } | null
+  error: { stage: string; step: string | null; message: string } | null
   limit: { used: number; limit: number; resetsAt: string } | null
   stoppedHere: boolean
 }
@@ -344,7 +344,7 @@ function apply(s: State, e: SessionEvent) {
       const stage = str(p.stage) ?? ''
       if (stage === 'destroy_sandbox') return // tearing a sandbox down: not the user's concern
       const t = s.restart?.afterFailure ? current(s) : s.restart ? workingTurn(s, e.ts, e.seq) : current(s)
-      if (t) t.error = { stage, message: str(p.message) ?? '' }
+      if (t) t.error = { stage, step: str(p.step), message: str(p.message) ?? '' }
       return
     }
     default:
@@ -555,14 +555,35 @@ function blockStatus(t: Turn, steps: number): BlockStatus {
 }
 
 /** The error card's sentence: plain language, never internals. */
-export function errorMessage(stage: string, message: string, committed: boolean): string {
-  const tail = committed ? 'Retry to continue from the last step.' : 'Nothing was committed. Retry to continue from the last step.'
-  if (stage === 'llm') {
-    const n = message.match(/after (\d+) attempts/)
-    return `${n ? `The model didn't respond after ${n[1]} tries.` : "The model didn't respond."} ${tail}`
+// the gateway's stages for setting up a turn's sandbox and queueing it
+const SETUP_STAGES = new Set(['create_sandbox', 'sandbox', 'enqueue'])
+// the brain's end-of-turn finish: the step that failed
+const FINISH_STEPS: Record<string, string> = {
+  'git.commit': "Otto couldn't commit the changes.",
+  'git.push': "Otto couldn't push to GitHub.",
+  'git.open_pr': "Otto couldn't open the pull request.",
+}
+
+/** The error card: a title naming what failed, and what to do. Never internals. */
+export function errorCopy(
+  error: { stage: string; step: string | null; message: string } | null,
+  outcome: Status | null,
+  committed: boolean,
+): { title: string; message: string } {
+  const resume = committed ? 'Retry to continue from the last step.' : 'Nothing was committed. Retry to continue from the last step.'
+  if (error?.stage === 'llm') {
+    const n = error.message.match(/after (\d+) attempts/)
+    return {
+      title: "Otto couldn't finish.",
+      message: `${n ? `The model didn't respond after ${n[1]} tries.` : "The model didn't respond."} ${resume}`,
+    }
   }
-  if (stage) return "Otto couldn't set up the workspace. Retry to try again."
-  return `Something went wrong on Otto's side. ${tail}`
+  if (error && SETUP_STAGES.has(error.stage)) return { title: "Otto couldn't set up the workspace.", message: 'Retry to try again.' }
+  if (error?.stage === 'finish' && error.step && FINISH_STEPS[error.step])
+    return { title: FINISH_STEPS[error.step]!, message: 'Retry to try again.' }
+  if (!error && outcome === 'interrupted')
+    return { title: 'Something went wrong.', message: `Otto was interrupted before it finished. ${resume}` }
+  return { title: 'Something went wrong.', message: resume }
 }
 
 export function view(s: State): View {
@@ -731,12 +752,7 @@ export function view(s: State): View {
 
     if (t.stoppedHere) items.push({ kind: 'stopped', id: `${t.id}-stopped` })
     if ((t.outcome === 'failed' || t.outcome === 'interrupted') && !live) {
-      const msg = t.error
-        ? errorMessage(t.error.stage, t.error.message, committed)
-        : t.outcome === 'interrupted'
-          ? `Otto was interrupted before it finished. ${committed ? 'Retry to continue from the last step.' : 'Nothing was committed. Retry to continue from the last step.'}`
-          : errorMessage('', '', committed)
-      items.push({ kind: 'error', id: `${t.id}-error`, message: msg })
+      items.push({ kind: 'error', id: `${t.id}-error`, ...errorCopy(t.error, t.outcome, committed) })
     }
     if (t.limit) items.push({ kind: 'limit', id: `${t.id}-limit`, used: t.limit.used, limit: t.limit.limit, resetsAt: t.limit.resetsAt })
 

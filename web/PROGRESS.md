@@ -110,10 +110,6 @@ Parts 1 and 2 are done. `npm run build`, `npm test` (94 tests) and backend `pyte
   command, so there is none to show.
 - **A read step has no quoted line under it** (the mockup quotes the relevant line): the events
   don't say which line mattered. It shows "lines a–b" instead.
-- **The finish's failures read as setup failures:** the brain's end-of-turn finish records `error`
-  with stage `finish` (e.g. a push GitHub refused), and the chat's reducer still treats any
-  non-`llm` stage as "Otto couldn't set up the workspace." It needs its own wording, for example
-  "Otto couldn't push the changes or open the pull request. Retry to try again." (a web change).
 - **Things the design doesn't show, but the spec or API needed:**
   - Settings › Account has an editable Name row and "Sign out of all devices".
   - There's a `/reset-password` page for the emailed link.
