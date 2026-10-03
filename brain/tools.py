@@ -15,12 +15,11 @@ SYSTEM = (
     "After every edit you MUST run the tests with shell_exec (python -m pytest -q) and "
     "report the result. Do not finish while tests are failing.\n"
     "\n"
-    "When the task is complete and tests pass, git_commit with a short message, then "
-    "summarize what you changed.\n"
-    "\n"
-    "After committing with tests passing, call git_push, then git_open_pr with a clear title "
-    "and a body explaining the root cause, the fix, and the test results. If a PR already "
-    "exists for this branch, just push: the new commits land on it."
+    "When the task is done and the tests pass, you MUST, in this order: git_commit with a short "
+    "message, git_push, then git_open_pr with a clear title and a body explaining the root cause, "
+    "the fix and the test results. If a PR is already open for this branch, git_push alone "
+    "updates it. Only then write your final summary of what you changed. Never end a task that "
+    "changed files without committing, pushing and a pull request."
 )
 
 CHAT_SYSTEM = (

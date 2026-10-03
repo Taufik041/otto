@@ -50,7 +50,10 @@ def _entry(m) -> dict:
     if m["provider"] not in PROVIDER_URLS:
         raise ValueError(f"OTTO_MODELS: unknown provider {m['provider']!r} in {m['id']!r}; "
                          f"expected one of {', '.join(PROVIDER_URLS)}")
-    return {"id": m["id"], "provider": m["provider"], "model": m["model"], "label": m.get("label") or m["id"]}
+    entry = {"id": m["id"], "provider": m["provider"], "model": m["model"], "label": m.get("label") or m["id"]}
+    if isinstance(m.get("description"), str) and m["description"].strip():
+        entry["description"] = m["description"].strip()  # one line for the frontend's picker
+    return entry
 
 
 def model_catalog(env) -> list[dict]:
@@ -61,14 +64,14 @@ def model_catalog(env) -> list[dict]:
         except ValueError as e:
             raise ValueError(f"OTTO_MODELS is not valid JSON: {e}") from None
         if not isinstance(raw, list):
-            raise ValueError("OTTO_MODELS must be a JSON list of {id, provider, model, label}")
+            raise ValueError("OTTO_MODELS must be a JSON list of {id, provider, model, label, description}")
         models = [_entry(m) for m in raw]
         ids = [m["id"] for m in models]
         if len(set(ids)) != len(ids):
             raise ValueError(f"OTTO_MODELS has duplicate ids: {ids}")
         return models
     models = [{"id": "openrouter:openrouter/free", "provider": "openrouter", "model": "openrouter/free",
-               "label": "OpenRouter Free"}]
+               "label": "OpenRouter Free", "description": "Free, good for small tasks"}]
     for name in (n.strip() for n in env.get("OTTO_OPENAI_MODELS", "").split(",")):
         if name:
             models.append({"id": f"openai:{name}", "provider": "openai", "model": name, "label": f"OpenAI {name}"})
@@ -109,6 +112,9 @@ def resolve_model(model_id) -> dict:
     return {"id": model_id, "provider": provider, "model": name, "label": model_id}
 
 # orchestrator
+# a model call's total waiting on cooled-down keys; past it the call fails ("the model didn't respond")
+MODEL_WAIT_BUDGET_SECONDS = float(os.environ.get("MODEL_WAIT_BUDGET_SECONDS", "120"))
+LLM_TIMEOUT = float(os.environ.get("OTTO_LLM_TIMEOUT", "120"))  # seconds per request: long chats are slow
 SANDBOX_MAX_AGE_SECONDS = int(os.environ.get("SANDBOX_MAX_AGE_SECONDS", "3000"))  # < the 1h GitHub token
 SANDBOX_IDLE_MINUTES = float(os.environ.get("SANDBOX_IDLE_MINUTES", "30"))  # runner exits after this long without actions
 SANDBOX_IMAGE = os.environ.get("SANDBOX_IMAGE", "taufik041/otto-sandbox:dev")
@@ -130,7 +136,7 @@ REFRESH_TOKEN_DAYS = int(os.environ.get("REFRESH_TOKEN_DAYS", "30"))
 REFRESH_REUSE_GRACE_SECONDS = int(os.environ.get("REFRESH_REUSE_GRACE_SECONDS", "20"))
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173").rstrip("/")
 COOKIE_SECURE = FRONTEND_URL.startswith("https://")
-DAILY_TOKEN_LIMIT = int(os.environ.get("DAILY_TOKEN_LIMIT", "50000"))  # a new user's limit
+DAILY_TOKEN_LIMIT = int(os.environ.get("DAILY_TOKEN_LIMIT", "300000"))  # a new user's limit
 
 
 def model_prices(env) -> dict[str, dict[str, float]]:

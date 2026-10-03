@@ -42,3 +42,8 @@ def resume_job(sid: str, text: str) -> dict:
 def chat_job(sid: str, text: str | None = None) -> dict:
     """A plain-chat turn: the first message (no text) or a follow-up."""
     return {"type": "chat", "session_id": sid, **({"text": text} if text is not None else {})}
+
+
+def retry_job(sid: str) -> dict:
+    """Run a failed turn again from where it stopped, with no new message."""
+    return {"type": "retry", "session_id": sid}

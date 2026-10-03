@@ -168,8 +168,8 @@ def fake_openai(monkeypatch, script):
     calls = []
 
     class Client:
-        def __init__(self, *, api_key, base_url, max_retries=2, **kw):
-            self.api_key, self.base_url, self.max_retries = api_key, base_url, max_retries
+        def __init__(self, *, api_key, base_url, max_retries=2, timeout=None, **kw):
+            self.api_key, self.base_url, self.max_retries, self.timeout = api_key, base_url, max_retries, timeout
             self.chat = NS(completions=NS(create=self.create))
 
         async def create(self, **kw):

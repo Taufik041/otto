@@ -5,10 +5,11 @@ from types import SimpleNamespace as NS
 
 import httpx2
 import pytest
-from openai import APIConnectionError, InternalServerError, RateLimitError
+from openai import (APIConnectionError, APIStatusError, AuthenticationError, InternalServerError, NotFoundError,
+                    PermissionDeniedError, RateLimitError)
 
 from brain import providers
-from brain.providers import LLMError
+from brain.providers import LLMError, ProviderUnusable
 from tests.fakes import fake_clock, fake_openai, llm_final, use_env
 
 # plain strings, so these tests prove the keys are never emitted, without relying on redaction
@@ -21,6 +22,17 @@ REQ = httpx2.Request("POST", "https://example.test/v1/chat/completions")
 def rate_limited(headers=None, body=None):
     return RateLimitError("429 Too Many Requests", response=httpx2.Response(429, headers=headers or {}, request=REQ),
                           body=body)
+
+
+def no_quota():
+    """OpenAI's 429 that isn't a rate limit: the account is out of credit."""
+    return RateLimitError("429 You exceeded your current quota", response=httpx2.Response(429, request=REQ),
+                          body={"message": "You exceeded your current quota", "type": "insufficient_quota",
+                                "code": "insufficient_quota"})
+
+
+def status_error(status, cls=APIStatusError, body=None):
+    return cls(f"{status} error", response=httpx2.Response(status, request=REQ), body=body or {"message": "x"})
 
 
 def openrouter_429(reset_s):
@@ -155,6 +167,8 @@ async def test_single_key_waits_out_its_cooldown(monkeypatch, clock, events):
 @pytest.mark.parametrize("n_keys, attempts", [(1, 6), (3, 6), (4, 8)])
 @pytest.mark.asyncio
 async def test_attempts_are_capped_then_llm_error(monkeypatch, clock, events, n_keys, attempts):
+    from shared import config
+    monkeypatch.setattr(config, "MODEL_WAIT_BUDGET_SECONDS", 10_000)  # about the attempt cap, not the wait budget
     _, record = events
     env = {f"OPENROUTER_API_KEY{i + 1}": f"orkey-{i}" for i in range(n_keys)}
     use_env(monkeypatch, env)
@@ -253,3 +267,113 @@ def test_reset_delay(monkeypatch):
     assert delay(rate_limited(headers={"retry-after": "soon"})) is None
     assert delay(NS(choices=[])) is None
     assert delay(None) is None
+
+
+# --- errors that no wait fixes: out of credit, a bad key, an unknown model --------------------
+
+@pytest.mark.parametrize("error, reason", [
+    (no_quota, "quota"),
+    (lambda: status_error(402, body={"code": 402, "message": "Insufficient credits"}), "quota"),  # OpenRouter
+    (lambda: status_error(401, AuthenticationError), "auth"),
+    (lambda: status_error(403, PermissionDeniedError), "auth"),
+])
+@pytest.mark.asyncio
+async def test_a_key_that_cannot_work_is_dropped_at_once_and_the_next_tried(monkeypatch, clock, events, capsys, error, reason):
+    _, record = events
+    calls = fake_openai(monkeypatch, {"orkey-one": [error()], "orkey-two": [llm_final("ok"), llm_final("ok again")]})
+
+    assert (await complete(record)).choices[0].message.content == "ok"
+    assert clock == []  # no cooldown, no sleep
+    await complete(record)  # the next call never tries the dropped key again
+    assert keys_used(calls) == ["orkey-one", "orkey-two", "orkey-two"]
+    out = capsys.readouterr().out
+    assert out.count("key #0") == 1 and reason in out  # logged once, by index
+    assert "orkey-one" not in out
+
+
+@pytest.mark.asyncio
+async def test_with_every_key_unusable_the_call_fails_with_the_reason_without_waiting(monkeypatch, clock, events):
+    _, record = events
+    calls = fake_openai(monkeypatch, {k: [no_quota()] for k in ("orkey-one", "orkey-two", "orkey-three")})
+
+    with pytest.raises(ProviderUnusable) as e:
+        await complete(record)
+
+    assert (e.value.reason, e.value.provider, e.value.model) == ("quota", "openrouter", None)
+    assert isinstance(e.value, LLMError) and len(calls) == 3 and clock == []
+    with pytest.raises(ProviderUnusable):  # remembered for the process: no request at all next time
+        await complete(record)
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_model_drops_the_key_for_that_model_only(monkeypatch, clock, events):
+    _, record = events
+    calls = fake_openai(monkeypatch, {k: [status_error(404, NotFoundError), llm_final("other model ok")]
+                                      for k in ("orkey-one", "orkey-two", "orkey-three")})
+
+    with pytest.raises(ProviderUnusable) as e:
+        await complete(record, model="no/such-model")
+    assert (e.value.reason, e.value.model) == ("model", "no/such-model")
+
+    resp = await complete(record, model="openrouter/free")  # the keys are fine for other models
+    assert resp.choices[0].message.content == "other model ok"
+    assert [c["model"] for c in calls] == ["no/such-model"] * 3 + ["openrouter/free"]
+
+
+@pytest.mark.asyncio
+async def test_unusable_keys_reset_with_the_pools(monkeypatch, clock, events):
+    _, record = events
+    fake_openai(monkeypatch, {"orkey-one": [no_quota()], "orkey-two": [no_quota()], "orkey-three": [no_quota()]})
+    with pytest.raises(ProviderUnusable):
+        await complete(record)
+    assert providers.unusable("openrouter", "openrouter/free") == "quota"
+    providers.reset()
+    assert providers.unusable("openrouter", "openrouter/free") is None
+
+
+# --- real rate limits: their own reset time, within a total wait budget ------------------------
+
+@pytest.mark.asyncio
+async def test_a_real_429_waits_what_its_headers_say(monkeypatch, clock, events):
+    _, record = events
+    calls = fake_openai(monkeypatch, {"oaikey-one": [rate_limited(headers={"x-ratelimit-reset-requests": "7s"}),
+                                                     rate_limited(headers={"retry-after": "3"}), llm_final("ok")]})
+
+    await complete(record, provider="openai", model="model-a")
+
+    assert clock == [7, 3]  # not the 60s fallback
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_call_stops_waiting_once_its_budget_is_used_up(monkeypatch, clock, events):
+    from shared import config
+    monkeypatch.setattr(config, "MODEL_WAIT_BUDGET_SECONDS", 100)
+    _, record = events
+    calls = fake_openai(monkeypatch, {"oaikey-one": [rate_limited(headers={"retry-after": "45"}) for _ in range(6)]})
+
+    with pytest.raises(LLMError, match="no usable LLM response after 3 attempts; last: rate limited"):
+        await complete(record, provider="openai", model="model-a")
+
+    assert clock == [45, 45]  # a third 45s wait would pass 100s: it fails instead of waiting
+    assert len(calls) == 3
+
+
+def test_the_wait_budget_and_timeout_default_to_120s(monkeypatch):
+    import importlib
+    from shared import config
+    for name in ("MODEL_WAIT_BUDGET_SECONDS", "OTTO_LLM_TIMEOUT"):
+        monkeypatch.delenv(name, raising=False)
+    try:
+        c = importlib.reload(config)
+        assert (c.MODEL_WAIT_BUDGET_SECONDS, c.LLM_TIMEOUT) == (120, 120)
+    finally:
+        importlib.reload(config)
+
+
+def test_clients_wait_up_to_the_llm_timeout(monkeypatch):
+    from shared import config
+    monkeypatch.setattr(config, "LLM_TIMEOUT", 120.0)
+    fake_openai(monkeypatch, {})
+    assert providers.get_client("openrouter").timeout == 120.0

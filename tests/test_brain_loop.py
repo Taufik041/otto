@@ -60,7 +60,7 @@ async def test_run_session_parallel_tool_calls(monkeypatch, capsys):
     others = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     assert others == []
     assert state["clients"] == [{"api_key": "or-test-key-1", "base_url": "https://openrouter.ai/api/v1",
-                                 "max_retries": 0}]
+                                 "max_retries": 0, "timeout": 120.0}]
 
 
 @pytest.mark.asyncio
@@ -134,6 +134,7 @@ EMPTY = [None, NS(choices=None), NS(choices=[]),
 
 @pytest.mark.asyncio
 async def test_responses_without_choices_are_retried(monkeypatch, capsys):
+    monkeypatch.setattr(config, "MODEL_WAIT_BUDGET_SECONDS", 10_000)  # about the attempt cap, not the wait budget
     waits = fake_clock(monkeypatch)
     ch = FakeChannel()
     results = ch.queue(results_queue("s1"))
@@ -141,7 +142,7 @@ async def test_responses_without_choices_are_retried(monkeypatch, capsys):
 
     await loop.run_session(ch, results, "s1", "hi")
 
-    assert len(calls) == 5
+    assert len(calls) == 6  # five tries for the turn, then the auto title's call (no response left: no title)
     assert waits == [60, 60, 60, 60]  # one key: it rests 60s after each
     out = capsys.readouterr().out
     assert "upstream 502" in out and "[otto] done" in out
@@ -150,6 +151,7 @@ async def test_responses_without_choices_are_retried(monkeypatch, capsys):
 
 @pytest.mark.asyncio
 async def test_session_fails_with_an_error_event_after_six_empty_responses(monkeypatch):
+    monkeypatch.setattr(config, "MODEL_WAIT_BUDGET_SECONDS", 10_000)  # about the attempt cap, not the wait budget
     waits = fake_clock(monkeypatch)
     ch = FakeChannel()
     results = ch.queue(results_queue("s1"))
@@ -174,6 +176,7 @@ def rate_limited():
 
 @pytest.mark.asyncio
 async def test_endless_rate_limits_fail_the_session_with_an_error_event(monkeypatch):
+    monkeypatch.setattr(config, "MODEL_WAIT_BUDGET_SECONDS", 10_000)  # about the attempt cap, not the wait budget
     fake_clock(monkeypatch)
     ch = FakeChannel()
     results = ch.queue(results_queue("s1"))
@@ -200,12 +203,13 @@ async def test_session_runs_on_its_models_provider(monkeypatch):
     create_session("s1", task="hi", repo=None, model="openai:model-a", status="queued")
     ch = FakeChannel()
     results = ch.queue(results_queue("s1"))
-    calls = fake_openai(monkeypatch, {"oaikey-one": [llm_final("done")]})
+    calls = fake_openai(monkeypatch, {"oaikey-one": [llm_final("done"), llm_final("Greeting")]})
 
     await loop.start_session(ch, results, "s1", "hi")
 
+    # the turn, then its auto title: both on the session's provider and model
     assert [(c["base_url"], c["api_key"], c["model"]) for c in calls] == [
-        ("https://api.openai.com/v1", "oaikey-one", "model-a")]
+        ("https://api.openai.com/v1", "oaikey-one", "model-a")] * 2
 
 
 @pytest.mark.asyncio
@@ -213,7 +217,7 @@ async def test_follow_up_keeps_the_sessions_model(monkeypatch):
     use_env(monkeypatch, TWO_PROVIDERS)
     ch = FakeChannel()
     results = ch.queue(results_queue("s1"))
-    calls = fake_openai(monkeypatch, {"orkey-one": [llm_final("hello"), llm_final("again")],
+    calls = fake_openai(monkeypatch, {"orkey-one": [llm_final("hello"), llm_final("Greeting"), llm_final("again")],
                                       "oaikey-one": []})
     await loop.run_session(ch, results, "s1", "hi")
     assert get_session("s1").model == "openrouter:openrouter/free"
@@ -221,7 +225,8 @@ async def test_follow_up_keeps_the_sessions_model(monkeypatch):
     monkeypatch.setattr(config, "DEFAULT_MODEL", "openai:model-a")  # the default changed meanwhile
     await loop.resume_session(ch, results, "s1", "more")
 
-    assert [(c["base_url"], c["model"]) for c in calls] == [("https://openrouter.ai/api/v1", "openrouter/free")] * 2
+    # the first turn, its auto title, the follow-up: all on the session's model
+    assert [(c["base_url"], c["model"]) for c in calls] == [("https://openrouter.ai/api/v1", "openrouter/free")] * 3
 
 
 @pytest.mark.asyncio
@@ -262,3 +267,15 @@ async def test_missing_required_parameter_is_answered_without_the_bus(monkeypatc
          "stderr": "missing required parameter(s): old_str, new_str. fs_replace takes: path, old_str, new_str"},
         {"exit_code": 0, "stdout": "ran git.status", "stderr": ""},
     ]
+
+
+def test_tool_content_leaves_out_what_only_the_ui_shows():
+    # the runner adds diffs and stats for the UI (stored in bus.result); the model sees what it always did
+    result = {"exit_code": 0, "stdout": "replaced 1 occurrence in /workspace/a.py", "stderr": "",
+              "diff": "--- a/a.py\n+++ b/a.py\n", "diff_truncated": True, "added": 1, "removed": 1,
+              "created": False, "diffstat": {"files": 1, "additions": 1, "deletions": 1}, "base": "main",
+              "title": "Fix", "number": 3, "html_url": "u", "branch": "otto/s1",
+              "dirty": True, "ahead": 1, "work": 2}
+    assert json.loads(loop.tool_content(result)) == {
+        "exit_code": 0, "stdout": "replaced 1 occurrence in /workspace/a.py", "stderr": "",
+        "number": 3, "html_url": "u", "branch": "otto/s1"}

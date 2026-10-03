@@ -5,13 +5,13 @@ from aio_pika import connect_robust
 from shared import config
 from shared.bus import SESSIONS_QUEUE, actions_queue, results_queue
 from shared.sessions import get_session, transition
-from brain.loop import chat_session, resume_session, start_session
+from brain.loop import chat_session, has_conversation, resume_session, retry_chat, start_session
 from brain.main import connect_db
 
 
 def parse_job(body) -> dict | None:
-    """{"type": "start"|"resume"|"chat", "session_id": ..., "text": ... (resume; chat follow-ups)},
-    or None if malformed."""
+    """{"type": "start"|"resume"|"chat"|"retry", "session_id": ..., "text": ... (resume; chat
+    follow-ups)}, or None if malformed."""
     try:
         job = json.loads(body)
     except ValueError:
@@ -19,7 +19,7 @@ def parse_job(body) -> dict | None:
     if not isinstance(job, dict) or not isinstance(job.get("session_id"), str):
         return None
     kind, text = job.get("type"), job.get("text")
-    if kind == "start" or (kind == "resume" and isinstance(text, str)) \
+    if kind in ("start", "retry") or (kind == "resume" and isinstance(text, str)) \
             or (kind == "chat" and (text is None or isinstance(text, str))):
         return job
     return None
@@ -28,17 +28,22 @@ def parse_job(body) -> dict | None:
 async def run_job(conn, job):
     """Run one session turn on its own channel, with the same loop functions as the CLI."""
     sid = job["session_id"]
-    if job["type"] == "chat":  # no sandbox, so no bus
-        await chat_session(sid, job.get("text"))
+    row = get_session(sid)
+    if job["type"] == "chat" or (job["type"] == "retry" and row is not None and row.repo is None):
+        # a plain chat: no sandbox, so no bus
+        if job["type"] == "chat":
+            await chat_session(sid, job.get("text"))
+        else:
+            await retry_chat(sid)
         return
     ch = await conn.channel()
     try:
         await ch.declare_queue(actions_queue(sid), durable=True)
         results = await ch.declare_queue(results_queue(sid), durable=True)
-        if job["type"] == "start":
+        if job["type"] == "start" or (job["type"] == "retry" and not has_conversation(sid)):
             await start_session(ch, results, sid, get_session(sid).task)
-        else:
-            await resume_session(ch, results, sid, job["text"])
+        else:  # resume with the new message, or retry (None) from where the turn stopped
+            await resume_session(ch, results, sid, job.get("text"))
     finally:
         # the runner and its queues stay: the sandbox is kept warm for follow-ups
         await ch.close()

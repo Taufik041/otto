@@ -26,6 +26,9 @@ class Session(SQLModel, table=True):
     id: str = Field(primary_key=True)
     user_id: str | None = Field(default=None, foreign_key="users.id", index=True)  # None: made by the brain CLI
     title: str = ""
+    # where the title came from: "auto" (the first message, until the first turn completes),
+    # "generated" (the PR's title or the model's), "user" (renamed: never replaced)
+    title_source: str = Field(default="auto", sa_column_kwargs={"server_default": "auto"})
     repo: str | None = None  # "owner/name"; None: a plain chat, with no sandbox
     task: str  # the first message
     status: str = "pending"  # one of STATUSES
@@ -125,3 +128,13 @@ class Usage(SQLModel, table=True):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
+
+
+class ProviderHealth(SQLModel, table=True):
+    """A provider (or one catalog model) the brain found unusable: out of credit, a bad key, an
+    unknown model. GET /models shows it unavailable; the gateway clears the table when it starts."""
+    __tablename__ = "provider_health"
+
+    key: str = Field(primary_key=True)  # a provider ("openrouter") or a catalog model id ("openai:gpt-4.1")
+    reason: str  # "quota", "auth" or "model"
+    updated_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))

@@ -188,3 +188,50 @@ def test_a_new_chat_uses_the_users_default_model(client, env, monkeypatch):
     assert get_session(chat(client)).model == "openai:model-a"
     r = client.post("/sessions", json={"message": "x", "model": "openrouter:openrouter/free"})
     assert get_session(r.json()["id"]).model == "openrouter:openrouter/free"  # asking wins
+
+
+# --- a follow-up is stored the moment it's sent ---------------------------------------------
+
+def user_messages(sid):
+    return [e for e in load_events(sid) if e.type == "llm.message" and e.payload["message"]["role"] == "user"]
+
+
+def test_a_follow_up_is_an_event_as_soon_as_it_is_posted_and_the_worker_does_not_repeat_it(client, env, monkeypatch):
+    from brain.resume import rebuild_messages
+
+    ch, _, _ = env
+    sid = chat(client)
+    fake_llm(monkeypatch, [llm_final("A function with its scope."), llm_final("Closures"), llm_final("def f(): ...")])
+    run_worker(ch, jobs(ch)[0])
+
+    r = client.post(f"/sessions/{sid}/messages", json={"text": "and in Python?"})
+
+    assert r.status_code == 202
+    # visible right away (before any worker): the client reads it from the events, live or not
+    [follow] = [e for e in user_messages(sid) if e.payload["message"]["content"] == "and in Python?"]
+    assert follow.payload == {"message": {"role": "user", "content": "and in Python?"}}
+    assert client.get(f"/sessions/{sid}/events", params={"after_seq": follow.seq - 1}).json()[0]["seq"] == follow.seq
+
+    run_worker(ch, jobs(ch)[-1])
+
+    assert [e.payload["message"]["content"] for e in user_messages(sid)] == ["what is a closure?", "and in Python?"]
+    conversation = rebuild_messages(load_events(sid))
+    assert [m["content"] for m in conversation if m["role"] == "user"] == ["what is a closure?", "and in Python?"]
+    assert conversation[-1] == {"role": "assistant", "content": "def f(): ..."}
+
+
+def test_a_follow_up_that_attaches_a_repo_is_stored_after_the_attachment(client, env):
+    ch, _, _ = env
+    sid = chat(client)
+    set_status(sid, "done")
+
+    assert client.post(f"/sessions/{sid}/messages", json={"text": "fix it", "repo": REPO}).status_code == 202
+
+    types = [(e.type, e.payload) for e in load_events(sid) if e.type in ("repo.attached", "llm.message")]
+    assert types[-2:] == [("repo.attached", {"repo": REPO}), ("llm.message", {"message": {"role": "user", "content": "fix it"}})]
+
+
+def test_a_refused_follow_up_is_not_stored(client, env):
+    sid = chat(client)  # still queued: busy
+    assert client.post(f"/sessions/{sid}/messages", json={"text": "more"}).status_code == 409
+    assert not [e for e in user_messages(sid) if e.payload["message"]["content"] == "more"]

@@ -1,0 +1,225 @@
+@import "tailwindcss";
+
+/* Light and dark themes are set by data-theme on <html> (see src/theme). The values are copied from
+   the design mockup (docs/design/Otto v3.dc.html); keep them in step with it. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root {
+  --bg: #ffffff;
+  --bg2: #f5f5f7;
+  --card: #ffffff;
+  --text: #1d1d1f;
+  --muted: #6e6e73;
+  --line: #d2d2d7;
+  --hair: #e8e8ed;
+  --accent: #0071e3;
+  --accent-h: #0077ed;
+  --accent-bg: rgba(0, 113, 227, 0.1);
+  --tag: rgba(0, 0, 0, 0.05);
+  --hover: rgba(0, 0, 0, 0.04);
+  --sel: rgba(0, 0, 0, 0.065);
+  --nav: rgba(255, 255, 255, 0.72);
+  --shadow: 0 4px 24px rgba(0, 0, 0, 0.04);
+  --pop: 0 12px 40px rgba(0, 0, 0, 0.12), 0 0 0 0.5px rgba(0, 0, 0, 0.05);
+  --scrim: rgba(0, 0, 0, 0.28);
+  --inv: #1d1d1f;
+  --inv-text: #ffffff;
+  --ok: #1d7d3f;
+  --ok-bg: rgba(29, 125, 63, 0.1);
+  --warn: #9a5b00;
+  --warn-bg: rgba(178, 110, 0, 0.11);
+  --live-bg: rgba(178, 110, 0, 0.05);
+  --bad: #c4332a;
+  --bad-bg: rgba(196, 51, 42, 0.08);
+  --idle: #8e8e93;
+  --idle-bg: rgba(110, 110, 115, 0.12);
+  --add-bg: rgba(29, 125, 63, 0.09);
+  --del-bg: rgba(196, 51, 42, 0.08);
+  --hunk: #f5f5f7;
+  --gutter: #a1a1a6;
+  --c-kw: #ad3da4;
+  --c-str: #c41a16;
+  --c-num: #1c00cf;
+  --c-com: #707f8c;
+  --c-fn: #326d74;
+  --c-type: #703daa;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Helvetica, Arial,
+    sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #000000;
+  --bg2: #1d1d1f;
+  --card: #1d1d1f;
+  --text: #f5f5f7;
+  --muted: #86868b;
+  --line: #424245;
+  --hair: #2c2c2e;
+  --accent: #2997ff;
+  --accent-h: #47a3ff;
+  --accent-bg: rgba(41, 151, 255, 0.16);
+  --tag: rgba(255, 255, 255, 0.08);
+  --hover: rgba(255, 255, 255, 0.05);
+  --sel: rgba(255, 255, 255, 0.09);
+  --nav: rgba(0, 0, 0, 0.7);
+  --shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+  --pop: 0 16px 48px rgba(0, 0, 0, 0.6), 0 0 0 0.5px rgba(255, 255, 255, 0.1);
+  --scrim: rgba(0, 0, 0, 0.55);
+  --inv: #f5f5f7;
+  --inv-text: #000000;
+  --ok: #30d158;
+  --ok-bg: rgba(48, 209, 88, 0.14);
+  --warn: #ffb340;
+  --warn-bg: rgba(255, 179, 64, 0.14);
+  --live-bg: rgba(255, 179, 64, 0.06);
+  --bad: #ff6961;
+  --bad-bg: rgba(255, 105, 97, 0.13);
+  --idle: #98989d;
+  --idle-bg: rgba(152, 152, 157, 0.16);
+  --add-bg: rgba(48, 209, 88, 0.13);
+  --del-bg: rgba(255, 105, 97, 0.12);
+  --hunk: #1d1d1f;
+  --gutter: #6e6e73;
+  --c-kw: #ff7ab2;
+  --c-str: #ff8170;
+  --c-num: #d9c97c;
+  --c-com: #7f8c98;
+  --c-fn: #67b7a4;
+  --c-type: #dabaff;
+  color-scheme: dark;
+}
+
+/* Tailwind utilities for the tokens: bg-bg2, text-muted, border-line, bg-accent-bg, ... */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg2: var(--bg2);
+  --color-card: var(--card);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-hair: var(--hair);
+  --color-accent: var(--accent);
+  --color-accent-h: var(--accent-h);
+  --color-accent-bg: var(--accent-bg);
+  --color-tag: var(--tag);
+  --color-hover: var(--hover);
+  --color-sel: var(--sel);
+  --color-nav: var(--nav);
+  --color-scrim: var(--scrim);
+  --color-inv: var(--inv);
+  --color-inv-text: var(--inv-text);
+  --color-ok: var(--ok);
+  --color-ok-bg: var(--ok-bg);
+  --color-warn: var(--warn);
+  --color-warn-bg: var(--warn-bg);
+  --color-live-bg: var(--live-bg);
+  --color-bad: var(--bad);
+  --color-bad-bg: var(--bad-bg);
+  --color-idle: var(--idle);
+  --color-idle-bg: var(--idle-bg);
+  --font-sans: var(--sans);
+  --font-mono: var(--mono);
+  --shadow-card: var(--shadow);
+  --shadow-pop: var(--pop);
+  --animate-rise: otto-rise 0.45s ease-out both;
+  --animate-fade: otto-fade 0.25s ease-out both;
+  --animate-pop: otto-pop 0.18s ease-out both;
+  --animate-pop-slow: otto-pop 0.4s ease-out both;
+  --animate-sheet: otto-sheet 0.32s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  --animate-spin-slow: otto-spin 1s linear infinite;
+  --animate-pulse-dot: otto-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes otto-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes otto-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes otto-pop {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes otto-sheet {
+  from { transform: translateY(100%); }
+  to { transform: none; }
+}
+@keyframes otto-arrive {
+  0% { opacity: 0; transform: translateY(12px) scale(0.97); }
+  60% { opacity: 1; }
+  100% { opacity: 1; transform: none; }
+}
+@keyframes otto-slide {
+  from { opacity: 0; transform: translateX(32px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes otto-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes otto-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+  a:hover {
+    color: var(--accent-h);
+  }
+  button {
+    font-family: inherit;
+    line-height: normal; /* the browser default, which the design's rows are measured with */
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: default;
+  }
+  textarea::placeholder,
+  input::placeholder {
+    color: var(--muted);
+    opacity: 1;
+  }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 99px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+}
+
+/* The logo comes in a light and a dark file; show the one for the current theme. */
+[data-theme="dark"] .only-light,
+:root:not([data-theme="dark"]) .only-dark {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

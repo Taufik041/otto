@@ -37,13 +37,14 @@ async def test_rebuild_round_trip_after_two_tool_turns(monkeypatch):
         llm_tool_calls(("git_status", {}), ("fs_read", {"path": "a.py"}), content="looking"),
         llm_tool_calls(("fs_replace", {"path": "a.py", "old_str": "x", "new_str": "y"})),
         llm_final("changed x to y"),
+        llm_final("Fix x"),  # the auto title, after the turn
     ])
 
     messages = await loop.run_session(ch, results, "s1", "fix it")
 
     assert rebuild_messages(load_events("s1")) == messages
-    # exactly what the model was sent, plus its final answer
-    assert messages == calls[-1] + [{"role": "assistant", "content": "changed x to y"}]
+    # exactly what the model was sent, plus its final answer (calls[-1] is the title call)
+    assert messages == calls[-2] + [{"role": "assistant", "content": "changed x to y"}]
     assert messages[:2] == [{"role": "system", "content": SYSTEM}, {"role": "user", "content": "fix it"}]
     assert [m["role"] for m in messages] == [
         "system", "user", "assistant", "tool", "tool", "assistant", "tool", "assistant"]
@@ -52,7 +53,10 @@ async def test_rebuild_round_trip_after_two_tool_turns(monkeypatch):
         "session.created", "llm.message", "llm.message", "session.status",
         "llm.message", "bus.action", "bus.result", "llm.message", "bus.action", "bus.result", "llm.message",
         "llm.message", "bus.action", "bus.result", "llm.message",
-        "llm.message", "session.status"]
+        "llm.message",
+        "bus.action", "bus.result",  # the finish's git.status (this fake runner can't say more)
+        "session.status",
+        "session.titled"]  # its first completed turn: an auto title
     evs = load_events("s1")
     assert [e.seq for e in evs] == list(range(1, len(evs) + 1))
     assert evs[0].payload == {"task": "fix it", "repo": None, "model": "openrouter:openrouter/free"}

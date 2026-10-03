@@ -109,7 +109,7 @@ import json
 import urllib.error
 import urllib.request
 
-PR = {"number": 7, "html_url": "https://github.com/Taufik041/otto_test/pull/7"}
+PR = {"number": 7, "html_url": "https://github.com/Taufik041/otto_test/pull/7", "title": "Fix discount"}
 
 
 class FakeResponse:
@@ -165,7 +165,8 @@ def test_open_pr_success(github, repo):
 
     r = open_pr()
 
-    assert r == {"exit_code": 0, "stdout": PR["html_url"], "stderr": "", **PR}
+    assert r == {"exit_code": 0, "stdout": PR["html_url"], "stderr": "", "number": PR["number"],
+                 "html_url": PR["html_url"], "title": PR["title"], "base": "develop"}
     [req] = requests
     assert req["body"] == {"title": "Fix discount", "body": "why and how", "head": "otto/s1", "base": "develop"}
     assert req["headers"]["Authorization"] == f"Bearer {TOKEN}"
@@ -227,3 +228,46 @@ def test_commit_uses_the_repo_identity_when_set(repo):
     assert REGISTRY["git.commit"]({"message": "m"})["exit_code"] == 0
     assert git("log", "-1", "--format=%an <%ae>", cwd=ws) == \
         "ottoci[bot] <ottoci[bot]@users.noreply.github.com>"
+
+
+def test_push_reports_the_base_and_the_branchs_diffstat(repo):
+    ws, origin = repo
+    open(os.path.join(ws, "b.txt"), "w").write("1\n2\n")
+    git("add", "-A", cwd=ws)
+    git("commit", "-qm", "more", cwd=ws)
+    git("remote", "set-head", "origin", "main", cwd=ws)
+
+    r = REGISTRY["git.push"]({})
+
+    assert r["exit_code"] == 0, r
+    assert r["base"] == "main"
+    # a.txt: a -> b (+1 -1); b.txt: new (+2)
+    assert r["diffstat"] == {"files": 2, "additions": 3, "deletions": 1}
+
+
+def test_a_failed_push_has_no_diffstat(repo, monkeypatch):
+    monkeypatch.setattr(config, "GITHUB_TOKEN", None)
+    r = REGISTRY["git.push"]({})
+    assert r["exit_code"] == 1 and "diffstat" not in r
+
+
+# --- git.status for the brain's finish: dirty, and commits ahead of the remote ------------------
+
+def test_status_reports_dirty_and_ahead_before_any_push(repo):
+    ws, _ = repo
+    git("remote", "set-head", "origin", "main", cwd=ws)
+    r = REGISTRY["git.status"]({})
+    assert r["exit_code"] == 0 and "On branch otto/s1" in r["stdout"]
+    # one commit on otto/s1, no upstream yet: ahead of origin/main by 1, the branch's work is 1
+    assert (r["dirty"], r["ahead"], r["work"], r["base"]) == (False, 1, 1, "main")
+
+    open(os.path.join(ws, "new.txt"), "w").write("x\n")
+    assert REGISTRY["git.status"]({})["dirty"] is True
+
+
+def test_status_after_a_push_is_not_ahead(repo):
+    ws, _ = repo
+    git("remote", "set-head", "origin", "main", cwd=ws)
+    assert REGISTRY["git.push"]({})["exit_code"] == 0
+    r = REGISTRY["git.status"]({})
+    assert (r["dirty"], r["ahead"], r["work"]) == (False, 0, 1)

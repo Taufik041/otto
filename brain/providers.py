@@ -6,7 +6,7 @@ uses the provider and model it was created with: keys rotate within that provide
 import asyncio, re, time
 from email.utils import parsedate_to_datetime
 
-from openai import APIConnectionError, AsyncOpenAI, InternalServerError, RateLimitError
+from openai import APIConnectionError, APIStatusError, AsyncOpenAI, InternalServerError, RateLimitError
 
 from shared import config
 
@@ -15,13 +15,63 @@ SERVER_ERROR_COOLDOWN = 5  # after a 5xx or a connection error: likely not the k
 MIN_COOLDOWN = 1
 MAX_WAIT = 60  # longest single sleep when every key is cooling down
 MIN_ATTEMPTS = 6
+STOP_POLL = 1.0  # seconds between checks for a stop while a call waits (on a cooldown or a request)
 
 sleep = asyncio.sleep
-_pools = {}  # provider -> {"keys": [...], "until": [epoch seconds per key], "current": index, "clients": {}}
+# provider -> {"keys": [...], "until": [epoch seconds per key], "current": index, "clients": {},
+#              "dead": {index: reason}, "dead_for": {(index, model): reason}}
+_pools = {}
 
 
 class LLMError(Exception):
     """The provider kept answering without a usable choice."""
+
+
+class Stopped(Exception):
+    """The session was stopped while its model call was waiting."""
+
+
+async def _unless_stopped(aw, stopped):
+    """Await aw, but give up (cancelling it) as soon as stopped() is true; checked every STOP_POLL
+    seconds."""
+    if stopped is None:
+        return await aw
+    task = asyncio.ensure_future(aw)
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=STOP_POLL)
+            if done:
+                return task.result()
+            if stopped():
+                raise Stopped()
+    finally:
+        if not task.done():
+            task.cancel()
+
+
+class ProviderUnusable(LLMError):
+    """No key of the provider can serve this model, and no wait would change that: reason is
+    "quota" (out of credit), "auth" (a bad key) or "model" (an unknown model; model is set)."""
+
+    def __init__(self, provider, reason, model=None):
+        what = f"model {model!r} on {provider}" if model else provider
+        super().__init__(f"{what} is unusable: {reason}")
+        self.provider, self.reason, self.model = provider, reason, model
+
+
+def unusable_reason(error) -> str | None:
+    """"quota", "auth" or "model" for an error that no retry or wait fixes; None for one that may
+    pass (a real rate limit, a server error)."""
+    if not isinstance(error, APIStatusError):
+        return None
+    status = error.status_code
+    if status == 402 or (status == 429 and "insufficient_quota" in (str(error.code), str(error.type))):
+        return "quota"  # OpenAI: 429 insufficient_quota; OpenRouter: 402 insufficient credits
+    if status in (401, 403):
+        return "auth"
+    if status == 404:
+        return "model"
+    return None
 
 
 def now() -> float:
@@ -51,30 +101,63 @@ def _pool(provider) -> dict:
         raise LLMError(f"unknown provider {provider!r}")
     if provider not in _pools:
         keys = list(config.PROVIDER_KEYS.get(provider, []))
-        _pools[provider] = {"keys": keys, "until": [0.0] * len(keys), "current": 0, "clients": {}}
+        _pools[provider] = {"provider": provider, "keys": keys, "until": [0.0] * len(keys), "current": 0,
+                            "clients": {}, "dead": {}, "dead_for": {}}
     pool = _pools[provider]
     if not pool["keys"]:
         raise LLMError(f"no API key for provider {provider!r}")
     return pool
 
 
-def _next_key(pool) -> tuple[int, float]:
+def _dead(pool, i, model) -> str | None:
+    return pool["dead"].get(i) or pool["dead_for"].get((i, model))
+
+
+def _next_key(pool, model=None) -> tuple[int, float]:
     """The key to use next and how long to wait first: the current key or the next one that isn't
-    cooling down, else the one whose cooldown ends first (waiting at most MAX_WAIT)."""
+    cooling down, else the one whose cooldown ends first (waiting at most MAX_WAIT). Keys that
+    can't serve `model` are skipped; with none left, ProviderUnusable."""
     n, t = len(pool["keys"]), now()
-    for step in range(n):
-        i = (pool["current"] + step) % n
+    alive = [(pool["current"] + step) % n for step in range(n)]
+    alive = [i for i in alive if not _dead(pool, i, model)]
+    if not alive:
+        reasons = [_dead(pool, i, model) for i in range(n)]
+        reason = reasons[-1]
+        raise ProviderUnusable(pool["provider"], reason, model if reason == "model" else None)
+    for i in alive:
         if pool["until"][i] <= t:
             return i, 0
-    i = min(range(n), key=lambda i: pool["until"][i])
+    i = min(alive, key=lambda i: pool["until"][i])
     return i, min(pool["until"][i] - t, MAX_WAIT)
+
+
+def unusable(provider, model) -> str | None:
+    """Why `provider` can't serve `model` in this process (every key dropped), or None."""
+    pool = _pools.get(provider)
+    if not pool or not pool["keys"]:
+        return None
+    reasons = [_dead(pool, i, model) for i in range(len(pool["keys"]))]
+    return reasons[-1] if all(reasons) else None
+
+
+def _drop(pool, i, model, reason):
+    """Never use key i again in this process (for `model` only, if the model is the problem).
+    Logged once, by index: never the key."""
+    if reason == "model":
+        pool["dead_for"][(i, model)] = reason
+        print(f"[brain] {pool['provider']} key #{i} can't serve model {model!r} (model): not using it for that model",
+              flush=True)
+    else:
+        pool["dead"][i] = reason
+        print(f"[brain] {pool['provider']} key #{i} is unusable ({reason}): not using it again in this process",
+              flush=True)
 
 
 def _client(provider, pool, i):
     if i not in pool["clients"]:
         # max_retries=0: the SDK would sleep on a 429 itself; rotating to another key is better
         pool["clients"][i] = AsyncOpenAI(api_key=pool["keys"][i], base_url=config.PROVIDER_URLS[provider],
-                                         max_retries=0)
+                                         max_retries=0, timeout=config.LLM_TIMEOUT)
     return pool["clients"][i]
 
 
@@ -147,39 +230,65 @@ def reset_delay(source) -> float | None:
     return None
 
 
-async def complete(provider, record, **kwargs):
+async def complete(provider, record, stopped=None, **kwargs):
     """One chat completion from `provider`, rotating between its keys.
 
     A key that is rate limited, answers without a usable choice, or fails with a server error
     cools down (until its reset time if the error says, else RATE_LIMIT_COOLDOWN) and the next
     key is tried at once. With every key cooling down, sleep until the first is free (at most
-    MAX_WAIT). After max(MIN_ATTEMPTS, 2 x keys) attempts, raise LLMError. Each switch of key is
-    recorded as llm.key_rotated (indexes only, never the key).
+    MAX_WAIT). After max(MIN_ATTEMPTS, 2 x keys) such failures, or once the waits would pass
+    MODEL_WAIT_BUDGET_SECONDS in all, raise LLMError.
+
+    A key that can't work at all (out of credit, a bad key, an unknown model: see
+    unusable_reason) is dropped for this process without a wait, and the next key tried; with
+    none left, ProviderUnusable. Each switch of key is recorded as llm.key_rotated (indexes only,
+    never the key).
+
+    stopped(), if given, is checked while the call waits: a stop ends it at once with Stopped.
     """
     pool = _pool(provider)
+    model = kwargs.get("model")
     attempts = max(MIN_ATTEMPTS, 2 * len(pool["keys"]))
     failed = None  # (index, reason) of the last failure
-    for _ in range(attempts):
-        i, wait = _next_key(pool)
+    tries, problem, waited = 0, None, 0.0
+    while tries < attempts:
+        i, wait = _next_key(pool, model)
+        if wait > 0 and waited + wait > config.MODEL_WAIT_BUDGET_SECONDS:
+            print(f"[brain] {provider}: waiting {wait:.0f}s more would pass the {config.MODEL_WAIT_BUDGET_SECONDS:.0f}s "
+                  "budget; giving up", flush=True)
+            break
+        if stopped and stopped():
+            raise Stopped()
         if wait > 0:
+            waited += wait
             print(f"[brain] every {provider} key is cooling down; waiting {wait:.0f}s", flush=True)
-            await sleep(wait)
+            await _unless_stopped(sleep(wait), stopped)
         if failed and failed[0] != i:
             record("llm.key_rotated", {"provider": provider, "from_index": failed[0], "to_index": i,
                                        "reason": failed[1]})
         pool["current"] = i
         try:
-            resp = await _client(provider, pool, i).chat.completions.create(**kwargs)
-        except RateLimitError as e:
-            reason, problem, cooldown = "rate_limited", "rate limited", reset_delay(e) or RATE_LIMIT_COOLDOWN
-        except (APIConnectionError, InternalServerError) as e:
+            resp = await _unless_stopped(_client(provider, pool, i).chat.completions.create(**kwargs), stopped)
+        except APIStatusError as e:
+            if reason := unusable_reason(e):
+                _drop(pool, i, model, reason)
+                failed = (i, reason)
+                continue  # no wait, and no attempt used: the next key, or ProviderUnusable
+            if isinstance(e, RateLimitError):
+                reason, problem, cooldown = "rate_limited", "rate limited", reset_delay(e) or RATE_LIMIT_COOLDOWN
+            elif isinstance(e, InternalServerError):
+                reason, problem, cooldown = "server_error", f"{type(e).__name__}: {e}"[:1000], SERVER_ERROR_COOLDOWN
+            else:
+                raise
+        except APIConnectionError as e:
             reason, problem, cooldown = "server_error", f"{type(e).__name__}: {e}"[:1000], SERVER_ERROR_COOLDOWN
         else:
             problem = no_choice(resp)
             if problem is None:
                 return resp
             reason, cooldown = "unusable_response", reset_delay(resp) or RATE_LIMIT_COOLDOWN
+        tries += 1
         pool["until"][i] = now() + cooldown
         failed = (i, reason)
         print(f"[brain] {provider} key #{i}: {problem}; resting it {cooldown:.0f}s", flush=True)
-    raise LLMError(f"no usable LLM response after {attempts} attempts; last: {problem}")
+    raise LLMError(f"no usable LLM response after {tries} attempts; last: {problem}")

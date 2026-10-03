@@ -47,10 +47,45 @@ def attach_repo(sid, repo) -> bool:
     return moved
 
 
-def set_title(sid, title):
-    """Rename; doesn't count as activity, so the chat keeps its place in the list."""
+def set_model(sid, model) -> str | None:
+    """Switch the session to another catalog model for its next turns (the brain reads it at every
+    LLM call). Emits session.model_changed {from, to}; returns the previous model, or None if it
+    was the same already."""
     with get_db() as s:
-        s.exec(update(Session).where(Session.id == sid).values(title=title))
+        row = s.get(Session, sid)
+        if row is None:
+            raise LookupError(f"no session {sid!r}")
+        previous = row.model
+        if previous == model:
+            return None
+        row.model = model
+        s.add(row)
+    append_event(sid, "session.model_changed", {"from": previous, "to": model})
+    return previous
+
+
+def set_title(sid, title):
+    """The user renames the chat: the title is theirs from now on (never auto-titled). Doesn't
+    count as activity, so the chat keeps its place in the list."""
+    with get_db() as s:
+        s.exec(update(Session).where(Session.id == sid).values(title=title, title_source="user"))
+
+
+def auto_title(sid, title, source) -> bool:
+    """Give a chat still titled from its first message a better title (source: "pr" or "model"),
+    and emit session.titled {title, source}. A rename made meanwhile wins: only a title_source of
+    "auto" is replaced. True if it was."""
+    with get_db() as s:
+        moved = s.exec(update(Session).where(Session.id == sid, Session.title_source == "auto")
+                       .values(title=title, title_source="generated")).rowcount == 1
+    if moved:
+        append_event(sid, "session.titled", {"title": title, "source": source})
+    return moved
+
+
+def work_branch(sid) -> str:
+    """The branch a repo session works on: infra/entrypoint.sh checks out otto/<session id>."""
+    return f"otto/{sid}"
 
 
 def record_pr(sid, number, html_url):
@@ -60,7 +95,7 @@ def record_pr(sid, number, html_url):
         if row is None:
             raise LookupError(f"no session {sid!r}")
         row.pr_url = html_url
-        row.work_branch = f"otto/{sid}"
+        row.work_branch = work_branch(sid)
         row.updated_at = utcnow()
         s.add(row)
     append_event(sid, "pr.opened", {"number": number, "html_url": html_url})

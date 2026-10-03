@@ -1,5 +1,74 @@
 # Developing Otto
 
+## The web app
+
+The frontend is in `web/` (see `web/README.md`). With the gateway running on port 8000:
+
+    cd web && npm install      # once
+    cd web && npm run dev      # http://localhost:5173
+
+It signs in with the access and refresh tokens described under "How sign-in works" below.
+`npm test` runs its tests (no network) and `npm run build` type-checks and builds it.
+
+To run a whole chat against this stack from the browser's side, with the gateway, a worker and
+`npm run dev` up:
+
+    cd web && OTTO_EMAIL=you@example.com OTTO_PASSWORD=... node scripts/e2e.mjs
+
+The script signs in, starts "@otto_test two tests are failing...", waits for the PR card, sends a
+follow-up, opens Changes and Terminal, and screenshots the chat at 1440px and 390px in light and
+dark into `web/screenshots/e2e/`. It opens a real PR. After changing `runner/`, rebuild the
+sandbox image (the image step of `scripts/dev_up.sh`), or sandboxes keep running the old code.
+
+## How a chat turn runs
+
+- **A follow-up is stored when it's posted.** `POST /sessions/{id}/messages` appends it as the
+  next user `llm.message` event (with its seq, announced over NOTIFY). For a plain chat that gets a
+  repo, this comes after `repo.attached`. Then the gateway wakes or creates the sandbox and queues
+  the job. The worker continues from the stored message and doesn't add it again, so the
+  conversation (`rebuild_messages`) has it exactly once.
+- **A follow-up may switch the model.** `POST /sessions/{id}/messages` takes an optional
+  `model` (a catalog id from `GET /models`). An unknown or unavailable one is a 400, with the
+  same `detail` shape POST /sessions gives it, and changes nothing. A different one updates the
+  session's model and appends `session.model_changed {from, to}` before the user message. The
+  brain reads the session's model at every LLM call, and the history goes to the new model as it
+  is (every provider speaks the same chat format).
+- **Provider errors fail fast.** In `brain/providers.py`:
+  - A real 429 cools the key down for the provider's own reset time (Retry-After,
+    `x-ratelimit-reset-*`, OpenRouter's `X-RateLimit-Reset`), else 60s. The next key is tried at
+    once, and a call's total waiting is capped at `MODEL_WAIT_BUDGET_SECONDS`.
+  - Errors no wait fixes drop that key for the worker process at once (logged once, by index,
+    never the key): 429 `insufficient_quota` and OpenRouter's 402 (`quota`), 401/403 (`auth`), and
+    404, which drops the key for that model only (`model`).
+  - With no key left, the turn ends `failed` with `error {stage: "model", reason}`, and
+    `provider_health` records it, so `GET /models` shows the provider (or the model) unavailable
+    with a hint until the gateway restarts. Until then, the gateway also refuses it with a 400
+    (FastAPI's validation `detail`, with that `hint`) for a new chat (the model asked for, or the
+    default it would get), a follow-up or a retry (the model asked for, or the chat's own).
+  - Stop interrupts a model call within a second, whether it waits on a cooldown or on the request.
+- **Chats title themselves once.** After a chat's first turn ends `done`, while its title is still
+  its first message (`sessions.title_source = auto`), the brain gives it a better one: the PR's
+  title if the turn opened one, else 3–6 words from the chat's own model. That's one short call
+  with no tools, counted in usage. It's stored with `title_source = generated` and announced as
+  `session.titled {title, source: "pr" | "model"}`. A rename (`PATCH /sessions/{id}`) sets
+  `title_source = user`, and is never replaced, even one made during the turn. If titling fails
+  (the limit, the model), the chat keeps its title and the turn is unaffected.
+- **Every agent turn ends with a deterministic finish** (`brain/loop.py`, `finish`). After the
+  model's final message, and before the status becomes `done`, the brain does what the model left
+  undone:
+  - asks `git.status`
+  - commits uncommitted changes, with a message from this turn's request
+  - pushes when `otto/<id>` is ahead of the remote
+  - opens the PR when the session has none: the title from the task, the body from the model's
+    final message (an open PR is updated by the push)
+
+  These are ordinary bus actions, so each one is an event row. The finish is skipped for plain
+  chats, stopped turns, and turns that ran nothing that could change the workspace (no edits,
+  writes, commands or commits). A failed step records `error` with stage `finish` and `step` (the
+  action that failed, e.g. `git.push`) and ends the turn `failed`; Retry runs it again. `git.status` needs a sandbox image with the current
+  `runner/`; rebuild it after pulling (the image step of `scripts/dev_up.sh`). With an older
+  image, the finish stops after the status check.
+
 ## Database and migrations
 
 The schema lives in `shared/models.py` and is changed only through Alembic migrations in
@@ -42,8 +111,11 @@ Stop the gateway and workers first, since they hold connections.
 | `REFRESH_TOKEN_DAYS` | `30` | How long a refresh token (the `otto_refresh` cookie) lasts unused; each refresh swaps it for a new one. Rows that expired over a week ago are deleted when the gateway starts. |
 | `REFRESH_REUSE_GRACE_SECONDS` | `20` | How long a just-rotated refresh token may come back as a retry (a lost response, two tabs refreshing at once) instead of counting as theft. |
 | `FRONTEND_URL` | `http://localhost:5173` | Where the GitHub callback sends the browser afterwards (`/auth/callback` after a sign-in), and the base of password-reset links. An `https://` URL also makes the cookies `Secure`. |
-| `DAILY_TOKEN_LIMIT` | `50000` | A new user's daily token limit (UTC days). Existing users keep theirs (`users.daily_token_limit`). |
+| `DAILY_TOKEN_LIMIT` | `300000` | A new user's daily token limit (UTC days). Existing users keep theirs (`users.daily_token_limit`); migration 0011 moved those still on the old default, 50000, to 300000. |
 | `MODEL_PRICES` | `{}` | JSON `{"<model id>": {"input_per_1m": 0.15, "output_per_1m": 0.6}}` in USD, keyed by catalog id (`GET /models`). Unlisted models count as free. |
+| `MODEL_WAIT_BUDGET_SECONDS` | `120` | A model call's total waiting on rate-limited keys (each wait is the provider's Retry-After / `x-ratelimit-reset-*`, else 60s). Past it, the call fails with "the model didn't respond". |
+| `OTTO_LLM_TIMEOUT` | `120` | Seconds per model request before it counts as a failed try (long chat histories are slow). |
+| `OTTO_MODELS` | built from the env | A JSON list of `{id, provider, model, label, description}` replacing the model catalog (`GET /models`). `description` is the one line under the model in the picker; an unavailable model (its provider has no key) gets a `hint` instead of being hidden. |
 | `MAX_ACTIVE_SESSIONS` | `3` | Agent sessions (chats with a repo) one user may have at work at once (provisioning, queued or running). Plain chats don't count. |
 | `MAX_ACTIVE_SANDBOXES` | `3` | The same, for everyone together: protects the cluster. Sandboxes kept warm between turns don't count; they exit after `SANDBOX_IDLE_MINUTES`. |
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Origins allowed to call the API with credentials, to use the refresh cookie (`/auth/refresh`, `/auth/logout`; the gateway's own origin may too, for `/docs`), and to open the WebSocket. |
@@ -94,6 +166,7 @@ In the App's settings on GitHub:
 | `POST /auth/logout-all` | Bearer | revokes every refresh token and voids every access token |
 | `POST /me/password`, `POST /auth/reset` | Bearer / reset token | signs out every device, and signs this one in again (the same body as login) |
 | `POST /sessions/{id}/ws-ticket` | Bearer, the session's owner | `{ticket}`: single use, 30 seconds, for `WS /sessions/{id}/ws?ticket=...&after_seq=N` |
+| `POST /sessions/{id}/retry` | Bearer, the session's owner | runs a `failed` or `interrupted` turn again from where it stopped, with no new message (409 otherwise); `{model}` retries on another model (`session.model_changed`; 400 if unavailable) |
 | `POST /auth/github/url` `{mode: "signin" \| "link"}` | none; Bearer for `link` | `{url}` to send the browser to, and the state's nonce cookie |
 | `POST /github/install-url` | Bearer | `{url}` to install the App, and the state's nonce cookie |
 | `GET /auth/github/start` | none | redirects to GitHub to sign in (for typing into the address bar) |
@@ -101,7 +174,9 @@ In the App's settings on GitHub:
 The frontend keeps the access token in memory, calls `/auth/refresh` (with
 `credentials: "include"`) on load and whenever it gets a 401, and opens the WebSocket with a fresh
 ticket each time. The GitHub callback ends a sign-in at `FRONTEND_URL/auth/callback` with a new
-refresh cookie; that page calls `/auth/refresh` to get its access token. Cookies set by the API
+refresh cookie; that page calls `/auth/refresh` to get its access token. (`web/src/api/client.ts`
+does all this; with the web app running, signing in at `http://localhost:5173` is easier than the
+/docs and curl routes below.) Cookies set by the API
 (the refresh and nonce cookies) need the frontend and the API on the same site, as
 `localhost:5173` and `localhost:8000` are.
 

@@ -186,15 +186,48 @@ def test_follow_up_keeps_the_sessions_model(client, env, monkeypatch):
     assert jobs(env[0])[-1] == {"type": "resume", "session_id": sid, "text": "more"}  # no model in the job
 
 
-def test_follow_up_cannot_switch_the_model(client, env, monkeypatch):
+def test_a_follow_up_can_switch_the_model(client, env, monkeypatch):
     use_env(monkeypatch, BOTH)
     sid = client.post("/sessions", json={"repo": REPO, "message": "t", "model": "openai:model-a"}).json()["id"]
     set_status(sid, "done")
 
     r = client.post(f"/sessions/{sid}/messages", json={"text": "more", "model": "openrouter:openrouter/free"})
 
-    assert r.status_code == 422 and "fixed" in r.text
-    assert get_session(sid).model == "openai:model-a" and get_session(sid).status == "done"
+    assert r.status_code == 202
+    assert get_session(sid).model == "openrouter:openrouter/free"
+    assert client.get(f"/sessions/{sid}").json()["model"] == "openrouter:openrouter/free"
+    evs = [(e.type, e.payload) for e in load_events(sid) if e.type in ("session.model_changed", "llm.message")]
+    assert evs[-2:] == [  # the switch, then the message it applies to
+        ("session.model_changed", {"from": "openai:model-a", "to": "openrouter:openrouter/free"}),
+        ("llm.message", {"message": {"role": "user", "content": "more"}}),
+    ]
+    assert jobs(env[0])[-1] == {"type": "resume", "session_id": sid, "text": "more"}  # the brain reads the row
+
+
+def test_the_same_model_again_is_no_switch(client, env, monkeypatch):
+    use_env(monkeypatch, BOTH)
+    sid = client.post("/sessions", json={"repo": REPO, "message": "t", "model": "openai:model-a"}).json()["id"]
+    set_status(sid, "done")
+    assert client.post(f"/sessions/{sid}/messages", json={"text": "more", "model": "openai:model-a"}).status_code == 202
+    assert "session.model_changed" not in types(sid)
+
+
+@pytest.mark.parametrize("model", ["nope", "openai:not-in-catalog", "openai:model-b"])
+def test_switching_to_an_unknown_or_unavailable_model_is_400(client, env, monkeypatch, model):
+    use_env(monkeypatch, {"OPENROUTER_API_KEY": "orkey-one", "OTTO_OPENAI_MODELS": "model-b"})  # no OpenAI key
+    sid = client.post("/sessions", json={"repo": REPO, "message": "t"}).json()["id"]
+    set_status(sid, "done")
+    before = types(sid)
+
+    r = client.post(f"/sessions/{sid}/messages", json={"text": "more", "model": model})
+
+    assert r.status_code == 400
+    # the same shape as POST /sessions' model error: FastAPI's validation detail list
+    [d] = r.json()["detail"]
+    assert d["loc"] == ["body", "model"] and "unknown or unavailable model" in d["msg"]
+    row = get_session(sid)
+    assert (row.model, row.status) == ("openrouter:openrouter/free", "done")  # nothing changed, not claimed
+    assert types(sid) == before
 
 
 def test_models_reflect_the_keys_present(client, monkeypatch):
@@ -203,8 +236,10 @@ def test_models_reflect_the_keys_present(client, monkeypatch):
         "default_model": "openai:model-a",
         "models": [
             {"id": "openrouter:openrouter/free", "label": "OpenRouter Free", "provider": "openrouter",
-             "available": False},
-            {"id": "openai:model-a", "label": "OpenAI model-a", "provider": "openai", "available": True},
+             "description": "Free, good for small tasks", "available": False,
+             "hint": "Unavailable right now. Try again later."},
+            {"id": "openai:model-a", "label": "OpenAI model-a", "provider": "openai", "description": None,
+             "available": True, "hint": None},
         ]}
 
     use_env(monkeypatch, BOTH)
@@ -228,7 +263,7 @@ def test_list_get_and_events(client, env):
     one = client.get(f"/sessions/{a}").json()
     assert one["id"] == a and one["sandbox_status"] == "running"
     assert (one["task"], one["repo_url"]) == ("first", REPO_URL)
-    assert one["work_branch"] is None and one["pr_url"] is None
+    assert one["work_branch"] == f"otto/{a}" and one["pr_url"] is None
     assert client.get("/sessions/nope").status_code == 404
 
     evs = client.get(f"/sessions/{a}/events").json()
@@ -577,3 +612,95 @@ def test_ws_stream_error_closes_with_1011(client, monkeypatch):
             ws.receive_json()
     assert e.value.code == 1011
     assert WS not in live._subscribers
+
+
+# --- the work branch and retry --------------------------------------------------------------
+
+def test_a_repo_session_reports_its_work_branch_before_any_pr(client, env):
+    sid = client.post("/sessions", json={"repo": REPO, "message": "t"}).json()["id"]
+    assert client.get(f"/sessions/{sid}").json()["work_branch"] == f"otto/{sid}"
+    plain = client.post("/sessions", json={"message": "hi"}).json()["id"]
+    assert client.get(f"/sessions/{plain}").json()["work_branch"] is None
+
+
+@pytest.mark.parametrize("status", ["failed", "interrupted"])
+def test_retry_continues_a_failed_session_in_its_warm_sandbox(client, env, status):
+    ch, orch, runners = env
+    sid = finished_session(client.user_id, status=status)
+    orch.status[sid] = "running"
+    runners.alive.add(sid)
+
+    r = client.post(f"/sessions/{sid}/retry")
+
+    assert r.status_code == 202 and r.json() == {"id": sid, "status": "queued"}
+    assert jobs(ch) == [{"type": "retry", "session_id": sid}]
+    assert get_session(sid).status == "queued"
+    assert "llm.message" not in types(sid)  # no new user message
+
+
+def test_retry_recreates_a_dead_sandbox(client, env):
+    ch, orch, _ = env
+    sid = finished_session(client.user_id, status="failed")
+    assert client.post(f"/sessions/{sid}/retry").status_code == 202
+    assert orch.calls == [("remove", sid), ("create", sid, REPO_URL, INST)]
+    assert jobs(ch) == [{"type": "retry", "session_id": sid}]
+
+
+def test_retry_of_a_plain_chat_needs_no_sandbox(client, env):
+    ch, orch, _ = env
+    sid = client.post("/sessions", json={"message": "hi"}).json()["id"]
+    set_status(sid, "failed")
+    assert client.post(f"/sessions/{sid}/retry").status_code == 202
+    assert orch.calls == [] and jobs(ch)[-1] == {"type": "retry", "session_id": sid}
+
+
+@pytest.mark.parametrize("status", ["done", "stopped", "running", "queued", "limited"])
+def test_only_a_failed_or_interrupted_session_can_be_retried(client, env, status):
+    ch, orch, _ = env
+    sid = finished_session(client.user_id, status=status)
+    r = client.post(f"/sessions/{sid}/retry")
+    assert r.status_code == 409 and jobs(ch) == [] and orch.calls == []
+    assert get_session(sid).status == status
+
+
+def test_retry_respects_the_daily_limit(client, env):
+    sid = finished_session(client.user_id, status="failed")
+    with get_db() as s:
+        s.add(Usage(session_id=sid, user_id=client.user_id, provider="p", model="m",
+                    prompt_tokens=10**9, completion_tokens=0))
+    r = client.post(f"/sessions/{sid}/retry")
+    assert r.status_code == 429 and r.json()["code"] == "daily_limit"
+    assert get_session(sid).status == "failed"
+
+
+def test_retry_of_someone_elses_session_is_404(client, env):
+    other = make_user("other@example.com")
+    sid = finished_session(other.id, status="failed")
+    assert client.post(f"/sessions/{sid}/retry").status_code == 404
+
+
+def test_retry_can_switch_the_model(client, env, monkeypatch):
+    use_env(monkeypatch, BOTH)
+    ch, orch, runners = env
+    sid = finished_session(client.user_id, status="failed")  # model "m"
+    orch.status[sid] = "running"
+    runners.alive.add(sid)
+
+    r = client.post(f"/sessions/{sid}/retry", json={"model": "openai:model-b"})
+
+    assert r.status_code == 202
+    assert get_session(sid).model == "openai:model-b"
+    changed = [e.payload for e in load_events(sid) if e.type == "session.model_changed"]
+    assert changed == [{"from": "m", "to": "openai:model-b"}]
+    assert jobs(ch) == [{"type": "retry", "session_id": sid}]
+
+
+def test_retry_with_an_unavailable_model_is_400_and_changes_nothing(client, env, monkeypatch):
+    use_env(monkeypatch, {"OPENROUTER_API_KEY": "orkey-one", "OTTO_OPENAI_MODELS": "model-b"})
+    sid = finished_session(client.user_id, status="failed")
+
+    r = client.post(f"/sessions/{sid}/retry", json={"model": "openai:model-b"})
+
+    assert r.status_code == 400 and r.json()["detail"][0]["loc"] == ["body", "model"]
+    assert (get_session(sid).model, get_session(sid).status) == ("m", "failed")
+    assert jobs(env[0]) == []

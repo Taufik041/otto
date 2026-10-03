@@ -24,27 +24,31 @@ from pydantic import BaseModel, Field, field_validator
 from brain.bus import bus_call, start_consumer, stop_consumer
 from gateway import auth, github_app, live, tokens
 from orchestrator import sandbox
-from shared import config, usage
+from shared import config, health, usage
 from shared.accounts import delete_account
-from shared.bus import SESSIONS_QUEUE, actions_queue, chat_job, resume_job, results_queue, start_job
+from shared.bus import SESSIONS_QUEUE, actions_queue, chat_job, results_queue, resume_job, retry_job, start_job
 from shared.db import get_engine, init_db
 from shared.events import append_event, load_events, redact
 from shared.models import User, as_utc, utcnow
 from shared.sessions import (ACTIVE, attach_repo, count_active_agents, create_session, delete_session, get_session,
-                             list_sessions, repo_sessions_since, set_status, set_title, sweep_stale_sessions,
-                             transition)
+                             list_sessions, repo_sessions_since, set_model, set_status, set_title,
+                             sweep_stale_sessions,
+                             transition, work_branch)
 
 PING_TIMEOUT = 5  # seconds to wait for a warm runner to answer control.ping / control.shutdown
 PING_INTERVAL = 20  # seconds between WebSocket heartbeats
 IDLE = ("pending", "done", "failed", "interrupted", "stopped", "limited")  # statuses that may take a follow-up
+RETRYABLE = ("failed", "interrupted")  # a turn that ended in an error, which POST .../retry runs again
 REPO_NAME = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
 NEW_REPO = "Start a new chat for a different repo."
+UNAVAILABLE = "Unavailable right now. Try again later."  # the picker's hint for a model without a key
 
 
 @asynccontextmanager
 async def lifespan(app):
     auth.check_secret()
     init_db()
+    health.clear()  # what a worker found unusable counts until the gateway restarts
     if pruned := tokens.prune_refresh():
         print(f"[gateway] deleted {pruned} refresh token(s) that expired over a week ago", flush=True)
     swept = sweep_stale_sessions()
@@ -89,6 +93,29 @@ app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_cred
                    allow_methods=["*"], allow_headers=["*"])
 
 
+def unavailable_model(model, hint=UNAVAILABLE) -> HTTPException:
+    """400 for a model that can't be used, in FastAPI's validation-detail shape, with the hint
+    GET /models shows beside it."""
+    msg = (f"Value error, unknown or unavailable model {model!r}; see GET /models" if hint == UNAVAILABLE
+           else f"Value error, model {model!r} is unavailable: {hint}")
+    return HTTPException(400, [{"type": "value_error", "loc": ["body", "model"], "input": model, "msg": msg,
+                                "hint": hint}])
+
+
+def _usable(model):
+    """400 unless `model` (one asked for) has a key and isn't marked unusable (see _healthy)."""
+    if not config.is_available(model):
+        raise unavailable_model(model)
+    _healthy(model)
+
+
+def _healthy(model):
+    """400 if a worker found `model` (or its provider) unusable since the gateway started
+    (provider_health: out of credit, a bad key, an unknown model)."""
+    if reason := health.reason_for(model):
+        raise unavailable_model(model, health.HINTS.get(reason, UNAVAILABLE))
+
+
 def repo_name(v):
     """"owner/name" (a leading @ is fine); ValueError (422) for anything else."""
     if v is None:
@@ -117,16 +144,9 @@ class NewSession(BaseModel):
 class FollowUp(BaseModel):
     text: str = Field(min_length=1)
     repo: str | None = None  # attaches a repo to a plain chat; the chat's own repo is fine too
-    model: str | None = None  # only to refuse it: a session stays on the model it was created with
+    model: str | None = None  # a catalog id: the chat continues on it from this message on
 
     _repo = field_validator("repo")(repo_name)
-
-    @field_validator("model")
-    @classmethod
-    def no_switching(cls, v):
-        if v is not None:
-            raise ValueError("a session's model is fixed at creation; start a new session for another model")
-        return v
 
 
 class Rename(BaseModel):
@@ -246,10 +266,18 @@ async def _create_sandbox(sid, repo):
 
 @app.get("/models")
 def models():
-    """The model catalog for the frontend's picker; available: its provider has an API key."""
-    return {"default_model": config.DEFAULT_MODEL,
-            "models": [{"id": m["id"], "label": m["label"], "provider": m["provider"],
-                        "available": config.is_available(m["id"])} for m in config.MODELS]}
+    """The model catalog for the frontend's picker; available: its provider has an API key, and no
+    worker found it unusable (out of credit, a bad key, an unknown model) since the gateway started.
+    An unavailable model comes with a hint to show beside it."""
+    out = []
+    bad = health.unusable()  # providers or models a worker found unusable since the gateway started
+    for m in config.MODELS:
+        reason = bad.get(m["provider"]) or bad.get(m["id"])
+        available = config.is_available(m["id"]) and reason is None
+        hint = health.HINTS.get(reason, UNAVAILABLE) if reason else None if available else UNAVAILABLE
+        out.append({"id": m["id"], "label": m["label"], "provider": m["provider"],
+                    "description": m.get("description"), "available": available, "hint": hint})
+    return {"default_model": config.DEFAULT_MODEL, "models": out}
 
 
 @app.post("/sessions", status_code=201)
@@ -257,6 +285,7 @@ async def create(body: NewSession, user: User = Depends(auth.current_user)):
     """A new chat. With a repo, Otto works on it in a sandbox; without one, it just answers."""
     _within_limit(user)
     model = _model_for(user, body.model)
+    _usable(model)
     repo = await _repo_for(user, body.repo) if body.repo else None
     async with app.state.create_lock:  # count + insert as one step within this gateway
         if repo:
@@ -283,7 +312,8 @@ def sessions(user: User = Depends(auth.current_user)):
 @app.get("/sessions/{sid}")
 async def session(sid: str, user: User = Depends(auth.current_user)):
     row = _row(sid, user)
-    return {**_summary(row), "task": row.task, "repo_url": row.repo_url, "work_branch": row.work_branch,
+    branch = row.work_branch or (work_branch(sid) if row.repo else None)
+    return {**_summary(row), "task": row.task, "repo_url": row.repo_url, "work_branch": branch,
             "created_at": as_utc(row.created_at), "sandbox_status": await _status(sid) if row.repo else None}
 
 
@@ -394,6 +424,8 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_
     the agent takes over. A chat keeps its first repo: another one is 409."""
     ch = app.state.ch
     row = _row(sid, user)
+    # the model this message would run on: one asked for, else the chat's own
+    _usable(body.model) if body.model is not None else _healthy(row.model)
     _within_limit(user)
     if body.repo and row.repo and body.repo.lower() != row.repo.lower():
         raise HTTPException(409, NEW_REPO)
@@ -405,6 +437,8 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_
         if not transition(sid, "provisioning", IDLE):
             raise HTTPException(409, f"session {sid} is {_row(sid, user).status}; wait until it finishes")
     if repo is None:
+        _switch_model(sid, body.model)
+        _store_follow_up(sid, body.text)
         await _enqueue(ch, sid, chat_job(sid, body.text))
         return {"id": sid, "status": "queued", "repo": None}
     attaching = row.repo is None
@@ -413,6 +447,8 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_
         if get_session(sid).repo.lower() != repo["full_name"].lower():
             transition(sid, row.status, {"provisioning"})
             raise HTTPException(409, NEW_REPO)
+    _switch_model(sid, body.model)
+    _store_follow_up(sid, body.text)  # after repo.attached, so the message belongs to the agent's turn
     try:
         if attaching:
             await _create_sandbox(sid, repo)
@@ -424,6 +460,52 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_
         _fail(sid, "sandbox", e)
     await _enqueue(ch, sid, resume_job(sid, body.text))
     return {"id": sid, "status": "queued", "repo": repo["full_name"]}
+
+
+class Retry(BaseModel):
+    model: str | None = None  # a catalog id: retry on another model (the chat stays on it)
+
+
+@app.post("/sessions/{sid}/retry", status_code=202)
+async def retry(sid: str, body: Retry | None = None, user: User = Depends(auth.current_user)):
+    """Run a failed (or interrupted) turn again from where it stopped, with no new message: the
+    error card's Retry, optionally on another model. Other statuses are 409."""
+    ch = app.state.ch
+    row = _row(sid, user)
+    model = body.model if body else None
+    _usable(model) if model is not None else _healthy(row.model)  # the model the retry would run on
+    _within_limit(user)
+    repo = await _repo_for(user, row.repo) if row.repo else None
+    async with app.state.create_lock:  # count + claim as one step within this gateway
+        if row.status not in RETRYABLE:
+            raise HTTPException(409, f"session {sid} is {row.status}; only a failed session can be retried")
+        if repo:
+            _room_for_an_agent(user)
+        if not transition(sid, "provisioning", RETRYABLE):
+            raise HTTPException(409, f"session {sid} is {_row(sid, user).status}; only a failed session can be retried")
+    _switch_model(sid, model)
+    if repo:
+        try:
+            await _wake_sandbox(ch, sid, repo)
+        except HTTPException:
+            raise
+        except Exception as e:
+            _fail(sid, "sandbox", e)
+    await _enqueue(ch, sid, retry_job(sid))
+    return {"id": sid, "status": "queued"}
+
+
+def _switch_model(sid, model):
+    """A follow-up that names another model moves the chat to it (session.model_changed, before
+    the message it applies to). Its history goes to the new model as it is."""
+    if model is not None:
+        set_model(sid, model)
+
+
+def _store_follow_up(sid, text):
+    """Store the follow-up as the conversation's next user message now, so every client sees it at
+    once (live, via NOTIFY); the worker continues from it without adding it again."""
+    append_event(sid, "llm.message", {"message": {"role": "user", "content": text}})
 
 
 async def _wake_sandbox(ch, sid, repo):
