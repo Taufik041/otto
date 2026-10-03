@@ -413,6 +413,7 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_
         if not transition(sid, "provisioning", IDLE):
             raise HTTPException(409, f"session {sid} is {_row(sid, user).status}; wait until it finishes")
     if repo is None:
+        _store_follow_up(sid, body.text)
         await _enqueue(ch, sid, chat_job(sid, body.text))
         return {"id": sid, "status": "queued", "repo": None}
     attaching = row.repo is None
@@ -421,6 +422,7 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_
         if get_session(sid).repo.lower() != repo["full_name"].lower():
             transition(sid, row.status, {"provisioning"})
             raise HTTPException(409, NEW_REPO)
+    _store_follow_up(sid, body.text)  # after repo.attached, so the message belongs to the agent's turn
     try:
         if attaching:
             await _create_sandbox(sid, repo)
@@ -458,6 +460,12 @@ async def retry(sid: str, user: User = Depends(auth.current_user)):
             _fail(sid, "sandbox", e)
     await _enqueue(ch, sid, retry_job(sid))
     return {"id": sid, "status": "queued"}
+
+
+def _store_follow_up(sid, text):
+    """Store the follow-up as the conversation's next user message now, so every client sees it at
+    once (live, via NOTIFY); the worker continues from it without adding it again."""
+    append_event(sid, "llm.message", {"message": {"role": "user", "content": text}})
 
 
 async def _wake_sandbox(ch, sid, repo):

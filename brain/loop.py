@@ -105,6 +105,13 @@ def use_system(sid, messages, content):
     append_event(sid, "llm.message", {"message": message})
 
 
+def _stored_already(messages, text) -> bool:
+    """The gateway stores a follow-up when it's posted: then the replayed conversation ends with
+    it, and the turn must not add it a second time. (The CLI's resumes aren't stored first.)"""
+    last = messages[-1] if messages else {}
+    return last.get("role") == "user" and last.get("content") == text
+
+
 def has_conversation(sid) -> bool:
     """Whether the session has stored messages to resume (a session whose sandbox never started
     has none)."""
@@ -118,7 +125,7 @@ async def resume_session(ch, results, sid, text):
     A plain chat that just got a repo continues here, under the agent's prompt."""
     messages = replay(sid)
     use_system(sid, messages, SYSTEM)
-    if text is not None:
+    if text is not None and not _stored_already(messages, text):
         add_message(sid, messages, {"role": "user", "content": text})
     return await run_loop(ch, results, sid, messages)
 
@@ -142,7 +149,8 @@ async def chat_session(sid, text=None):
     else:
         messages = replay(sid)
         use_system(sid, messages, CHAT_SYSTEM)
-        add_message(sid, messages, {"role": "user", "content": text})
+        if not _stored_already(messages, text):
+            add_message(sid, messages, {"role": "user", "content": text})
     return await _turn(sid, messages, lambda record: _chat_step(sid, messages, record))
 
 

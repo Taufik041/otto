@@ -227,3 +227,23 @@ async def test_retry_of_a_plain_chat_answers_again(monkeypatch):
 def test_retry_jobs_parse():
     assert worker.parse_job(json.dumps({"type": "retry", "session_id": "s"})) == {"type": "retry", "session_id": "s"}
     assert worker.parse_job(json.dumps({"type": "retry"})) is None
+
+
+@pytest.mark.asyncio
+async def test_a_follow_up_the_gateway_stored_already_is_not_added_again(monkeypatch):
+    from brain.resume import rebuild_messages
+    from shared.events import append_event
+
+    session("aaaa", "task A")
+    fake_llm(monkeypatch, {"task A": [llm_final("first"), llm_final("second")]})
+    ch, conn = fake_bus()
+    await run_worker(ch, conn, [start_job("aaaa")])
+
+    assert transition("aaaa", "queued", {"done"})
+    append_event("aaaa", "llm.message", {"message": {"role": "user", "content": "and then?"}})  # as the gateway does
+    await run_worker(ch, conn, [resume_job("aaaa", "and then?")])
+
+    msgs = [e.payload["message"] for e in load_events("aaaa") if e.type == "llm.message"]
+    assert [m["content"] for m in msgs[1:]] == ["task A", "first", "and then?", "second"]
+    users = [m for m in rebuild_messages(load_events("aaaa")) if m["role"] == "user"]
+    assert [m["content"] for m in users] == ["task A", "and then?"]
