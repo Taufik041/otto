@@ -93,11 +93,27 @@ app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_cred
                    allow_methods=["*"], allow_headers=["*"])
 
 
-def unavailable_model(model) -> HTTPException:
-    """400 with the body POST /sessions gives an unavailable model (FastAPI's validation detail),
-    for a follow-up that asks for one."""
-    return HTTPException(400, [{"type": "value_error", "loc": ["body", "model"], "input": model,
-                                "msg": f"Value error, unknown or unavailable model {model!r}; see GET /models"}])
+def unavailable_model(model, hint=UNAVAILABLE) -> HTTPException:
+    """400 for a model that can't be used, in FastAPI's validation-detail shape, with the hint
+    GET /models shows beside it."""
+    msg = (f"Value error, unknown or unavailable model {model!r}; see GET /models" if hint == UNAVAILABLE
+           else f"Value error, model {model!r} is unavailable: {hint}")
+    return HTTPException(400, [{"type": "value_error", "loc": ["body", "model"], "input": model, "msg": msg,
+                                "hint": hint}])
+
+
+def _usable(model):
+    """400 unless `model` (one asked for) has a key and isn't marked unusable (see _healthy)."""
+    if not config.is_available(model):
+        raise unavailable_model(model)
+    _healthy(model)
+
+
+def _healthy(model):
+    """400 if a worker found `model` (or its provider) unusable since the gateway started
+    (provider_health: out of credit, a bad key, an unknown model)."""
+    if reason := health.reason_for(model):
+        raise unavailable_model(model, health.HINTS.get(reason, UNAVAILABLE))
 
 
 def repo_name(v):
@@ -269,6 +285,7 @@ async def create(body: NewSession, user: User = Depends(auth.current_user)):
     """A new chat. With a repo, Otto works on it in a sandbox; without one, it just answers."""
     _within_limit(user)
     model = _model_for(user, body.model)
+    _usable(model)
     repo = await _repo_for(user, body.repo) if body.repo else None
     async with app.state.create_lock:  # count + insert as one step within this gateway
         if repo:
@@ -407,8 +424,8 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_
     the agent takes over. A chat keeps its first repo: another one is 409."""
     ch = app.state.ch
     row = _row(sid, user)
-    if body.model is not None and not config.is_available(body.model):
-        raise unavailable_model(body.model)
+    # the model this message would run on: one asked for, else the chat's own
+    _usable(body.model) if body.model is not None else _healthy(row.model)
     _within_limit(user)
     if body.repo and row.repo and body.repo.lower() != row.repo.lower():
         raise HTTPException(409, NEW_REPO)
@@ -456,8 +473,7 @@ async def retry(sid: str, body: Retry | None = None, user: User = Depends(auth.c
     ch = app.state.ch
     row = _row(sid, user)
     model = body.model if body else None
-    if model is not None and not config.is_available(model):
-        raise unavailable_model(model)
+    _usable(model) if model is not None else _healthy(row.model)  # the model the retry would run on
     _within_limit(user)
     repo = await _repo_for(user, row.repo) if row.repo else None
     async with app.state.create_lock:  # count + claim as one step within this gateway

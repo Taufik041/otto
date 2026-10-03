@@ -29,3 +29,12 @@ def unusable() -> dict[str, str]:
 def clear():
     with get_db() as s:
         s.exec(delete(ProviderHealth))
+
+
+def reason_for(model_id) -> str | None:
+    """Why a catalog model can't be used now: its provider marked, or the model itself."""
+    from shared import config
+
+    entry = config.catalog_entry(model_id)
+    bad = unusable()
+    return (bad.get(entry["provider"]) if entry else None) or bad.get(model_id)

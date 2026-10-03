@@ -42,7 +42,9 @@ sandbox image (the image step of `scripts/dev_up.sh`), or sandboxes keep running
     404, which drops the key for that model only (`model`).
   - With no key left, the turn ends `failed` with `error {stage: "model", reason}`, and
     `provider_health` records it, so `GET /models` shows the provider (or the model) unavailable
-    with a hint until the gateway restarts.
+    with a hint until the gateway restarts. Until then, the gateway also refuses it with a 400
+    (FastAPI's validation `detail`, with that `hint`) for a new chat (the model asked for, or the
+    default it would get), a follow-up or a retry (the model asked for, or the chat's own).
   - Stop interrupts a model call within a second, whether it waits on a cooldown or on the request.
 - **Chats title themselves once.** After a chat's first turn ends `done`, while its title is still
   its first message (`sessions.title_source = auto`), the brain gives it a better one: the PR's
