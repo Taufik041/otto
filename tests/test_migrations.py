@@ -5,7 +5,7 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from sqlalchemy import create_engine, inspect, text
-from sqlmodel import SQLModel
+from sqlmodel import SQLModel, select
 
 from shared import db as shared_db
 from shared.db import alembic_config, get_engine, head_revision, init_db
@@ -99,4 +99,27 @@ def test_0005_turns_repo_urls_into_repos_and_titles_old_sessions(tmp_path, monke
     assert (a.repo, a.repo_url) == ("Taufik041/otto_test", "https://github.com/Taufik041/otto_test")
     assert b.repo is None
     assert a.title == ("fix the tests " + "x" * 80)[:60] and len(a.title) == 60
+    get_engine().dispose()
+
+
+def test_0011_raises_users_on_the_old_daily_limit(tmp_path, monkeypatch):
+    from shared.models import User
+
+    url = f"sqlite:///{tmp_path / 'old.db'}"
+    monkeypatch.setattr(shared_db, "_engine", None)
+    engine = shared_db._make_engine(url)
+    cfg = alembic_config()
+    with engine.begin() as conn:
+        cfg.attributes["connection"] = conn
+        command.upgrade(cfg, "0010")
+        for uid, limit in [("old", 50000), ("custom", 1000), ("big", 1_000_000)]:
+            conn.execute(text("INSERT INTO users (id, name, daily_token_limit, created_at, token_version) "
+                              "VALUES (:id, :id, :limit, '2026-01-01', 0)"), {"id": uid, "limit": limit})
+    engine.dispose()
+
+    init_db(url)
+
+    with shared_db.get_db() as s:
+        limits = {u.id: u.daily_token_limit for u in s.exec(select(User))}
+    assert limits == {"old": 300_000, "custom": 1000, "big": 1_000_000}  # only the old default moves
     get_engine().dispose()

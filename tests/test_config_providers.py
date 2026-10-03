@@ -102,3 +102,12 @@ def test_resolve_model(monkeypatch):
     use_env(monkeypatch, {"OTTO_API_KEY": "d"})
     assert config.resolve_model("openrouter/free") == {
         "id": "openrouter/free", "provider": "custom", "model": "openrouter/free", "label": "openrouter/free"}
+
+
+def test_the_default_daily_limit_is_300k(monkeypatch):
+    import importlib
+    monkeypatch.delenv("DAILY_TOKEN_LIMIT", raising=False)
+    try:
+        assert importlib.reload(config).DAILY_TOKEN_LIMIT == 300_000
+    finally:
+        importlib.reload(config)
