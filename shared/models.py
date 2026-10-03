@@ -128,3 +128,13 @@ class Usage(SQLModel, table=True):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
+
+
+class ProviderHealth(SQLModel, table=True):
+    """A provider (or one catalog model) the brain found unusable: out of credit, a bad key, an
+    unknown model. GET /models shows it unavailable; the gateway clears the table when it starts."""
+    __tablename__ = "provider_health"
+
+    key: str = Field(primary_key=True)  # a provider ("openrouter") or a catalog model id ("openai:gpt-4.1")
+    reason: str  # "quota", "auth" or "model"
+    updated_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))

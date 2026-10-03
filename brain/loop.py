@@ -1,5 +1,5 @@
 import json, asyncio
-from shared import config, usage
+from shared import config, health, usage
 from brain.providers import LLMError, ProviderUnusable, Stopped, complete
 from brain.tools import CHAT_SYSTEM, SYSTEM, TOOLS, KIND, missing_args
 from brain.bus import bus_call, start_consumer, stop_consumer
@@ -230,6 +230,8 @@ async def _turn(sid, messages, steps):
         # out of credit, a bad key, an unknown model: no retry or wait helps, and the chat says which
         record("error", {"stage": "model", "reason": e.reason, "provider": e.provider, "model": e.model,
                          "message": str(e)})
+        # for GET /models: the whole provider, or just this model when the model is the problem
+        health.mark(get_session(sid).model if e.reason == "model" else e.provider, e.reason)
         transition(sid, "failed", {"running"})
         return messages
     except LLMError as e:

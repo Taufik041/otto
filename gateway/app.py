@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field, field_validator
 from brain.bus import bus_call, start_consumer, stop_consumer
 from gateway import auth, github_app, live, tokens
 from orchestrator import sandbox
-from shared import config, usage
+from shared import config, health, usage
 from shared.accounts import delete_account
 from shared.bus import SESSIONS_QUEUE, actions_queue, chat_job, results_queue, resume_job, retry_job, start_job
 from shared.db import get_engine, init_db
@@ -48,6 +48,7 @@ UNAVAILABLE = "Unavailable right now. Try again later."  # the picker's hint for
 async def lifespan(app):
     auth.check_secret()
     init_db()
+    health.clear()  # what a worker found unusable counts until the gateway restarts
     if pruned := tokens.prune_refresh():
         print(f"[gateway] deleted {pruned} refresh token(s) that expired over a week ago", flush=True)
     swept = sweep_stale_sessions()
@@ -249,14 +250,17 @@ async def _create_sandbox(sid, repo):
 
 @app.get("/models")
 def models():
-    """The model catalog for the frontend's picker; available: its provider has an API key. An
-    unavailable model comes with a hint to show beside it (its key is the server's business)."""
+    """The model catalog for the frontend's picker; available: its provider has an API key, and no
+    worker found it unusable (out of credit, a bad key, an unknown model) since the gateway started.
+    An unavailable model comes with a hint to show beside it."""
     out = []
+    bad = health.unusable()  # providers or models a worker found unusable since the gateway started
     for m in config.MODELS:
-        available = config.is_available(m["id"])
+        reason = bad.get(m["provider"]) or bad.get(m["id"])
+        available = config.is_available(m["id"]) and reason is None
+        hint = health.HINTS.get(reason, UNAVAILABLE) if reason else None if available else UNAVAILABLE
         out.append({"id": m["id"], "label": m["label"], "provider": m["provider"],
-                    "description": m.get("description"), "available": available,
-                    "hint": None if available else UNAVAILABLE})
+                    "description": m.get("description"), "available": available, "hint": hint})
     return {"default_model": config.DEFAULT_MODEL, "models": out}
 
 
