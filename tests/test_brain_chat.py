@@ -153,3 +153,9 @@ def test_the_latest_system_message_is_the_one_in_force():
         {"role": "user", "content": "q2"}]]
     assert rebuild_messages(evs) == [{"role": "system", "content": "new"}, {"role": "user", "content": "q"},
                                      {"role": "assistant", "content": "a"}, {"role": "user", "content": "q2"}]
+
+
+def test_the_agent_prompt_requires_commit_push_and_pr_before_the_summary():
+    finish = SYSTEM[SYSTEM.index("When the task is done"):]
+    assert "MUST" in finish
+    assert finish.index("git_commit") < finish.index("git_push") < finish.index("git_open_pr") < finish.index("final summary")
