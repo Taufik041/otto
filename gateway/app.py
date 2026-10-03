@@ -445,12 +445,19 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_
     return {"id": sid, "status": "queued", "repo": repo["full_name"]}
 
 
+class Retry(BaseModel):
+    model: str | None = None  # a catalog id: retry on another model (the chat stays on it)
+
+
 @app.post("/sessions/{sid}/retry", status_code=202)
-async def retry(sid: str, user: User = Depends(auth.current_user)):
+async def retry(sid: str, body: Retry | None = None, user: User = Depends(auth.current_user)):
     """Run a failed (or interrupted) turn again from where it stopped, with no new message: the
-    error card's Retry. Other statuses are 409."""
+    error card's Retry, optionally on another model. Other statuses are 409."""
     ch = app.state.ch
     row = _row(sid, user)
+    model = body.model if body else None
+    if model is not None and not config.is_available(model):
+        raise unavailable_model(model)
     _within_limit(user)
     repo = await _repo_for(user, row.repo) if row.repo else None
     async with app.state.create_lock:  # count + claim as one step within this gateway
@@ -460,6 +467,7 @@ async def retry(sid: str, user: User = Depends(auth.current_user)):
             _room_for_an_agent(user)
         if not transition(sid, "provisioning", RETRYABLE):
             raise HTTPException(409, f"session {sid} is {_row(sid, user).status}; only a failed session can be retried")
+    _switch_model(sid, model)
     if repo:
         try:
             await _wake_sandbox(ch, sid, repo)

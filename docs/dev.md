@@ -153,7 +153,7 @@ In the App's settings on GitHub:
 | `POST /auth/logout-all` | Bearer | revokes every refresh token and voids every access token |
 | `POST /me/password`, `POST /auth/reset` | Bearer / reset token | signs out every device, and signs this one in again (the same body as login) |
 | `POST /sessions/{id}/ws-ticket` | Bearer, the session's owner | `{ticket}`: single use, 30 seconds, for `WS /sessions/{id}/ws?ticket=...&after_seq=N` |
-| `POST /sessions/{id}/retry` | Bearer, the session's owner | runs a `failed` or `interrupted` turn again from where it stopped, with no new message (409 otherwise) |
+| `POST /sessions/{id}/retry` | Bearer, the session's owner | runs a `failed` or `interrupted` turn again from where it stopped, with no new message (409 otherwise); `{model}` retries on another model (`session.model_changed`; 400 if unavailable) |
 | `POST /auth/github/url` `{mode: "signin" \| "link"}` | none; Bearer for `link` | `{url}` to send the browser to, and the state's nonce cookie |
 | `POST /github/install-url` | Bearer | `{url}` to install the App, and the state's nonce cookie |
 | `GET /auth/github/start` | none | redirects to GitHub to sign in (for typing into the address bar) |

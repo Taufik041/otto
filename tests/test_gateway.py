@@ -677,3 +677,30 @@ def test_retry_of_someone_elses_session_is_404(client, env):
     other = make_user("other@example.com")
     sid = finished_session(other.id, status="failed")
     assert client.post(f"/sessions/{sid}/retry").status_code == 404
+
+
+def test_retry_can_switch_the_model(client, env, monkeypatch):
+    use_env(monkeypatch, BOTH)
+    ch, orch, runners = env
+    sid = finished_session(client.user_id, status="failed")  # model "m"
+    orch.status[sid] = "running"
+    runners.alive.add(sid)
+
+    r = client.post(f"/sessions/{sid}/retry", json={"model": "openai:model-b"})
+
+    assert r.status_code == 202
+    assert get_session(sid).model == "openai:model-b"
+    changed = [e.payload for e in load_events(sid) if e.type == "session.model_changed"]
+    assert changed == [{"from": "m", "to": "openai:model-b"}]
+    assert jobs(ch) == [{"type": "retry", "session_id": sid}]
+
+
+def test_retry_with_an_unavailable_model_is_400_and_changes_nothing(client, env, monkeypatch):
+    use_env(monkeypatch, {"OPENROUTER_API_KEY": "orkey-one", "OTTO_OPENAI_MODELS": "model-b"})
+    sid = finished_session(client.user_id, status="failed")
+
+    r = client.post(f"/sessions/{sid}/retry", json={"model": "openai:model-b"})
+
+    assert r.status_code == 400 and r.json()["detail"][0]["loc"] == ["body", "model"]
+    assert (get_session(sid).model, get_session(sid).status) == ("m", "failed")
+    assert jobs(env[0]) == []
