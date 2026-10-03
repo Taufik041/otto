@@ -3,11 +3,11 @@
 // Terminal, and screenshot the chat at 1440px and 390px in light and dark.
 //
 //   OTTO_EMAIL=you@example.com OTTO_PASSWORD=... node scripts/e2e.mjs [out-dir]
-//   OTTO_REFRESH=<a refresh token> node scripts/e2e.mjs [out-dir]     (e.g. a GitHub-only account)
 //   OTTO_CHAT=http://localhost:5173/c/<id> ...   continue an existing chat (skips starting one)
 //
 // It opens a real pull request on OTTO_REPO (default Taufik041/otto_test) and spends tokens.
-// Needs `npm run dev`, the gateway and a worker (docs/dev.md).
+// Needs `npm run dev`, the gateway and a worker (docs/dev.md). It signs in only with the account's
+// email and password: never with a minted or copied token.
 import { mkdirSync } from 'node:fs'
 import { chromium } from 'playwright'
 
@@ -20,6 +20,11 @@ const OUT = process.argv[2] || 'screenshots/e2e'
 const TURN_TIMEOUT = 15 * 60_000
 mkdirSync(OUT, { recursive: true })
 
+if (!process.env.OTTO_EMAIL || !process.env.OTTO_PASSWORD) {
+  console.error('set OTTO_EMAIL and OTTO_PASSWORD to the account to sign in as')
+  process.exit(2)
+}
+
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a)
 const browser = await chromium.launch()
 
@@ -29,15 +34,12 @@ let state = null
 async function context(viewport, theme) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1, ...(state ? { storageState: state } : {}) })
   await ctx.addInitScript((t) => localStorage.setItem('otto.theme', t), theme)
-  if (!state && process.env.OTTO_REFRESH) {
-    await ctx.addCookies([{ name: 'otto_refresh', value: process.env.OTTO_REFRESH, domain: 'localhost', path: '/auth', httpOnly: true, sameSite: 'Lax' }])
-  }
   return ctx
 }
 
 async function signIn(page) {
   await page.goto(APP + '/')
-  if (process.env.OTTO_REFRESH || state) return page.getByText('What should we build today').waitFor()
+  if (state) return page.getByText('What should we build today').waitFor() // still signed in
   await page.waitForURL('**/login')
   await page.getByLabel('Email').fill(process.env.OTTO_EMAIL)
   await page.getByLabel('Password').fill(process.env.OTTO_PASSWORD)
