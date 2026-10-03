@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { api, WS_URL } from '@/api'
 import { keys } from '@/api/queries'
+import type { SessionDetail } from '@/api/types'
 import { followSession, type LiveState } from './live'
 import { emptyState, reduce, view, type SessionEvent, type View } from './reduce'
 
@@ -29,8 +30,13 @@ export function useSessionView(id: string): { view: View; connection: LiveState 
         if (!events.length) return
         dispatch(events)
         lastSeq.current = Math.max(lastSeq.current, ...events.map((e) => e.seq))
-        if (events.some((e) => e.type === 'session.status' || e.type === 'pr.opened')) {
-          void qc.invalidateQueries({ queryKey: keys.sessions })
+        // the chat's title lives on the session (GET /sessions/{id}): an auto title updates it there,
+        // so a later rename (which refetches it) still wins
+        const titled = events.filter((e) => e.type === 'session.titled').at(-1)
+        const title = typeof titled?.payload.title === 'string' ? titled.payload.title : null
+        if (title) qc.setQueryData<SessionDetail>(keys.session(id), (d) => (d ? { ...d, title } : d))
+        if (events.some((e) => e.type === 'session.status' || e.type === 'pr.opened' || e.type === 'session.titled')) {
+          void qc.invalidateQueries({ queryKey: keys.sessions, exact: true }) // the sidebar's list
         }
       },
       onState: setConnection,

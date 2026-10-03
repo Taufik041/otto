@@ -160,3 +160,22 @@ it('a model switch shows as a divider, and the header follows it', async () => {
   expect(within(header).getByText('GPT-4.1 mini')).toBeInTheDocument()
   expect(screen.getByText('and in Python?')).toBeInTheDocument()
 })
+
+it('an auto title (session.titled) updates the header and the sidebar live', async () => {
+  const l = log().created('hey so what is a closure, like in javascript', null).status('running')
+    .msg('user', 'hey so what is a closure, like in javascript').msg('assistant', 'A function.')
+  let listTitle = 'hey so what is a closure, like in javascript'
+  backend(l.events, { repo: null, work_branch: null, title: listTitle })
+  server.use(http.get(`${API}/sessions`, () => HttpResponse.json([session({ id: 's1', repo: null, title: listTitle })])))
+  const header = await screen.findByRole('banner')
+  expect(within(header).getByText(listTitle)).toBeInTheDocument()
+  await waitFor(() => expect(FakeSocket.all).toHaveLength(1))
+
+  listTitle = 'Closures in JavaScript' // what GET /sessions answers once the brain titled it
+  FakeSocket.all[0]!.deliver({ seq: 5, ts: '2026-10-02T14:10:00Z', type: 'session.status', payload: { status: 'done' } })
+  FakeSocket.all[0]!.deliver({ seq: 6, ts: '2026-10-02T14:10:01Z', type: 'session.titled', payload: { title: 'Closures in JavaScript', source: 'model' } })
+
+  await waitFor(() => expect(within(header).getByText('Closures in JavaScript')).toBeInTheDocument())
+  const sidebar = screen.getByRole('navigation', { name: 'Chats' })
+  await waitFor(() => expect(within(sidebar).getByText('Closures in JavaScript')).toBeInTheDocument())
+})

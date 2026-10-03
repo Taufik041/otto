@@ -373,3 +373,10 @@ describe('switching the model', () => {
     expect(kinds(v(l.events).items).slice(-3)).toEqual(['model', 'user', 'thinking'])
   })
 })
+
+it('an auto title is not a thread item (the chat page updates the title itself)', () => {
+  const l = log().created('t', null).status('running').msg('user', 't').msg('assistant', 'a').status('done')
+  const before = v(l.events).items
+  l.add('session.titled', { title: 'A short title', source: 'model' })
+  expect(v(l.events).items).toEqual(before)
+})

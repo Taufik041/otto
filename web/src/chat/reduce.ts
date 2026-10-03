@@ -21,6 +21,8 @@
  * | llm.usage                  | {provider, model, tokens}                   | hidden |
  * | llm.key_rotated            | {provider, from_index, to_index, reason}    | hidden (infrastructure) |
  * | sandbox.reused / .recreated| {} / {previous}                             | hidden (infrastructure) |
+ * | session.model_changed      | {from, to}                                  | a quiet "Switched to …" divider before its message |
+ * | session.titled             | {title, source}                             | not in the thread: useSessionView updates the chat's title |
  */
 
 export type SessionEvent = { seq: number; ts: string; type: string; payload: Record<string, unknown> }
@@ -364,7 +366,9 @@ function apply(s: State, e: SessionEvent) {
       return
     }
     default:
-      return // llm.usage, llm.key_rotated, sandbox.*: infrastructure, never shown
+      // session.titled: the title lives on the session, which useSessionView updates;
+      // llm.usage, llm.key_rotated, sandbox.*: infrastructure, never shown
+      return
   }
 }
 
