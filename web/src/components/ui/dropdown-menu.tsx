@@ -1,5 +1,6 @@
 import { DropdownMenu as Menu } from 'radix-ui'
 import type { ComponentProps } from 'react'
+import { LAYER } from '@/components/layers'
 import { cn } from '@/utils/cn'
 
 // shadcn's DropdownMenu, restyled to the design's menus: a card with a hairline border, 14-16px
@@ -8,14 +9,15 @@ export const DropdownMenu = Menu.Root
 export const DropdownMenuTrigger = Menu.Trigger
 export const DropdownMenuGroup = Menu.Group
 
-export function DropdownMenuContent({ className, sideOffset = 6, ...props }: ComponentProps<typeof Menu.Content>) {
+export function DropdownMenuContent({ className, sideOffset = 6, style, ...props }: ComponentProps<typeof Menu.Content>) {
   return (
     <Menu.Portal>
       <Menu.Content
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
+        style={{ zIndex: LAYER.menu, ...style }}
         className={cn(
-          'z-50 min-w-[200px] rounded-[14px] border border-solid border-line bg-card p-1.5 text-text shadow-pop outline-none animate-pop',
+          'min-w-[200px] rounded-[14px] border border-solid border-line bg-card p-1.5 text-text shadow-pop outline-none animate-pop',
           className,
         )}
         {...props}

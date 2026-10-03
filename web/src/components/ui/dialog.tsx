@@ -1,5 +1,6 @@
 import { Dialog as D } from 'radix-ui'
 import type { ComponentProps, ReactNode } from 'react'
+import { LAYER } from '@/components/layers'
 import { cn } from '@/utils/cn'
 
 // shadcn's Dialog, restyled: the design's scrim, a 22px-radius card, calm pop-in.
@@ -14,12 +15,13 @@ export function DialogContent({
 }: ComponentProps<typeof D.Content> & { children: ReactNode }) {
   return (
     <D.Portal>
-      <D.Overlay className="fixed inset-0 z-[100] bg-scrim animate-fade" />
+      <D.Overlay className="fixed inset-0 bg-scrim animate-fade" style={{ zIndex: LAYER.dialog }} />
       <D.Content
         className={cn(
-          'fixed left-1/2 top-1/2 z-[101] w-[calc(100%-32px)] max-w-[420px] -translate-x-1/2 -translate-y-1/2 rounded-[22px] border border-solid border-hair bg-card p-6 text-text shadow-pop outline-none',
+          'fixed left-1/2 top-1/2 w-[calc(100%-32px)] max-w-[420px] -translate-x-1/2 -translate-y-1/2 rounded-[22px] border border-solid border-hair bg-card p-6 text-text shadow-pop outline-none',
           className,
         )}
+        style={{ zIndex: LAYER.dialog + 1 }}
         {...props}
       >
         <div className="animate-pop">{children}</div>

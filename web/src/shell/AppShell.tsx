@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Outlet, useLocation, useOutletContext } from 'react-router'
+import { LAYER } from '@/components/layers'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { Sidebar } from './Sidebar'
 
@@ -48,14 +49,15 @@ export function AppShell() {
   return (
     <div className="flex h-full overflow-hidden">
       {mobile && drawer && (
-        <div aria-hidden="true" onClick={() => setDrawer(false)} className="fixed inset-0 z-[79] bg-scrim animate-fade" />
+        <div aria-hidden="true" onClick={() => setDrawer(false)} className="fixed inset-0 bg-scrim animate-fade" style={{ zIndex: LAYER.scrim }} />
       )}
       <aside
         aria-label="Sidebar"
         inert={mobile && !drawer ? true : undefined}
-        className="top-0 bottom-0 left-0 z-[80] flex min-h-0 shrink-0 flex-col border-0 border-r border-solid border-line bg-bg2 transition-[transform,width] duration-300 ease-in-out"
+        className="top-0 bottom-0 left-0 flex min-h-0 shrink-0 flex-col border-0 border-r border-solid border-line bg-bg2 transition-[transform,width] duration-300 ease-in-out"
         style={{
           position: mobile ? 'fixed' : 'relative',
+          zIndex: LAYER.sidebar,
           width,
           transform: mobile && !drawer ? 'translateX(-105%)' : 'none',
         }}
