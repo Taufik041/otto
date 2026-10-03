@@ -170,6 +170,7 @@ function Chat({ id }: { id: string }) {
             {session.isError && <p className="text-center text-sm text-muted">{messageOf(session.error)}</p>}
             <Thread
               sessionId={id}
+              model={model}
               items={view.items}
               live={view.live}
               repo={repo}

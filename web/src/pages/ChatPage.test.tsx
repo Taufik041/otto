@@ -35,9 +35,11 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = () => {}
 })
 
-function backend(events: SessionEvent[], detail: Record<string, unknown> = {}) {
+/** extra: handlers that win over these defaults, in place before the first render */
+function backend(events: SessionEvent[], detail: Record<string, unknown> = {}, extra: Parameters<typeof server.use> = []) {
   const posted: string[] = []
   server.use(
+    ...extra,
     http.get(`${API}/sessions`, () => HttpResponse.json([session({ id: 's1' })])),
     http.get(`${API}/sessions/s1`, () =>
       HttpResponse.json({
@@ -178,4 +180,49 @@ it('an auto title (session.titled) updates the header and the sidebar live', asy
   await waitFor(() => expect(within(header).getByText('Closures in JavaScript')).toBeInTheDocument())
   const sidebar = screen.getByRole('navigation', { name: 'Chats' })
   await waitFor(() => expect(within(sidebar).getByText('Closures in JavaScript')).toBeInTheDocument())
+})
+
+it('out of credit: the card says so, offers the picker, and Retry runs on the model picked', async () => {
+  const l = log().created('what is a closure?', null).status('running')
+    .add('error', { stage: 'model', reason: 'quota', provider: 'openrouter', model: null, message: 'openrouter is unusable: quota' })
+    .status('failed')
+  const bodies: unknown[] = []
+  backend(l.events, { repo: null, work_branch: null, model: 'openrouter:openrouter/free' }, [
+    http.get(`${API}/models`, () =>
+      HttpResponse.json({
+        default_model: 'openrouter:openrouter/free',
+        models: [
+          { id: 'openrouter:openrouter/free', label: 'OpenRouter Free', provider: 'openrouter', available: false,
+            hint: 'Out of credit right now. Try another model.' },
+          { id: 'openai:gpt-4.1-mini', label: 'GPT-4.1 mini', provider: 'openai', available: true, hint: null },
+        ],
+      }),
+    ),
+    http.post(`${API}/sessions/s1/retry`, async ({ request }) => {
+      bodies.push(await request.json())
+      return HttpResponse.json({ id: 's1', status: 'queued' }, { status: 202 })
+    }),
+  ])
+
+  const card = await screen.findByRole('alert')
+  expect(within(card).getByText("This model's provider is out of credit.")).toBeInTheDocument()
+  expect(within(card).getByText('Switch models and retry.')).toBeInTheDocument()
+
+  await userEvent.click(within(card).getByRole('button', { name: /OpenRouter Free/ }))
+  expect(within(card).getByRole('option', { name: /OpenRouter Free/ })).toHaveAttribute('aria-disabled', 'true')
+  expect(within(card).getByText('Out of credit right now. Try another model.')).toBeInTheDocument()
+  await userEvent.click(within(card).getByRole('option', { name: /GPT-4.1 mini/ }))
+  await userEvent.click(within(card).getByRole('button', { name: 'Retry' }))
+
+  await waitFor(() => expect(bodies).toEqual([{ model: 'openai:gpt-4.1-mini' }]))
+})
+
+it('a bad key says the model isn\'t set up correctly', async () => {
+  const l = log().created('t', null).status('running')
+    .add('error', { stage: 'model', reason: 'auth', provider: 'openai', model: null, message: 'x' }).status('failed')
+  backend(l.events, { repo: null, work_branch: null })
+  const card = await screen.findByRole('alert')
+  expect(within(card).getByText("This model isn't set up correctly.")).toBeInTheDocument()
+  expect(within(card).getByText('Try another model.')).toBeInTheDocument()
+  expect(within(card).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
 })

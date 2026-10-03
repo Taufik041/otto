@@ -300,6 +300,7 @@ describe('helpers', () => {
     expect(errorCopy({ stage: 'llm', step: null, message: 'boom' }, 'failed', true)).toEqual({
       title: "Otto couldn't finish.",
       message: "The model didn't respond. Retry to continue from the last step.",
+      switchModel: false,
     })
   })
 })
@@ -379,4 +380,34 @@ it('an auto title is not a thread item (the chat page updates the title itself)'
   const before = v(l.events).items
   l.add('session.titled', { title: 'A short title', source: 'model' })
   expect(v(l.events).items).toEqual(before)
+})
+
+describe('a model that cannot work', () => {
+  function modelError(reason: string) {
+    const l = log().created('t', null).status('running')
+      .add('error', { stage: 'model', reason, provider: 'openrouter', model: null, message: 'openrouter is unusable: ' + reason })
+      .status('failed')
+    return v(l.events).items.find((i) => i.kind === 'error') as Extract<Item, { kind: 'error' }>
+  }
+
+  it('out of credit: switch models and retry', () => {
+    expect(modelError('quota')).toMatchObject({
+      title: "This model's provider is out of credit.", message: 'Switch models and retry.', switchModel: true,
+    })
+  })
+
+  it('a bad key: try another model', () => {
+    expect(modelError('auth')).toMatchObject({
+      title: "This model isn't set up correctly.", message: 'Try another model.', switchModel: true,
+    })
+  })
+
+  it('an unknown model: try another model', () => {
+    expect(modelError('model')).toMatchObject({ title: "This model isn't available.", message: 'Try another model.', switchModel: true })
+  })
+
+  it('other failures offer Retry without the picker', () => {
+    const l = log().created('t', null).status('running').add('error', { stage: 'llm', message: 'after 6 attempts' }).status('failed')
+    expect(v(l.events).items.find((i) => i.kind === 'error')).toMatchObject({ switchModel: false })
+  })
 })

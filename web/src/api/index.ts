@@ -64,7 +64,8 @@ export const api = {
   stop: (id: string) => post<{ id: string; status: string }>(`/sessions/${encodeURIComponent(id)}/stop`),
   rename: (id: string, title: string) =>
     client.request<SessionSummary>(`/sessions/${encodeURIComponent(id)}`, { method: 'PATCH', body: { title } }),
-  retry: (id: string) => post<{ id: string; status: string }>(`/sessions/${encodeURIComponent(id)}/retry`),
+  retry: (id: string, model?: string) =>
+    post<{ id: string; status: string }>(`/sessions/${encodeURIComponent(id)}/retry`, model ? { model } : undefined),
   deleteSession: (id: string) => client.request<{ id: string }>(`/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 }
 

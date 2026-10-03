@@ -34,6 +34,8 @@ export function useSessionView(id: string): { view: View; connection: LiveState 
         // so a later rename (which refetches it) still wins
         const titled = events.filter((e) => e.type === 'session.titled').at(-1)
         const title = typeof titled?.payload.title === 'string' ? titled.payload.title : null
+        // a model found unusable: the picker's list says so now (GET /models)
+        if (events.some((e) => e.type === 'error' && e.payload.stage === 'model')) void qc.invalidateQueries({ queryKey: keys.models })
         if (title) qc.setQueryData<SessionDetail>(keys.session(id), (d) => (d ? { ...d, title } : d))
         if (events.some((e) => e.type === 'session.status' || e.type === 'pr.opened' || e.type === 'session.titled')) {
           void qc.invalidateQueries({ queryKey: keys.sessions, exact: true }) // the sidebar's list

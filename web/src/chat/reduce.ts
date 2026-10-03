@@ -101,7 +101,7 @@ export type Item =
   | { kind: 'work'; id: string; block: WorkBlock; avatar: boolean }
   | { kind: 'pr'; id: string; pr: PrCard }
   | { kind: 'stopped'; id: string }
-  | { kind: 'error'; id: string; title: string; message: string }
+  | { kind: 'error'; id: string; title: string; message: string; switchModel: boolean }
   | { kind: 'limit'; id: string; used: number; limit: number; resetsAt: string }
   | { kind: 'nudge'; id: string }
   /** the chat moved to another model from here on: a quiet divider */
@@ -158,7 +158,7 @@ type Turn = {
   startedAt: string
   endedAt: string | null
   outcome: Status | null
-  error: { stage: string; step: string | null; message: string } | null
+  error: { stage: string; step: string | null; reason: string | null; message: string } | null
   limit: { used: number; limit: number; resetsAt: string } | null
   stoppedHere: boolean
   /** a model switch that came with this turn's message */
@@ -362,7 +362,7 @@ function apply(s: State, e: SessionEvent) {
       const stage = str(p.stage) ?? ''
       if (stage === 'destroy_sandbox') return // tearing a sandbox down: not the user's concern
       const t = s.restart?.afterFailure ? current(s) : s.restart ? workingTurn(s, e.ts, e.seq) : current(s)
-      if (t) t.error = { stage, step: str(p.step), message: str(p.message) ?? '' }
+      if (t) t.error = { stage, step: str(p.step), reason: str(p.reason), message: str(p.message) ?? '' }
       return
     }
     default:
@@ -584,8 +584,25 @@ const FINISH_STEPS: Record<string, string> = {
   'git.open_pr': "Otto couldn't open the pull request.",
 }
 
-/** The error card: a title naming what failed, and what to do. Never internals. */
+// a model the provider can't serve (the brain's error stage "model"): pick another and retry
+const MODEL_REASONS: Record<string, { title: string; message: string }> = {
+  quota: { title: "This model's provider is out of credit.", message: 'Switch models and retry.' },
+  auth: { title: "This model isn't set up correctly.", message: 'Try another model.' },
+  model: { title: "This model isn't available.", message: 'Try another model.' },
+}
+
+/** The error card: a title naming what failed, and what to do (switchModel: offer the model
+ *  picker beside Retry). Never internals. */
 export function errorCopy(
+  error: { stage: string; step: string | null; reason?: string | null; message: string } | null,
+  outcome: Status | null,
+  committed: boolean,
+): { title: string; message: string; switchModel: boolean } {
+  if (error?.stage === 'model') return { ...(MODEL_REASONS[error.reason ?? ''] ?? MODEL_REASONS.model!), switchModel: true }
+  return { ...plainCopy(error, outcome, committed), switchModel: false }
+}
+
+function plainCopy(
   error: { stage: string; step: string | null; message: string } | null,
   outcome: Status | null,
   committed: boolean,

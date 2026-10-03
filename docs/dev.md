@@ -33,6 +33,17 @@ sandbox image (the image step of `scripts/dev_up.sh`), or sandboxes keep running
   session's model and appends `session.model_changed {from, to}` before the user message. The
   brain reads the session's model at every LLM call, and the history goes to the new model as it
   is (every provider speaks the same chat format).
+- **Provider errors fail fast.** In `brain/providers.py`:
+  - A real 429 cools the key down for the provider's own reset time (Retry-After,
+    `x-ratelimit-reset-*`, OpenRouter's `X-RateLimit-Reset`), else 60s. The next key is tried at
+    once, and a call's total waiting is capped at `MODEL_WAIT_BUDGET_SECONDS`.
+  - Errors no wait fixes drop that key for the worker process at once (logged once, by index,
+    never the key): 429 `insufficient_quota` and OpenRouter's 402 (`quota`), 401/403 (`auth`), and
+    404, which drops the key for that model only (`model`).
+  - With no key left, the turn ends `failed` with `error {stage: "model", reason}`, and
+    `provider_health` records it, so `GET /models` shows the provider (or the model) unavailable
+    with a hint until the gateway restarts.
+  - Stop interrupts a model call within a second, whether it waits on a cooldown or on the request.
 - **Chats title themselves once.** After a chat's first turn ends `done`, while its title is still
   its first message (`sessions.title_source = auto`), the brain gives it a better one: the PR's
   title if the turn opened one, else 3–6 words from the chat's own model. That's one short call

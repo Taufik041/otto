@@ -1,9 +1,10 @@
 import { useMutation } from '@tanstack/react-query'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { api } from '@/api'
 import { messageOf } from '@/api/errors'
 import { useModels } from '@/api/queries'
 import { Mark } from '@/components/brand'
+import { ModelMenu } from '@/composer/ModelMenu'
 import { SendProblemCard } from '@/composer/SendProblemCard'
 import { shortName } from '@/utils/mention'
 import { Glyph, IC } from './icons'
@@ -14,6 +15,8 @@ import { WorkBlock } from './WorkBlock'
 
 export type ThreadProps = {
   sessionId: string
+  /** the chat's model now */
+  model: string | null
   items: Item[]
   live: boolean
   repo: string | null
@@ -54,8 +57,26 @@ function Otto({ avatar, spinning, pb = 16, children }: { avatar: boolean; spinni
   )
 }
 
-function ErrorCard({ sessionId, title, message }: { sessionId: string; title: string; message: string }) {
-  const retry = useMutation({ mutationFn: () => api.retry(sessionId) })
+function ErrorCard({
+  sessionId,
+  title,
+  message,
+  switchModel,
+  model,
+}: {
+  sessionId: string
+  title: string
+  message: string
+  /** the model can't work: offer the picker, and retry on the one picked */
+  switchModel: boolean
+  model: string | null
+}) {
+  const models = useModels()
+  const [picked, setPicked] = useState<string | null>(null)
+  const [picking, setPicking] = useState(false)
+  const chosen = picked ?? model
+  const retry = useMutation({ mutationFn: () => api.retry(sessionId, chosen && chosen !== model ? chosen : undefined) })
+  const label = models.data?.models.find((m) => m.id === chosen)?.label ?? chosen
   return (
     <div role="alert" className="rounded-[18px] border border-solid border-line bg-card px-5 py-[18px]">
       <div className="flex items-start gap-3">
@@ -63,15 +84,45 @@ function ErrorCard({ sessionId, title, message }: { sessionId: string; title: st
         <div className="min-w-0 flex-1">
           <div className="text-[15px] font-semibold">{title}</div>
           <div className="mt-[3px] text-[15px] leading-normal text-muted text-pretty">{message}</div>
-          <button
-            type="button"
-            disabled={retry.isPending}
-            onClick={() => retry.mutate()}
-            className="mt-3.5 inline-flex h-9 items-center gap-[7px] rounded-[980px] border-0 bg-accent px-4 text-[14.5px] text-white hover:bg-accent-h disabled:opacity-60"
-          >
-            <Glyph d={IC.retry} size={14} width={2} />
-            Retry
-          </button>
+          <div className="mt-3.5 flex flex-wrap items-center gap-2.5">
+            {switchModel && (
+              <button
+                type="button"
+                aria-haspopup="listbox"
+                aria-expanded={picking}
+                disabled={!models.data}
+                onClick={() => setPicking(!picking)}
+                className="inline-flex h-9 items-center gap-1.5 rounded-[980px] border border-solid border-line bg-transparent px-3.5 text-[14px] text-text hover:bg-hover"
+              >
+                {label}
+                <Glyph d={IC.chevDown} size={13} width={2} />
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={retry.isPending}
+              onClick={() => retry.mutate()}
+              className="inline-flex h-9 items-center gap-[7px] rounded-[980px] border-0 bg-accent px-4 text-[14.5px] text-white hover:bg-accent-h disabled:opacity-60"
+            >
+              <Glyph d={IC.retry} size={14} width={2} />
+              Retry
+            </button>
+          </div>
+          {switchModel && picking && models.data && (
+            <div className="mt-3 rounded-[14px] border border-solid border-line p-1.5 animate-pop">
+              <ModelMenu
+                models={models.data.models}
+                selected={chosen}
+                defaultId={models.data.default_model}
+                autoFocus={false}
+                onPick={(id) => {
+                  setPicked(id)
+                  setPicking(false)
+                }}
+                onClose={() => setPicking(false)}
+              />
+            </div>
+          )}
           {retry.isError && <div className="mt-2 text-sm text-bad">{messageOf(retry.error)}</div>}
         </div>
       </div>
@@ -154,7 +205,7 @@ export function Thread(p: ThreadProps) {
           case 'error':
             return (
               <Otto key={it.id} avatar spinning={false}>
-                <ErrorCard sessionId={p.sessionId} title={it.title} message={it.message} />
+                <ErrorCard sessionId={p.sessionId} title={it.title} message={it.message} switchModel={it.switchModel} model={p.model} />
               </Otto>
             )
           case 'limit':
