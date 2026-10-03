@@ -70,11 +70,14 @@ export function Composer({
   const ta = useRef<HTMLTextAreaElement>(null)
   const caretAfter = useRef<number | null>(null)
 
-  // preselect: the user's default, else the server's default_model
+  // a new chat preselects the user's default, else the server's default_model; a reply starts on the
+  // chat's own model (`model` is then only a new pick, sent with the next message)
   useEffect(() => {
+    if (reply) return
     if (models.data && (model === null || !models.data.models.some((m) => m.id === model && m.available)))
       setModel(initialModel(models.data, me.default_model))
-  }, [models.data, me.default_model, model])
+  }, [models.data, me.default_model, model, reply])
+  const current = reply ? (model ?? reply.model) : model
 
   // grow with the text (up to the CSS max-height), and put the caret back after an edit
   useLayoutEffect(() => {
@@ -89,12 +92,16 @@ export function Composer({
   }, [draft])
 
   const matches = useMemo(() => filterRepos(repos.data ?? [], mention?.query ?? ''), [repos.data, mention])
-  const selectedModel = models.data?.models.find((m) => m.id === model)
+  const selectedModel = models.data?.models.find((m) => m.id === current)
 
   const send = useMutation({
     mutationFn: async (body: { message: string; repo: string | null; model: string | null }) => {
       if (!reply) return (await api.createSession(body)).id
-      await api.followUp(reply.sessionId, { text: body.message, ...(body.repo ? { repo: body.repo } : {}) })
+      await api.followUp(reply.sessionId, {
+        text: body.message,
+        ...(body.repo ? { repo: body.repo } : {}),
+        ...(body.model ? { model: body.model } : {}),
+      })
       return reply.sessionId
     },
     onSuccess: (id, body) => {
@@ -104,6 +111,7 @@ export function Composer({
       reply.onSent(body.message, body.repo)
       setDraft('')
       setRepo(null)
+      setModel(null) // the chat is on the picked model now (session.model_changed)
     },
     onError: (e) => {
       const p = sendProblem(e)
@@ -126,7 +134,9 @@ export function Composer({
     if (!canSend) return
     setProblem(null)
     setOpen(null)
-    send.mutate({ message, repo: target?.full_name ?? null, model: reply ? null : model })
+    // a reply names a model only to switch to it
+    const switchTo = reply ? (model && model !== reply.model ? model : null) : model
+    send.mutate({ message, repo: target?.full_name ?? null, model: switchTo })
   }
 
   function onChange(value: string, caret: number) {
@@ -250,7 +260,7 @@ export function Composer({
           <ComposerPopover mobile={mobile} below={below} width={340} onClose={() => setOpen(null)} label="Choose a model">
             <ModelMenu
               models={models.data.models}
-              selected={model}
+              selected={current}
               defaultId={models.data.default_model}
               rowPadding={mobile ? '13px 12px' : '9px 12px'}
               onPick={(id) => {
@@ -305,25 +315,19 @@ export function Composer({
             />
           </div>
           <div className="mt-2 flex items-center gap-2">
-            {reply ? (
-              // a chat keeps the model it started with (the gateway refuses another)
-              <span title="A chat keeps the model it started with" className="-ml-2 flex h-8 items-center px-2.5 text-[13.5px] font-medium text-muted">
-                {models.data?.models.find((m) => m.id === reply.model)?.label ?? reply.model ?? ''}
-              </span>
-            ) : (
-              <button
-                type="button"
-                aria-haspopup="listbox"
-                aria-expanded={open === 'model'}
-                disabled={!models.data}
-                onClick={() => setOpen(open === 'model' ? null : 'model')}
-                className="-ml-2 flex h-8 items-center gap-1.5 rounded-[9px] border-0 px-2.5 text-[13.5px] font-medium text-muted hover:bg-hover"
-                style={{ background: open === 'model' ? 'var(--sel)' : undefined }}
-              >
-                {selectedModel?.label ?? (models.isPending ? 'Models…' : 'No model')}
-                <ChevronDown size={13} strokeWidth={2} />
-              </button>
-            )}
+            <button
+              type="button"
+              aria-haspopup="listbox"
+              aria-expanded={open === 'model'}
+              disabled={!models.data || working}
+              title={working ? 'You can switch models when Otto finishes' : undefined}
+              onClick={() => setOpen(open === 'model' ? null : 'model')}
+              className="-ml-2 flex h-8 items-center gap-1.5 rounded-[9px] border-0 px-2.5 text-[13.5px] font-medium text-muted hover:bg-hover disabled:hover:bg-transparent"
+              style={{ background: open === 'model' ? 'var(--sel)' : undefined }}
+            >
+              {selectedModel?.label ?? current ?? (models.isPending ? 'Models…' : 'No model')}
+              <ChevronDown size={13} strokeWidth={2} />
+            </button>
             <button
               type="button"
               title="Mention a repo"

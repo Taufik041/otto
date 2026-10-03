@@ -97,6 +97,7 @@ the start when an older event arrives late. Its tests (`reduce.test.ts`) cover e
 | Event | Payload | What the chat shows |
 |---|---|---|
 | `session.created` | `{task, repo, model}` | The first user message, with its repo chip. A turn starts. |
+| `session.model_changed` | `{from, to}` | A quiet divider before the message it came with ("Switched to GPT-4.1 mini"). The header's model label follows it. |
 | `repo.attached` | `{repo}` | A plain chat becomes an agent chat. The turn that attached the repo shows it as a chip, and that turn and later ones get work blocks. |
 | `session.status` | `{status}` | `provisioning`/`queued`/`running` mean live. Before any step, the block shows only "Setting up workspace…". `done` finishes the block. `failed`/`interrupted` show the error card. `stopped` shows "You stopped Otto…". `limited` stops the block. Work starting again after a final status is a follow-up (a new turn), or a retry if the turn had failed (the same block continues). |
 | `llm.message` (system) | | Hidden. |

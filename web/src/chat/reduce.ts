@@ -102,6 +102,8 @@ export type Item =
   | { kind: 'error'; id: string; title: string; message: string }
   | { kind: 'limit'; id: string; used: number; limit: number; resetsAt: string }
   | { kind: 'nudge'; id: string }
+  /** the chat moved to another model from here on: a quiet divider */
+  | { kind: 'model'; id: string; to: string }
 
 export type FileEntry =
   | { id: string; type: 'diff'; diff: string; truncated: boolean }
@@ -157,6 +159,8 @@ type Turn = {
   error: { stage: string; step: string | null; message: string } | null
   limit: { used: number; limit: number; resetsAt: string } | null
   stoppedHere: boolean
+  /** a model switch that came with this turn's message */
+  switchedTo: string | null
 }
 
 type State = {
@@ -170,12 +174,15 @@ type State = {
   /** set when work starts again after a final status, until we know if it's a retry or a follow-up */
   restart: { ts: string; afterFailure: boolean } | null
   prs: { number: number; url: string; turn: string }[]
+  /** a model switch waiting for the turn it applies to */
+  pendingModel: string | null
   /** every event folded in, by seq: a late gap is replayed from scratch */
   log: SessionEvent[]
 }
 
 export const emptyState = (): State => ({
   log: [],
+  pendingModel: null,
   seen: new Set(),
   status: null,
   repo: null,
@@ -205,7 +212,9 @@ function newTurn(state: State, id: string, ts: string, user: Turn['user']): Turn
     error: null,
     limit: null,
     stoppedHere: false,
+    switchedTo: state.pendingModel,
   }
+  state.pendingModel = null
   state.turns.push(t)
   return t
 }
@@ -239,6 +248,13 @@ function apply(s: State, e: SessionEvent) {
       s.repo = str(p.repo)
       s.model = str(p.model)
       newTurn(s, `t${e.seq}`, e.ts, { text: s.task, repo: s.repo, confirmed: false })
+      return
+    }
+    case 'session.model_changed': {
+      const to = str(p.to)
+      if (!to) return
+      s.model = to
+      s.pendingModel = to // shown with the message it came with
       return
     }
     case 'repo.attached': {
@@ -618,12 +634,14 @@ export function view(s: State): View {
       error: null,
       limit: null,
       stoppedHere: false,
+      switchedTo: s.pendingModel,
     })
   }
 
   for (const t of turns) {
     const ended = t.outcome !== null
     const turnLive = !ended && live
+    if (t.switchedTo) items.push({ kind: 'model', id: `${t.id}-model`, to: t.switchedTo })
     if (t.user) items.push({ kind: 'user', id: `${t.id}-u`, text: t.user.text, repo: t.user.repo })
     let avatar = true
     const otto = () => {

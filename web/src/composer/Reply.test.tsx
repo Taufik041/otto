@@ -54,10 +54,40 @@ it('between turns: a follow-up posts the text and clears the box', async () => {
   expect(box()).toHaveValue('')
 })
 
-it('the chat keeps its model: a label, not a picker', async () => {
-  setup()
-  expect(await screen.findByText('GPT-4.1 mini')).toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: /GPT-4.1 mini/ })).not.toBeInTheDocument()
+it('the picker starts on the chat\'s model, and a new choice goes with the next message', async () => {
+  const { calls } = setup()
+  const picker = await screen.findByRole('button', { name: /GPT-4.1 mini/ })
+  expect(picker).toBeEnabled()
+  await userEvent.click(picker)
+  await userEvent.click(screen.getByRole('option', { name: /OpenRouter Free/ }))
+  expect(screen.getByRole('button', { name: /OpenRouter Free/ })).toBeInTheDocument()
+  await userEvent.type(box(), 'try the free one{Enter}')
+  await waitFor(() =>
+    expect(calls).toEqual([{ path: 'messages', body: { text: 'try the free one', model: 'openrouter:openrouter/free' } }]),
+  )
+})
+
+it('the same model is not sent again', async () => {
+  const { calls } = setup()
+  await screen.findByRole('button', { name: /GPT-4.1 mini/ })
+  await userEvent.type(box(), 'more{Enter}')
+  await waitFor(() => expect(calls).toEqual([{ path: 'messages', body: { text: 'more' } }]))
+})
+
+it('the picker is disabled while Otto works', async () => {
+  setup({ live: true })
+  expect(await screen.findByRole('button', { name: /GPT-4.1 mini/ })).toBeDisabled()
+})
+
+it('an unavailable model (400) is shown inline', async () => {
+  setup({}, () =>
+    HttpResponse.json(
+      { detail: [{ type: 'value_error', loc: ['body', 'model'], msg: "Value error, unknown or unavailable model 'x'; see GET /models" }] },
+      { status: 400 },
+    ),
+  )
+  await userEvent.type(box(), 'x{Enter}')
+  expect(await screen.findByText('Pick another model.')).toBeInTheDocument()
 })
 
 it('a plain chat can take a repo in a follow-up', async () => {

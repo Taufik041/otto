@@ -349,3 +349,27 @@ describe('the error card names what failed', () => {
     expect(failedWith({ stage: 'finish', step: 'git.push', message: '' }).kind).toBe('error')
   })
 })
+
+describe('switching the model', () => {
+  it('a model change is a divider before the message it applies to, and the chat\'s model follows', () => {
+    const l = log().created('what is a closure?', null).status('running')
+      .msg('user', 'what is a closure?').msg('assistant', 'A function.').status('done')
+      .status('provisioning')
+      .add('session.model_changed', { from: 'openrouter:openrouter/free', to: 'openai:gpt-4.1-mini' })
+      .msg('user', 'and in Python?')
+    let view_ = v(l.events)
+    expect(view_.model).toBe('openai:gpt-4.1-mini')
+    expect(kinds(view_.items)).toEqual(['user', 'prose', 'model', 'user', 'thinking'])
+    expect(view_.items[2]).toMatchObject({ kind: 'model', to: 'openai:gpt-4.1-mini' })
+
+    l.status('running').msg('assistant', 'def f(): ...').status('done')
+    view_ = v(l.events)
+    expect(kinds(view_.items)).toEqual(['user', 'prose', 'model', 'user', 'prose', 'nudge'])
+  })
+
+  it('shows on the pending turn before its message arrives', () => {
+    const l = log().created('t', null).status('running').msg('user', 't').msg('assistant', 'a').status('done')
+      .status('provisioning').add('session.model_changed', { from: 'a', to: 'b' })
+    expect(kinds(v(l.events).items).slice(-3)).toEqual(['model', 'user', 'thinking'])
+  })
+})

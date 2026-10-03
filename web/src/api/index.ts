@@ -59,7 +59,7 @@ export const api = {
   events: (id: string, afterSeq = 0) =>
     client.request<SessionEvent[]>(`/sessions/${encodeURIComponent(id)}/events?after_seq=${afterSeq}`),
   wsTicket: (id: string) => post<{ ticket: string }>(`/sessions/${encodeURIComponent(id)}/ws-ticket`),
-  followUp: (id: string, body: { text: string; repo?: string | null }) =>
+  followUp: (id: string, body: { text: string; repo?: string | null; model?: string | null }) =>
     post<{ id: string; status: string; repo: string | null }>(`/sessions/${encodeURIComponent(id)}/messages`, body),
   stop: (id: string) => post<{ id: string; status: string }>(`/sessions/${encodeURIComponent(id)}/stop`),
   rename: (id: string, title: string) =>

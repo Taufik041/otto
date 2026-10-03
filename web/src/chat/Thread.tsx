@@ -2,6 +2,7 @@ import { useMutation } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { api } from '@/api'
 import { messageOf } from '@/api/errors'
+import { useModels } from '@/api/queries'
 import { Mark } from '@/components/brand'
 import { SendProblemCard } from '@/composer/SendProblemCard'
 import { shortName } from '@/utils/mention'
@@ -78,6 +79,19 @@ function ErrorCard({ sessionId, title, message }: { sessionId: string; title: st
   )
 }
 
+/** "Switched to GPT-4.1 mini": a quiet divider where the chat moved to another model. */
+function ModelDivider({ to }: { to: string }) {
+  const models = useModels()
+  const label = models.data?.models.find((m) => m.id === to)?.label ?? to
+  return (
+    <div role="separator" aria-label={`Switched to ${label}`} className="flex items-center gap-3 pb-6 text-[13px] text-muted animate-rise">
+      <span className="h-px flex-1 bg-hair" />
+      <span>Switched to {label}</span>
+      <span className="h-px flex-1 bg-hair" />
+    </div>
+  )
+}
+
 export function Thread(p: ThreadProps) {
   const last = p.items.length - 1
   // the avatar that turns while Otto works: the latest one shown
@@ -128,6 +142,8 @@ export function Thread(p: ThreadProps) {
                 <PrCard pr={it.pr} onSeeChanges={() => p.onSeeChanges(it.pr.firstFile!)} />
               </Otto>
             )
+          case 'model':
+            return <ModelDivider key={it.id} to={it.to} />
           case 'stopped':
             return (
               <div key={it.id} className="flex items-center justify-center gap-[7px] pb-6 text-[13px] text-muted animate-rise">

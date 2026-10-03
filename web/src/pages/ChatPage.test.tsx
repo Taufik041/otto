@@ -143,3 +143,20 @@ it('a plain chat shows only messages and the nudge to mention a repo', async () 
   expect(screen.getByText("Mention a repo with @ and I'll work on it.")).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Workspace' })).not.toBeInTheDocument()
 })
+
+it('a model switch shows as a divider, and the header follows it', async () => {
+  const l = log().created('what is a closure?', null).status('running')
+    .msg('user', 'what is a closure?').msg('assistant', 'A function.').status('done')
+  backend(l.events, { repo: null, work_branch: null, model: 'openrouter:openrouter/free' })
+  const header = await screen.findByRole('banner')
+  expect(within(header).getByText('OpenRouter Free')).toBeInTheDocument()
+
+  await waitFor(() => expect(FakeSocket.all).toHaveLength(1))
+  FakeSocket.all[0]!.deliver({ seq: 6, ts: '2026-10-02T14:10:00Z', type: 'session.status', payload: { status: 'provisioning' } })
+  FakeSocket.all[0]!.deliver({ seq: 7, ts: '2026-10-02T14:10:00Z', type: 'session.model_changed', payload: { from: 'openrouter:openrouter/free', to: 'openai:gpt-4.1-mini' } })
+  FakeSocket.all[0]!.deliver({ seq: 8, ts: '2026-10-02T14:10:01Z', type: 'llm.message', payload: { message: { role: 'user', content: 'and in Python?' } } })
+
+  expect(await screen.findByRole('separator', { name: 'Switched to GPT-4.1 mini' })).toBeInTheDocument()
+  expect(within(header).getByText('GPT-4.1 mini')).toBeInTheDocument()
+  expect(screen.getByText('and in Python?')).toBeInTheDocument()
+})

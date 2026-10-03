@@ -24,7 +24,8 @@ export function sendProblem(e: unknown): SendProblem {
         ? { kind: 'busy', message: 'Otto is still working on this chat. Wait until it finishes, or stop it.' }
         : { kind: 'other', title: "That message didn't go.", message: sentence(e.message) }
     // 503: no available default model; 422: the chosen one isn't available (any more)
-    if (e.status === 503 || (e.status === 422 && /model/i.test(e.message)))
+    // 400: a follow-up asked to switch to one that isn't
+    if (e.status === 503 || ((e.status === 422 || e.status === 400) && /model/i.test(e.message)))
       return { kind: 'model', message: 'That model isn’t available right now. Pick another one and send again.' }
     if (e.status !== 0 && e.status < 500) return { kind: 'other', message: sentence(e.message) }
   }

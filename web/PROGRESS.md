@@ -100,8 +100,6 @@ Parts 1 and 2 are done. `npm run build`, `npm test` (94 tests) and backend `pyte
   uninstalling on GitHub.
 - **Settings › Usage shows no sandboxes:** the UI never shows sandbox internals, so the gateway's
   `active_sandboxes` and `POST /sessions/{id}/sandbox/stop` aren't used in `web/`.
-- **The chat keeps its model:** in a chat, the composer shows the model as a label with no menu,
-  because the gateway refuses a model change on follow-ups.
 - **The model-failed row says "6 tries", not "6 tries over 40s":** the error event has the attempt
   count but not the time.
 - **No "Using the warm sandbox" notice,** and no other sandbox notices: infrastructure events are
