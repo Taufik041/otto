@@ -20,6 +20,29 @@ follow-up, opens Changes and Terminal, and screenshots the chat at 1440px and 39
 dark into `web/screenshots/e2e/`. It opens a real PR. After changing `runner/`, rebuild the
 sandbox image (the image step of `scripts/dev_up.sh`), or sandboxes keep running the old code.
 
+## How a chat turn runs
+
+- **A follow-up is stored when it's posted.** `POST /sessions/{id}/messages` appends it as the
+  next user `llm.message` event (with its seq, announced over NOTIFY). For a plain chat that gets a
+  repo, this comes after `repo.attached`. Then the gateway wakes or creates the sandbox and queues
+  the job. The worker continues from the stored message and doesn't add it again, so the
+  conversation (`rebuild_messages`) has it exactly once.
+- **Every agent turn ends with a deterministic finish** (`brain/loop.py`, `finish`). After the
+  model's final message, and before the status becomes `done`, the brain does what the model left
+  undone:
+  - asks `git.status`
+  - commits uncommitted changes, with a message from this turn's request
+  - pushes when `otto/<id>` is ahead of the remote
+  - opens the PR when the session has none: the title from the task, the body from the model's
+    final message (an open PR is updated by the push)
+
+  These are ordinary bus actions, so each one is an event row. The finish is skipped for plain
+  chats, stopped turns, and turns that ran nothing that could change the workspace (no edits,
+  writes, commands or commits). A failed step records `error` with stage `finish` and ends the
+  turn `failed`; Retry runs it again. `git.status` needs a sandbox image with the current
+  `runner/`; rebuild it after pulling (the image step of `scripts/dev_up.sh`). With an older
+  image, the finish stops after the status check.
+
 ## Database and migrations
 
 The schema lives in `shared/models.py` and is changed only through Alembic migrations in
