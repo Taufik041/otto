@@ -60,7 +60,7 @@ async def test_run_session_parallel_tool_calls(monkeypatch, capsys):
     others = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     assert others == []
     assert state["clients"] == [{"api_key": "or-test-key-1", "base_url": "https://openrouter.ai/api/v1",
-                                 "max_retries": 0}]
+                                 "max_retries": 0, "timeout": 120.0}]
 
 
 @pytest.mark.asyncio
@@ -134,6 +134,7 @@ EMPTY = [None, NS(choices=None), NS(choices=[]),
 
 @pytest.mark.asyncio
 async def test_responses_without_choices_are_retried(monkeypatch, capsys):
+    monkeypatch.setattr(config, "MODEL_WAIT_BUDGET_SECONDS", 10_000)  # about the attempt cap, not the wait budget
     waits = fake_clock(monkeypatch)
     ch = FakeChannel()
     results = ch.queue(results_queue("s1"))
@@ -150,6 +151,7 @@ async def test_responses_without_choices_are_retried(monkeypatch, capsys):
 
 @pytest.mark.asyncio
 async def test_session_fails_with_an_error_event_after_six_empty_responses(monkeypatch):
+    monkeypatch.setattr(config, "MODEL_WAIT_BUDGET_SECONDS", 10_000)  # about the attempt cap, not the wait budget
     waits = fake_clock(monkeypatch)
     ch = FakeChannel()
     results = ch.queue(results_queue("s1"))
@@ -174,6 +176,7 @@ def rate_limited():
 
 @pytest.mark.asyncio
 async def test_endless_rate_limits_fail_the_session_with_an_error_event(monkeypatch):
+    monkeypatch.setattr(config, "MODEL_WAIT_BUDGET_SECONDS", 10_000)  # about the attempt cap, not the wait budget
     fake_clock(monkeypatch)
     ch = FakeChannel()
     results = ch.queue(results_queue("s1"))

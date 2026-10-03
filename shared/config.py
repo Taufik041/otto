@@ -112,6 +112,9 @@ def resolve_model(model_id) -> dict:
     return {"id": model_id, "provider": provider, "model": name, "label": model_id}
 
 # orchestrator
+# a model call's total waiting on cooled-down keys; past it the call fails ("the model didn't respond")
+MODEL_WAIT_BUDGET_SECONDS = float(os.environ.get("MODEL_WAIT_BUDGET_SECONDS", "120"))
+LLM_TIMEOUT = float(os.environ.get("OTTO_LLM_TIMEOUT", "120"))  # seconds per request: long chats are slow
 SANDBOX_MAX_AGE_SECONDS = int(os.environ.get("SANDBOX_MAX_AGE_SECONDS", "3000"))  # < the 1h GitHub token
 SANDBOX_IDLE_MINUTES = float(os.environ.get("SANDBOX_IDLE_MINUTES", "30"))  # runner exits after this long without actions
 SANDBOX_IMAGE = os.environ.get("SANDBOX_IMAGE", "taufik041/otto-sandbox:dev")

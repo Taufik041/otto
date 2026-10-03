@@ -167,6 +167,8 @@ async def test_single_key_waits_out_its_cooldown(monkeypatch, clock, events):
 @pytest.mark.parametrize("n_keys, attempts", [(1, 6), (3, 6), (4, 8)])
 @pytest.mark.asyncio
 async def test_attempts_are_capped_then_llm_error(monkeypatch, clock, events, n_keys, attempts):
+    from shared import config
+    monkeypatch.setattr(config, "MODEL_WAIT_BUDGET_SECONDS", 10_000)  # about the attempt cap, not the wait budget
     _, record = events
     env = {f"OPENROUTER_API_KEY{i + 1}": f"orkey-{i}" for i in range(n_keys)}
     use_env(monkeypatch, env)
@@ -328,3 +330,50 @@ async def test_unusable_keys_reset_with_the_pools(monkeypatch, clock, events):
     assert providers.unusable("openrouter", "openrouter/free") == "quota"
     providers.reset()
     assert providers.unusable("openrouter", "openrouter/free") is None
+
+
+# --- real rate limits: their own reset time, within a total wait budget ------------------------
+
+@pytest.mark.asyncio
+async def test_a_real_429_waits_what_its_headers_say(monkeypatch, clock, events):
+    _, record = events
+    calls = fake_openai(monkeypatch, {"oaikey-one": [rate_limited(headers={"x-ratelimit-reset-requests": "7s"}),
+                                                     rate_limited(headers={"retry-after": "3"}), llm_final("ok")]})
+
+    await complete(record, provider="openai", model="model-a")
+
+    assert clock == [7, 3]  # not the 60s fallback
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_call_stops_waiting_once_its_budget_is_used_up(monkeypatch, clock, events):
+    from shared import config
+    monkeypatch.setattr(config, "MODEL_WAIT_BUDGET_SECONDS", 100)
+    _, record = events
+    calls = fake_openai(monkeypatch, {"oaikey-one": [rate_limited(headers={"retry-after": "45"}) for _ in range(6)]})
+
+    with pytest.raises(LLMError, match="no usable LLM response after 3 attempts; last: rate limited"):
+        await complete(record, provider="openai", model="model-a")
+
+    assert clock == [45, 45]  # a third 45s wait would pass 100s: it fails instead of waiting
+    assert len(calls) == 3
+
+
+def test_the_wait_budget_and_timeout_default_to_120s(monkeypatch):
+    import importlib
+    from shared import config
+    for name in ("MODEL_WAIT_BUDGET_SECONDS", "OTTO_LLM_TIMEOUT"):
+        monkeypatch.delenv(name, raising=False)
+    try:
+        c = importlib.reload(config)
+        assert (c.MODEL_WAIT_BUDGET_SECONDS, c.LLM_TIMEOUT) == (120, 120)
+    finally:
+        importlib.reload(config)
+
+
+def test_clients_wait_up_to_the_llm_timeout(monkeypatch):
+    from shared import config
+    monkeypatch.setattr(config, "LLM_TIMEOUT", 120.0)
+    fake_openai(monkeypatch, {})
+    assert providers.get_client("openrouter").timeout == 120.0

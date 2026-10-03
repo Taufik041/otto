@@ -134,7 +134,7 @@ def _client(provider, pool, i):
     if i not in pool["clients"]:
         # max_retries=0: the SDK would sleep on a 429 itself; rotating to another key is better
         pool["clients"][i] = AsyncOpenAI(api_key=pool["keys"][i], base_url=config.PROVIDER_URLS[provider],
-                                         max_retries=0)
+                                         max_retries=0, timeout=config.LLM_TIMEOUT)
     return pool["clients"][i]
 
 
@@ -213,7 +213,8 @@ async def complete(provider, record, **kwargs):
     A key that is rate limited, answers without a usable choice, or fails with a server error
     cools down (until its reset time if the error says, else RATE_LIMIT_COOLDOWN) and the next
     key is tried at once. With every key cooling down, sleep until the first is free (at most
-    MAX_WAIT). After max(MIN_ATTEMPTS, 2 x keys) such failures, raise LLMError.
+    MAX_WAIT). After max(MIN_ATTEMPTS, 2 x keys) such failures, or once the waits would pass
+    MODEL_WAIT_BUDGET_SECONDS in all, raise LLMError.
 
     A key that can't work at all (out of credit, a bad key, an unknown model: see
     unusable_reason) is dropped for this process without a wait, and the next key tried; with
@@ -224,10 +225,15 @@ async def complete(provider, record, **kwargs):
     model = kwargs.get("model")
     attempts = max(MIN_ATTEMPTS, 2 * len(pool["keys"]))
     failed = None  # (index, reason) of the last failure
-    tries, problem = 0, None
+    tries, problem, waited = 0, None, 0.0
     while tries < attempts:
         i, wait = _next_key(pool, model)
+        if wait > 0 and waited + wait > config.MODEL_WAIT_BUDGET_SECONDS:
+            print(f"[brain] {provider}: waiting {wait:.0f}s more would pass the {config.MODEL_WAIT_BUDGET_SECONDS:.0f}s "
+                  "budget; giving up", flush=True)
+            break
         if wait > 0:
+            waited += wait
             print(f"[brain] every {provider} key is cooling down; waiting {wait:.0f}s", flush=True)
             await sleep(wait)
         if failed and failed[0] != i:
@@ -258,4 +264,4 @@ async def complete(provider, record, **kwargs):
         pool["until"][i] = now() + cooldown
         failed = (i, reason)
         print(f"[brain] {provider} key #{i}: {problem}; resting it {cooldown:.0f}s", flush=True)
-    raise LLMError(f"no usable LLM response after {attempts} attempts; last: {problem}")
+    raise LLMError(f"no usable LLM response after {tries} attempts; last: {problem}")

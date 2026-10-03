@@ -100,6 +100,8 @@ Stop the gateway and workers first, since they hold connections.
 | `FRONTEND_URL` | `http://localhost:5173` | Where the GitHub callback sends the browser afterwards (`/auth/callback` after a sign-in), and the base of password-reset links. An `https://` URL also makes the cookies `Secure`. |
 | `DAILY_TOKEN_LIMIT` | `300000` | A new user's daily token limit (UTC days). Existing users keep theirs (`users.daily_token_limit`); migration 0011 moved those still on the old default, 50000, to 300000. |
 | `MODEL_PRICES` | `{}` | JSON `{"<model id>": {"input_per_1m": 0.15, "output_per_1m": 0.6}}` in USD, keyed by catalog id (`GET /models`). Unlisted models count as free. |
+| `MODEL_WAIT_BUDGET_SECONDS` | `120` | A model call's total waiting on rate-limited keys (each wait is the provider's Retry-After / `x-ratelimit-reset-*`, else 60s). Past it, the call fails with "the model didn't respond". |
+| `OTTO_LLM_TIMEOUT` | `120` | Seconds per model request before it counts as a failed try (long chat histories are slow). |
 | `OTTO_MODELS` | built from the env | A JSON list of `{id, provider, model, label, description}` replacing the model catalog (`GET /models`). `description` is the one line under the model in the picker; an unavailable model (its provider has no key) gets a `hint` instead of being hidden. |
 | `MAX_ACTIVE_SESSIONS` | `3` | Agent sessions (chats with a repo) one user may have at work at once (provisioning, queued or running). Plain chats don't count. |
 | `MAX_ACTIVE_SANDBOXES` | `3` | The same, for everyone together: protects the cluster. Sandboxes kept warm between turns don't count; they exit after `SANDBOX_IDLE_MINUTES`. |
