@@ -5,10 +5,11 @@ from types import SimpleNamespace as NS
 
 import httpx2
 import pytest
-from openai import APIConnectionError, InternalServerError, RateLimitError
+from openai import (APIConnectionError, APIStatusError, AuthenticationError, InternalServerError, NotFoundError,
+                    PermissionDeniedError, RateLimitError)
 
 from brain import providers
-from brain.providers import LLMError
+from brain.providers import LLMError, ProviderUnusable
 from tests.fakes import fake_clock, fake_openai, llm_final, use_env
 
 # plain strings, so these tests prove the keys are never emitted, without relying on redaction
@@ -21,6 +22,17 @@ REQ = httpx2.Request("POST", "https://example.test/v1/chat/completions")
 def rate_limited(headers=None, body=None):
     return RateLimitError("429 Too Many Requests", response=httpx2.Response(429, headers=headers or {}, request=REQ),
                           body=body)
+
+
+def no_quota():
+    """OpenAI's 429 that isn't a rate limit: the account is out of credit."""
+    return RateLimitError("429 You exceeded your current quota", response=httpx2.Response(429, request=REQ),
+                          body={"message": "You exceeded your current quota", "type": "insufficient_quota",
+                                "code": "insufficient_quota"})
+
+
+def status_error(status, cls=APIStatusError, body=None):
+    return cls(f"{status} error", response=httpx2.Response(status, request=REQ), body=body or {"message": "x"})
 
 
 def openrouter_429(reset_s):
@@ -253,3 +265,66 @@ def test_reset_delay(monkeypatch):
     assert delay(rate_limited(headers={"retry-after": "soon"})) is None
     assert delay(NS(choices=[])) is None
     assert delay(None) is None
+
+
+# --- errors that no wait fixes: out of credit, a bad key, an unknown model --------------------
+
+@pytest.mark.parametrize("error, reason", [
+    (no_quota, "quota"),
+    (lambda: status_error(402, body={"code": 402, "message": "Insufficient credits"}), "quota"),  # OpenRouter
+    (lambda: status_error(401, AuthenticationError), "auth"),
+    (lambda: status_error(403, PermissionDeniedError), "auth"),
+])
+@pytest.mark.asyncio
+async def test_a_key_that_cannot_work_is_dropped_at_once_and_the_next_tried(monkeypatch, clock, events, capsys, error, reason):
+    _, record = events
+    calls = fake_openai(monkeypatch, {"orkey-one": [error()], "orkey-two": [llm_final("ok"), llm_final("ok again")]})
+
+    assert (await complete(record)).choices[0].message.content == "ok"
+    assert clock == []  # no cooldown, no sleep
+    await complete(record)  # the next call never tries the dropped key again
+    assert keys_used(calls) == ["orkey-one", "orkey-two", "orkey-two"]
+    out = capsys.readouterr().out
+    assert out.count("key #0") == 1 and reason in out  # logged once, by index
+    assert "orkey-one" not in out
+
+
+@pytest.mark.asyncio
+async def test_with_every_key_unusable_the_call_fails_with_the_reason_without_waiting(monkeypatch, clock, events):
+    _, record = events
+    calls = fake_openai(monkeypatch, {k: [no_quota()] for k in ("orkey-one", "orkey-two", "orkey-three")})
+
+    with pytest.raises(ProviderUnusable) as e:
+        await complete(record)
+
+    assert (e.value.reason, e.value.provider, e.value.model) == ("quota", "openrouter", None)
+    assert isinstance(e.value, LLMError) and len(calls) == 3 and clock == []
+    with pytest.raises(ProviderUnusable):  # remembered for the process: no request at all next time
+        await complete(record)
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_model_drops_the_key_for_that_model_only(monkeypatch, clock, events):
+    _, record = events
+    calls = fake_openai(monkeypatch, {k: [status_error(404, NotFoundError), llm_final("other model ok")]
+                                      for k in ("orkey-one", "orkey-two", "orkey-three")})
+
+    with pytest.raises(ProviderUnusable) as e:
+        await complete(record, model="no/such-model")
+    assert (e.value.reason, e.value.model) == ("model", "no/such-model")
+
+    resp = await complete(record, model="openrouter/free")  # the keys are fine for other models
+    assert resp.choices[0].message.content == "other model ok"
+    assert [c["model"] for c in calls] == ["no/such-model"] * 3 + ["openrouter/free"]
+
+
+@pytest.mark.asyncio
+async def test_unusable_keys_reset_with_the_pools(monkeypatch, clock, events):
+    _, record = events
+    fake_openai(monkeypatch, {"orkey-one": [no_quota()], "orkey-two": [no_quota()], "orkey-three": [no_quota()]})
+    with pytest.raises(ProviderUnusable):
+        await complete(record)
+    assert providers.unusable("openrouter", "openrouter/free") == "quota"
+    providers.reset()
+    assert providers.unusable("openrouter", "openrouter/free") is None

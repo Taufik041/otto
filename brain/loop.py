@@ -1,6 +1,6 @@
 import json, asyncio
 from shared import config, usage
-from brain.providers import LLMError, complete
+from brain.providers import LLMError, ProviderUnusable, complete
 from brain.tools import CHAT_SYSTEM, SYSTEM, TOOLS, KIND, missing_args
 from brain.bus import bus_call, start_consumer, stop_consumer
 from brain.resume import rebuild_messages
@@ -222,6 +222,12 @@ async def _turn(sid, messages, steps):
     except (asyncio.CancelledError, KeyboardInterrupt):
         transition(sid, "interrupted", {"running"})
         raise
+    except ProviderUnusable as e:
+        # out of credit, a bad key, an unknown model: no retry or wait helps, and the chat says which
+        record("error", {"stage": "model", "reason": e.reason, "provider": e.provider, "model": e.model,
+                         "message": str(e)})
+        transition(sid, "failed", {"running"})
+        return messages
     except LLMError as e:
         record("error", {"stage": "llm", "message": str(e)})
         transition(sid, "failed", {"running"})
