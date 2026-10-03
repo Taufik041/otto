@@ -201,7 +201,7 @@ def test_a_follow_up_is_an_event_as_soon_as_it_is_posted_and_the_worker_does_not
 
     ch, _, _ = env
     sid = chat(client)
-    fake_llm(monkeypatch, [llm_final("A function with its scope."), llm_final("def f(): ...")])
+    fake_llm(monkeypatch, [llm_final("A function with its scope."), llm_final("Closures"), llm_final("def f(): ...")])
     run_worker(ch, jobs(ch)[0])
 
     r = client.post(f"/sessions/{sid}/messages", json={"text": "and in Python?"})

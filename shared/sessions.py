@@ -65,9 +65,22 @@ def set_model(sid, model) -> str | None:
 
 
 def set_title(sid, title):
-    """Rename; doesn't count as activity, so the chat keeps its place in the list."""
+    """The user renames the chat: the title is theirs from now on (never auto-titled). Doesn't
+    count as activity, so the chat keeps its place in the list."""
     with get_db() as s:
-        s.exec(update(Session).where(Session.id == sid).values(title=title))
+        s.exec(update(Session).where(Session.id == sid).values(title=title, title_source="user"))
+
+
+def auto_title(sid, title, source) -> bool:
+    """Give a chat still titled from its first message a better title (source: "pr" or "model"),
+    and emit session.titled {title, source}. A rename made meanwhile wins: only a title_source of
+    "auto" is replaced. True if it was."""
+    with get_db() as s:
+        moved = s.exec(update(Session).where(Session.id == sid, Session.title_source == "auto")
+                       .values(title=title, title_source="generated")).rowcount == 1
+    if moved:
+        append_event(sid, "session.titled", {"title": title, "source": source})
+    return moved
 
 
 def work_branch(sid) -> str:

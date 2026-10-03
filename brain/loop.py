@@ -6,8 +6,8 @@ from brain.bus import bus_call, start_consumer, stop_consumer
 from brain.resume import rebuild_messages
 from shared.events import append_event, load_events
 from shared.github import parse_repo
-from shared.models import make_title
-from shared.sessions import create_session, get_session, record_pr, set_status, transition
+from shared.models import TITLE_LENGTH, make_title
+from shared.sessions import auto_title, create_session, get_session, record_pr, set_status, transition
 
 TOOL_CONTENT_LIMIT = 20000
 TRUNCATED = "\n[... truncated]"
@@ -232,8 +232,54 @@ async def _turn(sid, messages, steps):
     except Exception:
         transition(sid, "failed", {"running"})
         raise
-    transition(sid, "done", {"running"})
+    if transition(sid, "done", {"running"}):
+        await title_chat(sid, record, messages)
     return messages
+
+
+TITLE_PROMPT = ("Write a title of 3 to 6 words for the chat below. Reply with the title only: plain "
+                "text, no quotes, no trailing punctuation.")
+
+
+def clean_title(text) -> str | None:
+    """The model's title, tidied: its first line, without quotes, a "Title:" label or a trailing
+    period, at most TITLE_LENGTH characters. None if nothing is left."""
+    line = next((l for l in str(text or "").splitlines() if l.strip()), "").strip()
+    line = line.removeprefix("Title:").removeprefix("title:").strip().strip("\"'`*").strip()
+    line = line.rstrip(".!:;,").strip()
+    if len(line) > TITLE_LENGTH:
+        line = line[:TITLE_LENGTH].rsplit(" ", 1)[0]
+    return line or None
+
+
+def _pr_title(sid, pr_url) -> str | None:
+    """The title the session's PR was opened with (from its git.open_pr result)."""
+    for e in reversed(load_events(sid)):
+        p = e.payload.get("payload") if e.type == "bus.result" else None
+        if isinstance(p, dict) and p.get("html_url") == pr_url and p.get("title"):
+            return p["title"]
+    return None
+
+
+async def title_chat(sid, record, messages):
+    """After a chat's first completed turn, while its title is still its first message: the PR's
+    title if it has one, else 3-6 words from its own model (one short call, counted in usage).
+    Never fails the turn."""
+    try:
+        row = get_session(sid)
+        if row is None or row.title_source != "auto":
+            return  # renamed, or titled already
+        if row.pr_url and (title := _pr_title(sid, row.pr_url)):
+            auto_title(sid, make_title(title), "pr")
+            return
+        chat = [m for m in messages if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()]
+        excerpt = "\n\n".join(f"{m['role']}: {m['content'][:1500]}" for m in chat[:2])
+        resp = await _complete(sid, record, [{"role": "system", "content": TITLE_PROMPT},
+                                             {"role": "user", "content": excerpt}])
+        if title := clean_title(resp.choices[0].message.content):
+            auto_title(sid, title, "model")
+    except Exception as e:  # LimitReached, LLMError, anything: the chat keeps its first-message title
+        print(f"[brain] no auto title for {sid}: {type(e).__name__}: {e}", flush=True)
 
 
 async def _complete(sid, record, messages, **kw):

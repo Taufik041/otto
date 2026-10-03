@@ -33,6 +33,13 @@ sandbox image (the image step of `scripts/dev_up.sh`), or sandboxes keep running
   session's model and appends `session.model_changed {from, to}` before the user message. The
   brain reads the session's model at every LLM call, and the history goes to the new model as it
   is (every provider speaks the same chat format).
+- **Chats title themselves once.** After a chat's first turn ends `done`, while its title is still
+  its first message (`sessions.title_source = auto`), the brain gives it a better one: the PR's
+  title if the turn opened one, else 3–6 words from the chat's own model. That's one short call
+  with no tools, counted in usage. It's stored with `title_source = generated` and announced as
+  `session.titled {title, source: "pr" | "model"}`. A rename (`PATCH /sessions/{id}`) sets
+  `title_source = user`, and is never replaced, even one made during the turn. If titling fails
+  (the limit, the model), the chat keeps its title and the turn is unaffected.
 - **Every agent turn ends with a deterministic finish** (`brain/loop.py`, `finish`). After the
   model's final message, and before the status becomes `done`, the brain does what the model left
   undone:

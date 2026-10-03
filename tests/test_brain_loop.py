@@ -141,7 +141,7 @@ async def test_responses_without_choices_are_retried(monkeypatch, capsys):
 
     await loop.run_session(ch, results, "s1", "hi")
 
-    assert len(calls) == 5
+    assert len(calls) == 6  # five tries for the turn, then the auto title's call (no response left: no title)
     assert waits == [60, 60, 60, 60]  # one key: it rests 60s after each
     out = capsys.readouterr().out
     assert "upstream 502" in out and "[otto] done" in out
@@ -200,12 +200,13 @@ async def test_session_runs_on_its_models_provider(monkeypatch):
     create_session("s1", task="hi", repo=None, model="openai:model-a", status="queued")
     ch = FakeChannel()
     results = ch.queue(results_queue("s1"))
-    calls = fake_openai(monkeypatch, {"oaikey-one": [llm_final("done")]})
+    calls = fake_openai(monkeypatch, {"oaikey-one": [llm_final("done"), llm_final("Greeting")]})
 
     await loop.start_session(ch, results, "s1", "hi")
 
+    # the turn, then its auto title: both on the session's provider and model
     assert [(c["base_url"], c["api_key"], c["model"]) for c in calls] == [
-        ("https://api.openai.com/v1", "oaikey-one", "model-a")]
+        ("https://api.openai.com/v1", "oaikey-one", "model-a")] * 2
 
 
 @pytest.mark.asyncio
@@ -213,7 +214,7 @@ async def test_follow_up_keeps_the_sessions_model(monkeypatch):
     use_env(monkeypatch, TWO_PROVIDERS)
     ch = FakeChannel()
     results = ch.queue(results_queue("s1"))
-    calls = fake_openai(monkeypatch, {"orkey-one": [llm_final("hello"), llm_final("again")],
+    calls = fake_openai(monkeypatch, {"orkey-one": [llm_final("hello"), llm_final("Greeting"), llm_final("again")],
                                       "oaikey-one": []})
     await loop.run_session(ch, results, "s1", "hi")
     assert get_session("s1").model == "openrouter:openrouter/free"
@@ -221,7 +222,8 @@ async def test_follow_up_keeps_the_sessions_model(monkeypatch):
     monkeypatch.setattr(config, "DEFAULT_MODEL", "openai:model-a")  # the default changed meanwhile
     await loop.resume_session(ch, results, "s1", "more")
 
-    assert [(c["base_url"], c["model"]) for c in calls] == [("https://openrouter.ai/api/v1", "openrouter/free")] * 2
+    # the first turn, its auto title, the follow-up: all on the session's model
+    assert [(c["base_url"], c["model"]) for c in calls] == [("https://openrouter.ai/api/v1", "openrouter/free")] * 3
 
 
 @pytest.mark.asyncio

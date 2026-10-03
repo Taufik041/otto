@@ -47,11 +47,12 @@ def chat(sid="c1", task="what is a closure?", status="running"):
 @pytest.mark.asyncio
 async def test_a_chat_turn_is_one_call_without_tools(monkeypatch):
     sid = chat()
-    requests = fake_llm(monkeypatch, [llm_final("A function that captures variables.")])
+    requests = fake_llm(monkeypatch, [llm_final("A function that captures variables."), llm_final("Closures")])
 
     await asyncio.wait_for(loop.chat_session(sid), 2)
 
-    [req] = requests
+    req, title = requests  # the turn is one call; then the chat's auto title (tests/test_auto_title.py)
+    assert "title" in title["messages"][0]["content"].lower()
     assert req["tools"] is None
     assert req["messages"] == [{"role": "system", "content": CHAT_SYSTEM},
                                {"role": "user", "content": "what is a closure?"}]
@@ -169,12 +170,13 @@ async def test_each_turn_reads_the_sessions_model_so_a_switch_applies_to_the_nex
 
     use_env(monkeypatch, {"OPENROUTER_API_KEY": "or", "OPENAI_API_KEY": "oai", "OTTO_OPENAI_MODELS": "model-a"})
     sid = chat()
-    requests = fake_llm(monkeypatch, [llm_final("first"), llm_final("second")])
+    requests = fake_llm(monkeypatch, [llm_final("first"), llm_final("Closures"), llm_final("second")])
     await loop.chat_session(sid)
 
     set_model(sid, "openai:model-a")  # as the gateway does on a follow-up that switches
     await loop.chat_session(sid, "and again?")
 
-    assert [r["model"] for r in requests] == ["openrouter/free", "model-a"]
+    # the first turn and its auto title on the first model, then the next turn on the new one
+    assert [r["model"] for r in requests] == ["openrouter/free", "openrouter/free", "model-a"]
     # the history goes to the new model as it is
-    assert [m["content"] for m in requests[1]["messages"]] == [CHAT_SYSTEM, "what is a closure?", "first", "and again?"]
+    assert [m["content"] for m in requests[2]["messages"]] == [CHAT_SYSTEM, "what is a closure?", "first", "and again?"]
