@@ -189,14 +189,8 @@ async def test_each_failed_finish_step_is_named_in_the_error(monkeypatch, step, 
 @pytest.mark.asyncio
 async def test_a_stopped_turn_is_not_finished(monkeypatch):
     ch, results, runner = setup(monkeypatch, [llm_tool_calls(EDIT), llm_final("never")])
-    real = loop._stopped
-    calls = {"n": 0}
-
-    def stopped_after_first_step(sid):
-        calls["n"] += 1
-        return calls["n"] > 1 or real(sid)
-
-    monkeypatch.setattr(loop, "_stopped", stopped_after_first_step)
+    # stopped as soon as the first step has run (the model, the steps and the finish all check)
+    monkeypatch.setattr(loop, "_stopped", lambda sid: bool(runner.actions))
 
     await run(ch, results)
 

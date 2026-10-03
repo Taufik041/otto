@@ -15,6 +15,7 @@ SERVER_ERROR_COOLDOWN = 5  # after a 5xx or a connection error: likely not the k
 MIN_COOLDOWN = 1
 MAX_WAIT = 60  # longest single sleep when every key is cooling down
 MIN_ATTEMPTS = 6
+STOP_POLL = 1.0  # seconds between checks for a stop while a call waits (on a cooldown or a request)
 
 sleep = asyncio.sleep
 # provider -> {"keys": [...], "until": [epoch seconds per key], "current": index, "clients": {},
@@ -24,6 +25,28 @@ _pools = {}
 
 class LLMError(Exception):
     """The provider kept answering without a usable choice."""
+
+
+class Stopped(Exception):
+    """The session was stopped while its model call was waiting."""
+
+
+async def _unless_stopped(aw, stopped):
+    """Await aw, but give up (cancelling it) as soon as stopped() is true; checked every STOP_POLL
+    seconds."""
+    if stopped is None:
+        return await aw
+    task = asyncio.ensure_future(aw)
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=STOP_POLL)
+            if done:
+                return task.result()
+            if stopped():
+                raise Stopped()
+    finally:
+        if not task.done():
+            task.cancel()
 
 
 class ProviderUnusable(LLMError):
@@ -207,7 +230,7 @@ def reset_delay(source) -> float | None:
     return None
 
 
-async def complete(provider, record, **kwargs):
+async def complete(provider, record, stopped=None, **kwargs):
     """One chat completion from `provider`, rotating between its keys.
 
     A key that is rate limited, answers without a usable choice, or fails with a server error
@@ -220,6 +243,8 @@ async def complete(provider, record, **kwargs):
     unusable_reason) is dropped for this process without a wait, and the next key tried; with
     none left, ProviderUnusable. Each switch of key is recorded as llm.key_rotated (indexes only,
     never the key).
+
+    stopped(), if given, is checked while the call waits: a stop ends it at once with Stopped.
     """
     pool = _pool(provider)
     model = kwargs.get("model")
@@ -232,16 +257,18 @@ async def complete(provider, record, **kwargs):
             print(f"[brain] {provider}: waiting {wait:.0f}s more would pass the {config.MODEL_WAIT_BUDGET_SECONDS:.0f}s "
                   "budget; giving up", flush=True)
             break
+        if stopped and stopped():
+            raise Stopped()
         if wait > 0:
             waited += wait
             print(f"[brain] every {provider} key is cooling down; waiting {wait:.0f}s", flush=True)
-            await sleep(wait)
+            await _unless_stopped(sleep(wait), stopped)
         if failed and failed[0] != i:
             record("llm.key_rotated", {"provider": provider, "from_index": failed[0], "to_index": i,
                                        "reason": failed[1]})
         pool["current"] = i
         try:
-            resp = await _client(provider, pool, i).chat.completions.create(**kwargs)
+            resp = await _unless_stopped(_client(provider, pool, i).chat.completions.create(**kwargs), stopped)
         except APIStatusError as e:
             if reason := unusable_reason(e):
                 _drop(pool, i, model, reason)

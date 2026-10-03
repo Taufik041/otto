@@ -1,6 +1,6 @@
 import json, asyncio
 from shared import config, usage
-from brain.providers import LLMError, ProviderUnusable, complete
+from brain.providers import LLMError, ProviderUnusable, Stopped, complete
 from brain.tools import CHAT_SYSTEM, SYSTEM, TOOLS, KIND, missing_args
 from brain.bus import bus_call, start_consumer, stop_consumer
 from brain.resume import rebuild_messages
@@ -222,6 +222,10 @@ async def _turn(sid, messages, steps):
     except (asyncio.CancelledError, KeyboardInterrupt):
         transition(sid, "interrupted", {"running"})
         raise
+    except Stopped:
+        # POST /sessions/{id}/stop while the model call waited: the session is "stopped" already
+        print(f"[brain] session {sid} was stopped while waiting on the model", flush=True)
+        return messages
     except ProviderUnusable as e:
         # out of credit, a bad key, an unknown model: no retry or wait helps, and the chat says which
         record("error", {"stage": "model", "reason": e.reason, "provider": e.provider, "model": e.model,
@@ -295,7 +299,8 @@ async def _complete(sid, record, messages, **kw):
         raise LimitReached(info)
     # the model the session was created with, for every turn: never another provider or model
     model = config.resolve_model(row.model)
-    resp = await complete(model["provider"], record, model=model["model"], messages=messages, **kw)
+    resp = await complete(model["provider"], record, stopped=lambda: _stopped(sid), model=model["model"],
+                          messages=messages, **kw)
     counts = getattr(resp, "usage", None)
     tokens = {k: int(getattr(counts, k, 0) or 0) for k in ("prompt_tokens", "completion_tokens")}
     usage.record(sid, row.user_id, model["provider"], row.model, **tokens)
