@@ -185,7 +185,7 @@ async def finish(ch, pending, sid, messages, record):
         result = await bus_call(ch, pending, sid, kind, args, record=record)
         if result.get("exit_code") != 0:
             why = (result.get("stderr") or result.get("stdout") or "failed").strip()
-            record("error", {"stage": "finish", "message": f"{kind}: {why}"[:2000]})
+            record("error", {"stage": "finish", "step": kind, "message": f"{kind}: {why}"[:2000]})
             raise FinishFailed(kind)
         return result
 

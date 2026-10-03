@@ -38,8 +38,8 @@ sandbox image (the image step of `scripts/dev_up.sh`), or sandboxes keep running
 
   These are ordinary bus actions, so each one is an event row. The finish is skipped for plain
   chats, stopped turns, and turns that ran nothing that could change the workspace (no edits,
-  writes, commands or commits). A failed step records `error` with stage `finish` and ends the
-  turn `failed`; Retry runs it again. `git.status` needs a sandbox image with the current
+  writes, commands or commits). A failed step records `error` with stage `finish` and `step` (the
+  action that failed, e.g. `git.push`) and ends the turn `failed`; Retry runs it again. `git.status` needs a sandbox image with the current
   `runner/`; rebuild it after pulling (the image step of `scripts/dev_up.sh`). With an older
   image, the finish stops after the status check.
 

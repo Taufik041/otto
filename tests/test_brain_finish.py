@@ -166,6 +166,24 @@ async def test_push_fails_error_and_failed(monkeypatch):
     assert get_session("s1").status == "failed"
     [err] = [e.payload for e in load_events("s1") if e.type == "error"]
     assert err["stage"] == "finish" and "git.push failed: rejected" in err["message"]
+    assert err["step"] == "git.push"  # the chat names the failure from this
+
+
+@pytest.mark.parametrize("step, kinds", [
+    ("git.status", ["fs.replace", "git.status"]),
+    ("git.commit", ["fs.replace", "git.status", "git.commit"]),
+    ("git.open_pr", ["fs.replace", "git.status", "git.commit", "git.push", "git.open_pr"]),
+])
+@pytest.mark.asyncio
+async def test_each_failed_finish_step_is_named_in_the_error(monkeypatch, step, kinds):
+    ch, results, runner = setup(monkeypatch, [llm_tool_calls(EDIT), llm_final("Fixed.")], fail=step)
+
+    await run(ch, results)
+
+    assert runner.kinds == kinds
+    assert get_session("s1").status == "failed"
+    [err] = [e.payload for e in load_events("s1") if e.type == "error"]
+    assert (err["stage"], err["step"]) == ("finish", step)
 
 
 @pytest.mark.asyncio
