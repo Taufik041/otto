@@ -19,21 +19,30 @@ def usages(sid):
 
 
 @pytest.mark.asyncio
-async def test_an_agent_chat_with_a_pr_takes_the_prs_title(monkeypatch):
-    ch, results, runner = setup(monkeypatch, [
-        llm_tool_calls(EDIT),
-        llm_tool_calls(("git_commit", {"message": "Fix"}), ("git_push", {})),
-        llm_tool_calls(("git_open_pr", {"title": "Fix bulk discount threshold", "body": "b"})),
-        llm_final("Done."),
-    ])
+async def test_an_agent_chat_with_a_proposal_takes_its_title(monkeypatch):
+    from shared.events import append_event
+
+    ch, results, runner = setup(monkeypatch, [llm_tool_calls(EDIT), llm_final("Done.")])
+    real = loop.propose
+
+    def propose_with_a_title(sid, record, messages, **kw):
+        real(sid, record, messages, **kw)
+        # as if the proposal had a better title than the task's first line
+        append_event(sid, "pr.proposed", {**proposal(sid), "title": "Fix bulk discount threshold"})
+
+    monkeypatch.setattr(loop, "propose", propose_with_a_title)
 
     await run(ch, results)
 
     row = get_session("s1")
-    assert (row.status, row.pr_url) == ("done", PR_URL)
+    assert (row.status, row.pr_url) == ("done", None)
     assert (row.title, row.title_source) == ("Fix bulk discount threshold", "generated")
-    assert titled("s1") == [{"title": "Fix bulk discount threshold", "source": "pr"}]
-    assert len(usages("s1")) == 4  # the turn's own calls only: no title call
+    assert titled("s1") == [{"title": "Fix bulk discount threshold", "source": "proposal"}]
+    assert len(usages("s1")) == 2  # the turn's own calls only: no title call
+
+
+def proposal(sid):
+    return [e.payload for e in load_events(sid) if e.type == "pr.proposed"][-1]
 
 
 @pytest.mark.asyncio

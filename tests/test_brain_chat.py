@@ -157,10 +157,11 @@ def test_the_latest_system_message_is_the_one_in_force():
                                      {"role": "assistant", "content": "a"}, {"role": "user", "content": "q2"}]
 
 
-def test_the_agent_prompt_requires_commit_push_and_pr_before_the_summary():
+def test_the_agent_prompt_requires_commit_and_push_before_the_summary_and_no_pr():
     finish = SYSTEM[SYSTEM.index("When the task is done"):]
     assert "MUST" in finish
-    assert finish.index("git_commit") < finish.index("git_push") < finish.index("git_open_pr") < finish.index("final summary")
+    assert finish.index("git_commit") < finish.index("git_push") < finish.index("final summary")
+    assert "Do not open a pull request" in finish
 
 
 @pytest.mark.asyncio

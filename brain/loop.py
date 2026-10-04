@@ -1,4 +1,4 @@
-import json, asyncio
+import json, asyncio, re
 from shared import config, health, usage
 from brain.providers import LLMError, ProviderUnusable, Stopped, complete
 from brain.tools import CHAT_SYSTEM, SYSTEM, TOOLS, KIND, missing_args
@@ -7,7 +7,8 @@ from brain.resume import rebuild_messages
 from shared.events import append_event, load_events
 from shared.github import parse_repo
 from shared.models import TITLE_LENGTH, make_title
-from shared.sessions import auto_title, create_session, get_session, record_pr, set_status, transition
+from shared.sessions import (auto_title, create_session, get_session, set_status, transition,
+                             work_branch)
 
 TOOL_CONTENT_LIMIT = 20000
 TRUNCATED = "\n[... truncated]"
@@ -197,13 +198,72 @@ async def finish(ch, pending, sid, messages, record):
     if dirty:
         await act("git.commit", {"message": make_title(_last(messages, "user") or row.task)})
         work += 1
+    pushed = None
     if dirty or ahead is None or ahead > 0:
-        await act("git.push", {})
-    if row.pr_url is None and work > 0:
-        body = _last(messages, "assistant") or f"Changes by Otto for: {row.task}"
-        pr = await act("git.open_pr", {"title": make_title(row.task), "body": body})
-        if pr.get("html_url"):
-            record_pr(sid, pr.get("number"), pr["html_url"])
+        pushed = await act("git.push", {})
+    row = get_session(sid)
+    if row.pr_url:
+        if pushed is not None:  # the push updated the open PR
+            stat = _push_stat(sid)
+            record("pr.updated", {"number": _pr_number(sid, row.pr_url), "url": row.pr_url, **stat})
+    elif work > 0:
+        propose(sid, record, messages)
+
+
+def propose(sid, record, messages):
+    """Propose the branch as a pull request: the user opens it (POST /sessions/{id}/pr) or not.
+    A newer proposal replaces older ones."""
+    row = get_session(sid)
+    push = _latest_push(sid)
+    record("pr.proposed", {
+        "title": make_title(row.task),
+        "body": _last(messages, "assistant") or f"Changes by Otto for: {row.task}",
+        "head": work_branch(sid),
+        "base": push.get("base"),
+        **_push_stat(sid),
+        "tests": _last_tests(sid),
+    })
+
+
+def _latest_push(sid) -> dict:
+    """The result of the session's latest successful git.push (the model's or the finish's)."""
+    for e in reversed(load_events(sid)):
+        p = e.payload.get("payload") if e.type == "bus.result" else None
+        if isinstance(p, dict) and p.get("exit_code") == 0 and "branch" in p and p.get("branch"):
+            return p
+    return {}
+
+
+def _push_stat(sid) -> dict:
+    d = _latest_push(sid).get("diffstat") or {}
+    return {"additions": d.get("additions"), "deletions": d.get("deletions"), "files": d.get("files")}
+
+
+def _pr_number(sid, url):
+    for e in reversed(load_events(sid)):
+        if e.type == "pr.opened" and e.payload.get("html_url") == url:
+            return e.payload.get("number")
+    m = re.search(r"/pull/(\d+)", url or "")
+    return int(m.group(1)) if m else None
+
+
+TEST_SUMMARY = re.compile(r"(\d+ (?:failed|passed|errors?|skipped|xfailed|xpassed|deselected|warnings?)(?:, \d+ \w+)*) in [\d.]+s")
+
+
+def _last_tests(sid) -> dict | None:
+    """The session's latest pytest summary, from its shell commands: {passed, failed, text}."""
+    actions = {e.payload.get("action_id"): e.payload.get("kind") for e in load_events(sid) if e.type == "bus.action"}
+    for e in reversed(load_events(sid)):
+        if e.type != "bus.result" or actions.get(e.payload.get("action_id")) != "shell.exec":
+            continue
+        p = e.payload.get("payload") or {}
+        found = TEST_SUMMARY.findall(f"{p.get('stdout') or ''}\n{p.get('stderr') or ''}")
+        if found:
+            counts = dict((w, int(n)) for n, w in re.findall(r"(\d+) (\w+)", found[-1]))
+            passed, failed = counts.get("passed", 0), counts.get("failed", 0) + counts.get("error", 0) + counts.get("errors", 0)
+            return {"passed": passed, "failed": failed,
+                    "text": ", ".join(x for x in (failed and f"{failed} failed", f"{passed} passed") if x)}
+    return None
 
 
 async def _turn(sid, messages, steps):
@@ -264,13 +324,9 @@ def clean_title(text) -> str | None:
     return line or None
 
 
-def _pr_title(sid, pr_url) -> str | None:
-    """The title the session's PR was opened with (from its git.open_pr result)."""
-    for e in reversed(load_events(sid)):
-        p = e.payload.get("payload") if e.type == "bus.result" else None
-        if isinstance(p, dict) and p.get("html_url") == pr_url and p.get("title"):
-            return p["title"]
-    return None
+def _proposal(sid) -> dict | None:
+    """The session's latest pull-request proposal."""
+    return next((e.payload for e in reversed(load_events(sid)) if e.type == "pr.proposed"), None)
 
 
 async def title_chat(sid, record, messages):
@@ -281,8 +337,8 @@ async def title_chat(sid, record, messages):
         row = get_session(sid)
         if row is None or row.title_source != "auto":
             return  # renamed, or titled already
-        if row.pr_url and (title := _pr_title(sid, row.pr_url)):
-            auto_title(sid, make_title(title), "pr")
+        if (proposal := _proposal(sid)) and proposal.get("title"):
+            auto_title(sid, make_title(proposal["title"]), "proposal")
             return
         chat = [m for m in messages if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()]
         excerpt = "\n\n".join(f"{m['role']}: {m['content'][:1500]}" for m in chat[:2])
@@ -369,8 +425,6 @@ async def _steps(ch, pending, sid, messages, record) -> tuple[bool, bool]:
                         result = await bus_call(ch, pending, sid, kind, args, record=record)
                 except Exception as e:
                     result = {"exit_code": 1, "stdout": "", "stderr": str(e)}
-                if kind == "git.open_pr" and result.get("exit_code") == 0 and result.get("html_url"):
-                    record_pr(sid, result.get("number"), result["html_url"])
             print(f"[exit {result.get('exit_code')}] {(result.get('stdout') or result.get('stderr') or '')[:200]}")
             add_message(sid, messages, {"role": "tool", "tool_call_id": tc.id,
                                         "content": tool_content(result)})
