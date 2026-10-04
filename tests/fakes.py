@@ -316,6 +316,8 @@ class FakeGitHub:
         self.installations, self.repos = {}, {}
         self.minted = []               # (installation id, repositories or None)
         self.page_size = 100
+        self.pulls = {}                # full name -> [{number, html_url, title, body, head, base, state}]
+        self.pull_error = None         # (status, body): what POST .../pulls answers instead
 
     def add_user(self, code, gid, login, **extra):
         token = f"ghu_{login}_{code}"
@@ -376,7 +378,29 @@ class FakeGitHub:
             if iid is None:
                 return FakeResponse(401, {"message": "Bad credentials"})
             return self._page(url, self.repos[iid], "repositories", params)
+        if path.startswith("/repos/") and path.endswith("/pulls"):
+            return self._pulls(method, path.removeprefix("/repos/").removesuffix("/pulls"), token, json, params)
         return FakeResponse(404, {"message": f"FakeGitHub has no {method} {path}"})
+
+    def _pulls(self, method, full_name, token, body, params):
+        """POST: open a PR (422 if one is open for the head already); GET: list by head/state."""
+        if not token.startswith("ghs_inst"):
+            return FakeResponse(401, {"message": "Bad credentials"})
+        pulls = self.pulls.setdefault(full_name, [])
+        owner = full_name.split("/")[0]
+        if method == "GET":
+            head = (params or {}).get("head", "")
+            return FakeResponse(200, [p for p in pulls if f"{owner}:{p['head']}" == head and p["state"] == "open"])
+        if self.pull_error:
+            return FakeResponse(*self.pull_error)
+        if any(p["head"] == body["head"] and p["state"] == "open" for p in pulls):
+            return FakeResponse(422, {"message": "Validation Failed", "errors": [
+                {"resource": "PullRequest", "code": "custom",
+                 "message": f"A pull request already exists for {owner}:{body['head']}."}]})
+        n = len(pulls) + 1
+        pr = {"number": n, "html_url": f"https://github.com/{full_name}/pull/{n}", "state": "open", **body}
+        pulls.append(pr)
+        return FakeResponse(201, pr)
 
 
 def connect_github(fake_github, user_id, iid=555, repos=("Taufik041/otto_test",), account="Taufik041"):

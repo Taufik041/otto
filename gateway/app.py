@@ -31,7 +31,7 @@ from shared.db import get_engine, init_db
 from shared.events import append_event, load_events, redact
 from shared.models import User, as_utc, utcnow
 from shared.sessions import (ACTIVE, attach_repo, count_active_agents, create_session, delete_session, get_session,
-                             list_sessions, repo_sessions_since, set_model, set_status, set_title,
+                             list_sessions, record_pr, repo_sessions_since, set_model, set_status, set_title,
                              sweep_stale_sessions,
                              transition, work_branch)
 
@@ -464,6 +464,65 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_
 
 class Retry(BaseModel):
     model: str | None = None  # a catalog id: retry on another model (the chat stays on it)
+
+
+class OpenPr(BaseModel):
+    title: str | None = Field(default=None, max_length=256)  # instead of the proposal's
+
+
+def _proposal(sid) -> dict | None:
+    """The chat's latest pull-request proposal (pr.proposed: a newer one replaces older ones)."""
+    return next((e.payload for e in reversed(load_events(sid)) if e.type == "pr.proposed"), None)
+
+
+def _pr_lock(sid) -> asyncio.Lock:
+    locks = app.state.__dict__.setdefault("pr_locks", {})
+    return locks.setdefault(sid, asyncio.Lock())
+
+
+def _pr_json(sid, row, title, created) -> dict:
+    opened = next((e.payload for e in reversed(load_events(sid))
+                   if e.type == "pr.opened" and e.payload.get("html_url") == row.pr_url), {})
+    return {"number": opened.get("number"), "url": row.pr_url, "title": title, "created": created}
+
+
+@app.post("/sessions/{sid}/pr", status_code=201)
+async def open_pull_request(sid: str, response: Response, body: OpenPr | None = None,
+                            user: User = Depends(auth.current_user)):
+    """Open the chat's proposed pull request on GitHub, as the user decided (Otto never opens one
+    itself). Idempotent: a PR already open for otto/<id> is returned (200), not duplicated. 409
+    while Otto works or with nothing proposed; 502 if GitHub refuses."""
+    _row(sid, user)
+    async with _pr_lock(sid):  # double clicks and two tabs: one PR
+        row = get_session(sid)
+        proposal = _proposal(sid)
+        if row.pr_url:
+            response.status_code = 200
+            return _pr_json(sid, row, proposal.get("title") if proposal else None, False)
+        if row.status in ACTIVE:
+            raise HTTPException(409, "Otto is still working on this chat; open the pull request when it finishes")
+        if proposal is None or not row.repo:
+            raise HTTPException(409, "nothing to open yet: Otto hasn't proposed a pull request in this chat")
+        repo = await _repo_for(user, row.repo)
+        title = (body.title.strip() if body and body.title and body.title.strip() else None) or proposal.get("title")
+        try:
+            pr = await asyncio.to_thread(github_app.open_pull, repo["installation_id"], repo["full_name"], title,
+                                         proposal.get("body") or "", proposal.get("head") or work_branch(sid),
+                                         proposal.get("base") or repo.get("default_branch") or "main")
+        except github_app.GitHubError as e:
+            raise HTTPException(502, f"GitHub didn't open the pull request: {e}") from None
+        record_pr(sid, pr["number"], pr["html_url"])
+        return {"number": pr["number"], "url": pr["html_url"], "title": pr.get("title") or title, "created": True}
+
+
+@app.post("/sessions/{sid}/pr/decline")
+def decline_pull_request(sid: str, user: User = Depends(auth.current_user)):
+    """Not now: the chat notes it (pr.declined). The proposal stays: POST .../pr still opens it."""
+    row = _row(sid, user)
+    if _proposal(sid) is None or row.pr_url:
+        raise HTTPException(409, "there's no proposed pull request to decline")
+    append_event(sid, "pr.declined", {})
+    return {"ok": True}
 
 
 @app.post("/sessions/{sid}/retry", status_code=202)

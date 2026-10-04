@@ -59,8 +59,14 @@ sandbox image (the image step of `scripts/dev_up.sh`), or sandboxes keep running
   - asks `git.status`
   - commits uncommitted changes, with a message from this turn's request
   - pushes when `otto/<id>` is ahead of the remote
-  - opens the PR when the session has none: the title from the task, the body from the model's
-    final message (an open PR is updated by the push)
+  - with no PR yet, proposes one: `pr.proposed {title, body, head, base, additions, deletions,
+    files, tests}`. The title comes from the task, the body from the model's final message, and the
+    counts from the push's diffstat. A newer proposal replaces older ones.
+  - with a PR open, the push has updated it: `pr.updated {number, url, additions, deletions, files}`
+
+  **Otto never opens a pull request itself.** The model has no `git_open_pr` tool, and the prompt
+  tells it to commit and push and leave the PR to the user (the runner's `git.open_pr` handler
+  remains, unused). The user opens the proposal with `POST /sessions/{id}/pr`, or declines it.
 
   These are ordinary bus actions, so each one is an event row. The finish is skipped for plain
   chats, stopped turns, and turns that ran nothing that could change the workspace (no edits,
@@ -166,6 +172,8 @@ In the App's settings on GitHub:
 | `POST /auth/logout-all` | Bearer | revokes every refresh token and voids every access token |
 | `POST /me/password`, `POST /auth/reset` | Bearer / reset token | signs out every device, and signs this one in again (the same body as login) |
 | `POST /sessions/{id}/ws-ticket` | Bearer, the session's owner | `{ticket}`: single use, 30 seconds, for `WS /sessions/{id}/ws?ticket=...&after_seq=N` |
+| `POST /sessions/{id}/pr` `{title?}` | Bearer, the session's owner | opens the chat's proposed PR on GitHub with the installation's token (no sandbox, no model), and appends `pr.opened`. 201; 200 with the existing one if a PR is already open for `otto/<id>` (double clicks, two tabs). 409 while Otto works or with nothing proposed; 502 with GitHub's reason if it refuses. |
+| `POST /sessions/{id}/pr/decline` | Bearer, the session's owner | "Not now": appends `pr.declined`. The proposal stays, so `POST .../pr` still opens it later. 409 with nothing proposed. |
 | `POST /sessions/{id}/retry` | Bearer, the session's owner | runs a `failed` or `interrupted` turn again from where it stopped, with no new message (409 otherwise); `{model}` retries on another model (`session.model_changed`; 400 if unavailable) |
 | `POST /auth/github/url` `{mode: "signin" \| "link"}` | none; Bearer for `link` | `{url}` to send the browser to, and the state's nonce cookie |
 | `POST /github/install-url` | Bearer | `{url}` to install the App, and the state's nonce cookie |
@@ -201,7 +209,8 @@ does all this; with the web app running, signing in at `http://localhost:5173` i
 6. `POST /sessions` with `{"message": "what is a closure?"}` is a plain chat;
    `GET /sessions/{id}/events` shows the reply once the worker has answered.
 7. `POST /sessions/{id}/messages` with `{"text": "fix the failing tests", "repo": "Taufik041/otto_test"}`
-   attaches the repo; the agent works in a sandbox and opens a PR (`pr.opened` in the events).
+   attaches the repo; the agent works in a sandbox, commits, pushes `otto/<id>` and proposes a PR
+   (`pr.proposed` in the events). `POST /sessions/{id}/pr` opens it (`pr.opened`).
 8. `GET /usage` shows the tokens.
    `POST /sessions/{id}/stop` stops a chat (and its sandbox); `POST /sessions/{id}/sandbox/stop`
    stops just the sandbox; `DELETE /sessions/{id}` deletes the chat and its events (its tokens
