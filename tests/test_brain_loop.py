@@ -25,6 +25,7 @@ def fake_client(monkeypatch, responses, delay=0):
     class Completions:
         async def create(self, **kw):
             calls.append(json.loads(json.dumps(kw["messages"], default=str)))
+            state.setdefault("tools", []).append(kw.get("tools"))
             await asyncio.sleep(delay)
             return responses.pop(0)
 

@@ -207,22 +207,56 @@ async def finish(ch, pending, sid, messages, record):
             stat = _push_stat(sid)
             record("pr.updated", {"number": _pr_number(sid, row.pr_url), "url": row.pr_url, **stat})
     elif work > 0:
-        propose(sid, record, messages)
+        await propose(sid, record, messages)
 
 
-def propose(sid, record, messages):
+PR_TITLE_PROMPT = ("Write a pull request title for the changes below: in the imperative mood, like \"Fix the "
+                   "bulk discount threshold\", at most 60 characters. Reply with the title only: plain text, "
+                   "no quotes, no trailing period.")
+
+
+async def propose(sid, record, messages):
     """Propose the branch as a pull request: the user opens it (POST /sessions/{id}/pr) or not.
     A newer proposal replaces older ones."""
     row = get_session(sid)
     push = _latest_push(sid)
+    body = _last(messages, "assistant") or f"Changes by Otto for: {row.task}"
     record("pr.proposed", {
-        "title": make_title(row.task),
-        "body": _last(messages, "assistant") or f"Changes by Otto for: {row.task}",
+        "title": await _proposal_title(sid, record, row.task, body),
+        "body": body,
         "head": work_branch(sid),
         "base": push.get("base"),
         **_push_stat(sid),
         "tests": _last_tests(sid),
     })
+
+
+async def _proposal_title(sid, record, task, body) -> str:
+    """The proposal's title: one short call on the chat's model, written from the task, the
+    model's final message and the changed files; the trimmed task if that fails (the daily limit,
+    the model). Never fails the turn."""
+    try:
+        files = "\n".join(_changed_files(sid)[:30]) or "(none listed)"
+        content = f"Task: {task[:1500]}\n\nWhat was done:\n{body[:2000]}\n\nChanged files:\n{files}"
+        if title := await _model_title(sid, record, PR_TITLE_PROMPT, content):
+            return title
+    except Exception as e:  # LimitReached, LLMError, Stopped, anything
+        print(f"[brain] no model title for {sid}'s proposal: {type(e).__name__}: {e}", flush=True)
+    return make_title(task)
+
+
+def _changed_files(sid) -> list[str]:
+    """The files the session's edits and writes changed, in order, relative to the workspace."""
+    done = {e.payload.get("action_id") for e in load_events(sid)
+            if e.type == "bus.result" and (e.payload.get("payload") or {}).get("exit_code") == 0}
+    paths = []
+    for e in load_events(sid):
+        p = e.payload
+        if e.type == "bus.action" and p.get("kind") in ("fs.replace", "fs.write") and p.get("action_id") in done:
+            path = str((p.get("payload") or {}).get("path") or "").removeprefix("/workspace/").removeprefix("./")
+            if path and path not in paths:
+                paths.append(path)
+    return paths
 
 
 def _latest_push(sid) -> dict:
@@ -313,6 +347,13 @@ TITLE_PROMPT = ("Write a title of 3 to 6 words for the chat below. Reply with th
                 "text, no quotes, no trailing punctuation.")
 
 
+async def _model_title(sid, record, prompt, content) -> str | None:
+    """One short call on the chat's model (no tools, counted in usage, within the daily limit):
+    a title, cleaned (clean_title), or None. Raises like any model call."""
+    resp = await _complete(sid, record, [{"role": "system", "content": prompt}, {"role": "user", "content": content}])
+    return clean_title(resp.choices[0].message.content)
+
+
 def clean_title(text) -> str | None:
     """The model's title, tidied: its first line, without quotes, a "Title:" label or a trailing
     period, at most TITLE_LENGTH characters. None if nothing is left."""
@@ -342,9 +383,7 @@ async def title_chat(sid, record, messages):
             return
         chat = [m for m in messages if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()]
         excerpt = "\n\n".join(f"{m['role']}: {m['content'][:1500]}" for m in chat[:2])
-        resp = await _complete(sid, record, [{"role": "system", "content": TITLE_PROMPT},
-                                             {"role": "user", "content": excerpt}])
-        if title := clean_title(resp.choices[0].message.content):
+        if title := await _model_title(sid, record, TITLE_PROMPT, excerpt):
             auto_title(sid, title, "model")
     except Exception as e:  # LimitReached, LLMError, anything: the chat keeps its first-message title
         print(f"[brain] no auto title for {sid}: {type(e).__name__}: {e}", flush=True)

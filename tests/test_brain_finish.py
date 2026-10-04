@@ -59,7 +59,7 @@ def setup(monkeypatch, responses, **git):
     ch = FakeChannel()
     results = ch.queue(results_queue("s1"))
     runner = Runner(ch, results, **git)
-    fake_client(monkeypatch, responses)
+    runner.calls, runner.llm = fake_client(monkeypatch, responses)
     create_session("s1", task=TASK, repo="o/r", model="m", status="running")
     return ch, results, runner
 
@@ -168,15 +168,16 @@ async def test_pushed_but_no_pr_proposes_one(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_later_turn_without_a_pr_proposes_again(monkeypatch):
-    ch, results, runner = setup(monkeypatch, [llm_tool_calls(EDIT), llm_final("First."),
-                                              llm_tool_calls(EDIT), llm_final("Second.")])
+    ch, results, runner = setup(monkeypatch, [llm_tool_calls(EDIT), llm_final("First."), llm_final("Fix one thing"),
+                                              llm_tool_calls(EDIT), llm_final("Second."), llm_final("Fix another")])
     await run(ch, results)
     from shared.sessions import transition
     assert transition("s1", "running", {"done"})
 
     await asyncio.wait_for(loop.resume_session(ch, results, "s1", "and more"), 5)
 
-    assert [p["body"] for p in proposals()] == ["First.", "Second."]  # the newer one replaces the older
+    assert [(p["title"], p["body"]) for p in proposals()] == [("Fix one thing", "First."), ("Fix another", "Second.")]
+    # (the newer one replaces the older)
 
 
 @pytest.mark.asyncio
@@ -252,3 +253,67 @@ async def test_plain_chats_have_no_finish(monkeypatch):
 
     assert not [e for e in load_events("c1") if e.type.startswith("bus.")]
     assert get_session("c1").status == "done"
+
+
+
+# --- the proposal's title: one short model call, else the trimmed task --------------------------
+
+@pytest.mark.asyncio
+async def test_the_proposal_title_is_written_by_the_model(monkeypatch):
+    ch, results, runner = setup(monkeypatch, [
+        llm_tool_calls(EDIT),
+        llm_final("Fixed the threshold: `>` is now `>=`."),
+        llm_final('"Fix the bulk discount threshold."\n'),  # the title call
+    ])
+
+    await run(ch, results)
+
+    assert proposals()[0]["title"] == "Fix the bulk discount threshold"
+    title_call = runner.calls[2]
+    assert runner.llm["tools"][2] is None  # no tools
+    prompt = title_call[0]["content"].lower()
+    assert "imperative" in prompt and "60" in prompt
+    asked = title_call[-1]["content"]
+    assert TASK in asked and "`>` is now `>=`" in asked and "src/p.py" in asked  # task, reply, changed files
+    assert len([e for e in load_events("s1") if e.type == "llm.usage"]) == 3  # counted in usage
+    assert get_session("s1").status == "done"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_title_call_falls_back_to_the_task(monkeypatch):
+    # the script has no answer left for the title call: it fails
+    ch, results, runner = setup(monkeypatch, [llm_tool_calls(EDIT), llm_final("Fixed.")])
+
+    await run(ch, results)
+
+    assert proposals()[0]["title"] == make_title(TASK)
+    assert get_session("s1").status == "done"
+
+
+@pytest.mark.asyncio
+async def test_the_daily_limit_falls_back_to_the_task(monkeypatch):
+    from shared import usage
+    ch, results, runner = setup(monkeypatch, [llm_tool_calls(EDIT), llm_final("Fixed."), llm_final("Never used")])
+    from shared.sessions import get_session as _gs
+    from shared.db import get_db
+    from shared.models import Session
+    from tests.fakes import make_user
+    make_user("u1")
+    with get_db() as s:  # the session belongs to a user, so the limit applies
+        row = s.get(Session, "s1")
+        row.user_id = "u1"
+        s.add(row)
+    calls = {"n": 0}
+
+    def limit_after_the_turn(user_id, now=None):
+        calls["n"] += 1
+        return {"used": 300000, "limit": 300000, "resets_at": "x"} if calls["n"] > 2 else None
+
+    monkeypatch.setattr(usage, "limit_status", limit_after_the_turn)
+
+    await run(ch, results)
+
+    assert proposals()[0]["title"] == make_title(TASK)
+    assert len(runner.calls) == 2  # no title call was made
+    assert _gs("s1").status == "done"
+    assert not [e for e in load_events("s1") if e.type == "usage.limit_reached"]  # the turn wasn't limited

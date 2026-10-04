@@ -60,8 +60,11 @@ sandbox image (the image step of `scripts/dev_up.sh`), or sandboxes keep running
   - commits uncommitted changes, with a message from this turn's request
   - pushes when `otto/<id>` is ahead of the remote
   - with no PR yet, proposes one: `pr.proposed {title, body, head, base, additions, deletions,
-    files, tests}`. The title comes from the task, the body from the model's final message, and the
-    counts from the push's diffstat. A newer proposal replaces older ones.
+    files, tests}`. The title is one short model call (no tools, counted in usage): imperative, at
+    most 60 characters, written from the task, the model's final message and the changed files. If
+    that call fails or hits the daily limit, the title is the trimmed task, and the turn is
+    unaffected. The body is the model's final message, and the counts come from the push's
+    diffstat. A newer proposal replaces older ones. Auto-titles use the proposal's title.
   - with a PR open, the push has updated it: `pr.updated {number, url, additions, deletions, files}`
 
   **Otto never opens a pull request itself.** The model has no `git_open_pr` tool, and the prompt

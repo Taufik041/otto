@@ -20,17 +20,9 @@ def usages(sid):
 
 @pytest.mark.asyncio
 async def test_an_agent_chat_with_a_proposal_takes_its_title(monkeypatch):
-    from shared.events import append_event
-
-    ch, results, runner = setup(monkeypatch, [llm_tool_calls(EDIT), llm_final("Done.")])
-    real = loop.propose
-
-    def propose_with_a_title(sid, record, messages, **kw):
-        real(sid, record, messages, **kw)
-        # as if the proposal had a better title than the task's first line
-        append_event(sid, "pr.proposed", {**proposal(sid), "title": "Fix bulk discount threshold"})
-
-    monkeypatch.setattr(loop, "propose", propose_with_a_title)
+    ch, results, runner = setup(monkeypatch, [
+        llm_tool_calls(EDIT), llm_final("Done."), llm_final("Fix bulk discount threshold"),  # the proposal's title
+    ])
 
     await run(ch, results)
 
@@ -38,11 +30,7 @@ async def test_an_agent_chat_with_a_proposal_takes_its_title(monkeypatch):
     assert (row.status, row.pr_url) == ("done", None)
     assert (row.title, row.title_source) == ("Fix bulk discount threshold", "generated")
     assert titled("s1") == [{"title": "Fix bulk discount threshold", "source": "proposal"}]
-    assert len(usages("s1")) == 2  # the turn's own calls only: no title call
-
-
-def proposal(sid):
-    return [e.payload for e in load_events(sid) if e.type == "pr.proposed"][-1]
+    assert len(usages("s1")) == 3  # the turn's two calls and the proposal title's: no separate chat title
 
 
 @pytest.mark.asyncio
