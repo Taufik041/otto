@@ -257,7 +257,7 @@ def test_list_get_and_events(client, env):
 
     listed = client.get("/sessions").json()
     assert [s["id"] for s in listed] == [b, a]
-    assert set(listed[0]) == {"id", "title", "status", "repo", "model", "pr_url", "updated_at"}
+    assert set(listed[0]) == {"id", "title", "status", "repo", "model", "pr_url", "updated_at", "attention"}
     assert (listed[0]["title"], listed[0]["repo"]) == ("second", REPO)
 
     one = client.get(f"/sessions/{a}").json()

@@ -141,6 +141,39 @@ def count_active_agents(user_id=None) -> int:
         return s.exec(q).one()
 
 
+def mark_seen(sid, seq) -> int:
+    """The user saw the chat up to event `seq`: never backwards, and never past its last event
+    (a turn that ends later still wants attention). The seq now recorded."""
+    with get_db() as s:
+        last = s.exec(select(func.max(SessionEvent.seq)).where(SessionEvent.session_id == sid)).one() or 0
+        seq = min(int(seq), last)
+        s.exec(update(Session).where(Session.id == sid, Session.last_seen_seq < seq).values(last_seen_seq=seq))
+        return s.get(Session, sid, populate_existing=True).last_seen_seq
+
+
+def end_seqs(sids) -> dict[str, int]:
+    """Each session's latest session.status event (its current status: a turn's end, when final)."""
+    if not sids:
+        return {}
+    with get_db() as s:
+        rows = s.exec(select(SessionEvent.session_id, func.max(SessionEvent.seq))
+                      .where(SessionEvent.session_id.in_(sids), SessionEvent.type == "session.status")
+                      .group_by(SessionEvent.session_id)).all()
+    return {sid: seq for sid, seq in rows}
+
+
+ATTENTION_ENDS = {"done": "done", "failed": "failed", "interrupted": "failed"}
+
+
+def attention(row, end_seq) -> str | None:
+    """The sidebar's dot: "working" while Otto works; "done" or "failed" when the latest turn ended
+    so after the last event the user saw; None otherwise (stopped by the user, seen, and the rest)."""
+    if row.status in ACTIVE:
+        return "working"
+    kind = ATTENTION_ENDS.get(row.status)
+    return kind if kind and (end_seq or 0) > (row.last_seen_seq or 0) else None
+
+
 def list_sessions(user_id) -> list[Session]:
     """The user's sessions, most recently active first."""
     with get_db() as s:

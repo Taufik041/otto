@@ -30,7 +30,7 @@ from shared.bus import SESSIONS_QUEUE, actions_queue, chat_job, results_queue, r
 from shared.db import get_engine, init_db
 from shared.events import append_event, load_events, redact
 from shared.models import User, as_utc, utcnow
-from shared.sessions import (ACTIVE, attach_repo, count_active_agents, create_session, delete_session, get_session,
+from shared.sessions import (ACTIVE, attach_repo, attention, end_seqs, mark_seen, count_active_agents, create_session, delete_session, get_session,
                              list_sessions, record_pr, repo_sessions_since, set_model, set_status, set_title,
                              sweep_stale_sessions,
                              transition, work_branch)
@@ -218,9 +218,11 @@ async def _status(sid) -> str:
         return "unknown"
 
 
-def _summary(row) -> dict:
+def _summary(row, ends=None) -> dict:
+    """A chat for the sidebar; ends: end_seqs of the listed sessions (one query for the list)."""
+    ends = end_seqs([row.id]) if ends is None else ends
     return {"id": row.id, "title": row.title, "status": row.status, "repo": row.repo, "model": row.model,
-            "pr_url": row.pr_url, "updated_at": as_utc(row.updated_at)}
+            "pr_url": row.pr_url, "updated_at": as_utc(row.updated_at), "attention": attention(row, ends.get(row.id))}
 
 
 def _within_limit(user):
@@ -305,8 +307,22 @@ async def create(body: NewSession, user: User = Depends(auth.current_user)):
 
 @app.get("/sessions")
 def sessions(user: User = Depends(auth.current_user)):
-    """The user's chats for the sidebar, most recently active first."""
-    return [_summary(r) for r in list_sessions(user.id)]
+    """The user's chats for the sidebar, most recently active first, each with its `attention`."""
+    rows = list_sessions(user.id)
+    ends = end_seqs([r.id for r in rows])
+    return [_summary(r, ends) for r in rows]
+
+
+class Seen(BaseModel):
+    seq: int = Field(ge=0)
+
+
+@app.post("/sessions/{sid}/seen")
+def seen(sid: str, body: Seen, user: User = Depends(auth.current_user)):
+    """The user saw the chat up to event `seq` (never backwards): its finished turn stops wanting
+    attention in the sidebar."""
+    _row(sid, user)
+    return {"last_seen_seq": mark_seen(sid, body.seq)}
 
 
 @app.get("/sessions/{sid}")
