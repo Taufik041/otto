@@ -92,6 +92,21 @@ session's events into a view model: messages, work blocks with steps, PR cards, 
 terminal entries and status. It ignores events it has already seen (by `seq`), and replays from
 the start when an older event arrives late. Its tests (`reduce.test.ts`) cover every event kind.
 
+### The sidebar's dots
+
+A chat's dot is its `attention` from `GET /sessions`:
+
+- **amber, pulsing softly:** `working` (steady when reduced motion is on)
+- **green:** `done`, a turn that ended after you last saw the chat
+- **red:** `failed`, the same for a failed or interrupted turn
+- **none:** `null` (seen, stopped by you, or anything else)
+
+While a chat is open and the tab is visible, what arrives is seen. `useSessionView` posts
+`/sessions/{id}/seen` with the latest seq (debounced), clears the chat's row in the list at once,
+and refetches the list only after that post. So a chat you're watching never gets a dot when it
+finishes. A hidden tab posts when it becomes visible again. The list refetches on window focus,
+and every 10s while any chat is `working`; otherwise it doesn't poll.
+
 ### Events → UI
 
 | Event | Payload | What the chat shows |

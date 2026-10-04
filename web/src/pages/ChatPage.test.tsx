@@ -318,3 +318,74 @@ describe('the proposed pull request', () => {
     expect(within(card).getByText('Otto is working…')).toBeInTheDocument()
   })
 })
+
+describe('seen: the open chat never wants attention', () => {
+  /** /sessions answers like the gateway: "done" until a seen at or past the end */
+  function server_(endSeq: { v: number }, status: { v: string }) {
+    const log: string[] = []
+    let seen = 0
+    return {
+      log,
+      handlers: [
+        http.post(`${API}/sessions/s1/seen`, async ({ request }) => {
+          const { seq } = (await request.json()) as { seq: number }
+          seen = Math.max(seen, seq)
+          log.push(`seen:${seq}`)
+          return HttpResponse.json({ last_seen_seq: seen })
+        }),
+        http.get(`${API}/sessions`, () => {
+          const attention = status.v === 'running' ? 'working' : endSeq.v > seen ? 'done' : null
+          log.push(`list:${attention}`)
+          return HttpResponse.json([{ ...session({ id: 's1', repo: null }), attention }])
+        }),
+      ],
+    }
+  }
+  const dot = (name: string) => within(screen.getByRole('navigation', { name: 'Chats' })).queryByRole('img', { name })
+
+  it('opening a chat marks it seen, and its dot goes', async () => {
+    const l = log().created('hi', null).status('running').msg('user', 'hi').msg('assistant', 'Hello.').status('done')
+    const { log: calls, handlers } = server_({ v: l.events.length }, { v: 'done' })
+    backend(l.events, { repo: null, work_branch: null }, handlers)
+
+    await waitFor(() => expect(calls).toContain(`seen:${l.events.length}`))
+    await waitFor(() => expect(dot('Done')).not.toBeInTheDocument())
+  })
+
+  it('a turn that finishes while you watch never shows a dot', async () => {
+    const l = log().created('hi', null).status('running').msg('user', 'hi')
+    const end = { v: 0 }
+    const status = { v: 'running' }
+    const { log: calls, handlers } = server_(end, status)
+    backend(l.events, { repo: null, work_branch: null, status: 'running' }, handlers)
+    await waitFor(() => expect(FakeSocket.all.length).toBeGreaterThan(0))
+    await waitFor(() => expect(dot('Working')).toBeInTheDocument())
+    calls.length = 0
+
+    status.v = 'done'
+    end.v = 5
+    FakeSocket.all.at(-1)!.deliver({ seq: 4, ts: '2026-10-02T14:10:00Z', type: 'llm.message', payload: { message: { role: 'assistant', content: 'Hi.' } } })
+    FakeSocket.all.at(-1)!.deliver({ seq: 5, ts: '2026-10-02T14:10:01Z', type: 'session.status', payload: { status: 'done' } })
+
+    await waitFor(() => expect(calls).toContain('seen:5'))
+    await waitFor(() => expect(calls.some((c) => c.startsWith('list:'))).toBe(true))
+    // the list is only asked again after the seen post, so it never answers "done" meanwhile
+    expect(calls.indexOf('seen:5')).toBeLessThan(calls.findIndex((c) => c.startsWith('list:')))
+    expect(calls).not.toContain('list:done')
+    expect(dot('Done')).not.toBeInTheDocument()
+  })
+
+  it('a hidden tab doesn\'t mark it seen until it becomes visible again', async () => {
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    const l = log().created('hi', null).status('running').msg('user', 'hi').msg('assistant', 'Hello.').status('done')
+    const { log: calls, handlers } = server_({ v: l.events.length }, { v: 'done' })
+    backend(l.events, { repo: null, work_branch: null }, handlers)
+    await screen.findByText('Hello.')
+    await new Promise((r) => setTimeout(r, 700)) // longer than the debounce
+    expect(calls.filter((c) => c.startsWith('seen'))).toEqual([])
+
+    visibility.mockReturnValue('visible')
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    await waitFor(() => expect(calls).toContain(`seen:${l.events.length}`))
+  })
+})
