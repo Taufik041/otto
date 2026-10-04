@@ -104,6 +104,8 @@ export type Item =
   | { kind: 'error'; id: string; title: string; message: string; switchModel: boolean }
   | { kind: 'limit'; id: string; used: number; limit: number; resetsAt: string }
   | { kind: 'nudge'; id: string }
+  /** Otto's proposed pull request, waiting for the user: create it, or not now */
+  | { kind: 'proposal'; id: string; proposal: Proposal; state: 'proposed' | 'declined' }
   /** the chat moved to another model from here on: a quiet divider */
   | { kind: 'model'; id: string; to: string }
 
@@ -128,6 +130,19 @@ export type TermEntry = {
 }
 
 type PrRef = { number: number; url: string; title: string | null }
+
+/** pr.proposed, plus the repo: what "Create pull request" would open */
+export type Proposal = {
+  title: string
+  body: string
+  head: string | null
+  base: string | null
+  additions: number | null
+  deletions: number | null
+  files: number | null
+  tests: { passed: number; failed: number; text: string } | null
+  repo: string
+}
 
 export type View = {
   lastSeq: number
@@ -163,6 +178,8 @@ type Turn = {
   stoppedHere: boolean
   /** a model switch that came with this turn's message */
   switchedTo: string | null
+  /** pr.updated: this turn's push updated the open PR */
+  prUpdate: { number: number | null; url: string; additions: number | null; deletions: number | null; files: number | null } | null
 }
 
 type State = {
@@ -175,7 +192,11 @@ type State = {
   actions: Map<string, Action>
   /** set when work starts again after a final status, until we know if it's a retry or a follow-up */
   restart: { ts: string; afterFailure: boolean } | null
-  prs: { number: number; url: string; turn: string }[]
+  prs: { number: number; url: string; turn: string; seq: number }[]
+  /** the latest pr.proposed (a newer one replaces older ones), in the turn it came with */
+  proposal: { payload: Record<string, unknown>; turn: string; seq: number } | null
+  /** the seq of the latest pr.declined */
+  declined: number | null
   /** a model switch waiting for the turn it applies to */
   pendingModel: string | null
   /** every event folded in, by seq: a late gap is replayed from scratch */
@@ -185,6 +206,8 @@ type State = {
 export const emptyState = (): State => ({
   log: [],
   pendingModel: null,
+  proposal: null,
+  declined: null,
   seen: new Set(),
   status: null,
   repo: null,
@@ -215,6 +238,7 @@ function newTurn(state: State, id: string, ts: string, user: Turn['user']): Turn
     limit: null,
     stoppedHere: false,
     switchedTo: state.pendingModel,
+    prUpdate: null,
   }
   state.pendingModel = null
   state.turns.push(t)
@@ -350,7 +374,24 @@ function apply(s: State, e: SessionEvent) {
       const n = num(p.number)
       const url = str(p.html_url)
       const t = current(s)
-      if (n !== null && url && t) s.prs.push({ number: n, url, turn: t.id })
+      if (n !== null && url && t) s.prs.push({ number: n, url, turn: t.id, seq: e.seq })
+      return
+    }
+    case 'pr.proposed': {
+      const t = current(s)
+      if (t) s.proposal = { payload: p, turn: t.id, seq: e.seq }
+      return
+    }
+    case 'pr.declined': {
+      s.declined = e.seq
+      return
+    }
+    case 'pr.updated': {
+      const t = current(s)
+      const url = str(p.url)
+      if (t && url) {
+        t.prUpdate = { number: num(p.number), url, additions: num(p.additions), deletions: num(p.deletions), files: num(p.files) }
+      }
       return
     }
     case 'usage.limit_reached': {
@@ -656,12 +697,21 @@ export function view(s: State): View {
       limit: null,
       stoppedHere: false,
       switchedTo: s.pendingModel,
+      prUpdate: null,
     })
   }
 
-  for (const t of turns) {
+  const turnIndex = new Map(turns.map((t, i) => [t.id, i]))
+  const proposal = s.proposal
+  const proposalTitle = proposal ? str(proposal.payload.title) : null
+  const openedPr = proposal ? s.prs.find((p) => p.seq > proposal.seq) ?? null : null
+
+  for (const [ti, t] of turns.entries()) {
     const ended = t.outcome !== null
     const turnLive = !ended && live
+    // a PR the user opened before this turn: its pushes go "to pull request #n"
+    const prBefore = s.prs.filter((p) => (turnIndex.get(p.turn) ?? Infinity) < ti).at(-1)
+    if (prBefore && !known.pr) known.pr = { number: prBefore.number, url: prBefore.url, title: proposalTitle }
     if (t.switchedTo) items.push({ kind: 'model', id: `${t.id}-model`, to: t.switchedTo })
     if (t.user) items.push({ kind: 'user', id: `${t.id}-u`, text: t.user.text, repo: t.user.repo })
     let avatar = true
@@ -795,8 +845,74 @@ export function view(s: State): View {
     }
     if (t.limit) items.push({ kind: 'limit', id: `${t.id}-limit`, used: t.limit.used, limit: t.limit.limit, resetsAt: t.limit.resetsAt })
 
-    // the PR card: opened in this turn, or updated by a push to the PR an earlier turn opened
-    const prOfTurn = opened ?? (pushedToKnownPr ? known.pr : null)
+    // Otto's proposal (the latest), where it was made: waiting, declined, or opened by the user
+    if (proposal && proposal.turn === t.id && s.repo) {
+      const q = proposal.payload
+      const prop: Proposal = {
+        title: str(q.title) ?? 'Pull request',
+        body: str(q.body) ?? '',
+        head: str(q.head),
+        base: str(q.base),
+        additions: num(q.additions),
+        deletions: num(q.deletions),
+        files: num(q.files),
+        tests: (() => {
+          const tq = rec(q.tests)
+          return num(tq.passed) === null ? null : { passed: num(tq.passed)!, failed: num(tq.failed) ?? 0, text: str(tq.text) ?? '' }
+        })(),
+        repo: s.repo,
+      }
+      if (openedPr) {
+        items.push({
+          kind: 'pr',
+          id: `${t.id}-pr`,
+          pr: {
+            id: t.id,
+            updated: false,
+            number: openedPr.number,
+            url: openedPr.url,
+            title: prop.title,
+            repo: s.repo,
+            branch: prop.head,
+            base: prop.base,
+            additions: prop.additions,
+            deletions: prop.deletions,
+            files: prop.files,
+            tests: prop.tests && !prop.tests.failed ? { ...prop.tests, errors: 0, duration: null } : null,
+            firstFile: firstEdited,
+          },
+        })
+      } else {
+        const state = s.declined !== null && s.declined > proposal.seq ? 'declined' : 'proposed'
+        items.push({ kind: 'proposal', id: `${t.id}-proposal`, proposal: prop, state })
+      }
+    }
+    // the push of this turn updated the open PR (pr.updated)
+    if (t.prUpdate && s.repo) {
+      const u = t.prUpdate
+      items.push({
+        kind: 'pr',
+        id: `${t.id}-pr-updated`,
+        pr: {
+          id: t.id,
+          updated: true,
+          number: u.number ?? known.pr?.number ?? 0,
+          url: u.url,
+          title: known.pr?.title ?? proposalTitle,
+          repo: s.repo,
+          branch,
+          base,
+          additions: u.additions,
+          deletions: u.deletions,
+          files: u.files,
+          tests: latestTests && !latestTests.failed && !latestTests.errors ? latestTests : null,
+          firstFile: firstEdited,
+        },
+      })
+    }
+
+    // older sessions: the PR card from Otto's own git.open_pr, or a push to the PR it opened
+    const prOfTurn = t.prUpdate ? null : (opened ?? (pushedToKnownPr && !s.proposal ? known.pr : null))
     if (prOfTurn && s.repo) {
       const updated = known.pr !== null && known.pr.number === prOfTurn.number
       items.push({

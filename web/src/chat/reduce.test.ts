@@ -411,3 +411,76 @@ describe('a model that cannot work', () => {
     expect(v(l.events).items.find((i) => i.kind === 'error')).toMatchObject({ switchModel: false })
   })
 })
+
+describe('pull requests: Otto proposes, the user decides', () => {
+  const PROPOSAL = {
+    title: 'Fix failing pricing tests', body: 'Found it.', head: 'otto/s1', base: 'main',
+    additions: 1, deletions: 1, files: 1, tests: { passed: 9, failed: 0, text: '9 passed' },
+  }
+  const PR_URL = 'https://github.com/Taufik041/otto_test/pull/3'
+
+  function proposedRun() {
+    return log().created('fix the tests').status('running')
+      .act('fs.replace', { path: 'p.py', old_str: '>', new_str: '>=' }, { exit_code: 0, stdout: '', stderr: '', diff: '+x', added: 1, removed: 1 })
+      .act('git.commit', { message: 'fix' })
+      .act('git.push', {}, { exit_code: 0, stdout: '', stderr: '', branch: 'otto/s1', base: 'main', diffstat: { files: 1, additions: 1, deletions: 1 } })
+      .msg('assistant', 'Found it.')
+      .add('pr.proposed', PROPOSAL)
+      .status('done')
+  }
+  const card = (items: Item[]) => items.find((i) => i.kind === 'proposal' || i.kind === 'pr')
+
+  it('a proposal is a "Ready for review" card after the block, before the reply', () => {
+    const view_ = v(proposedRun().events)
+    expect(kinds(view_.items)).toEqual(['user', 'work', 'proposal', 'prose'])
+    expect(card(view_.items)).toMatchObject({
+      kind: 'proposal', state: 'proposed',
+      proposal: { ...PROPOSAL, repo: 'Taufik041/otto_test' },
+    })
+  })
+
+  it('proposed → opened: the card becomes the PR card', () => {
+    const l = proposedRun().add('pr.opened', { number: 3, html_url: PR_URL })
+    const view_ = v(l.events)
+    expect(kinds(view_.items)).toEqual(['user', 'work', 'pr', 'prose'])
+    expect(card(view_.items)).toMatchObject({
+      kind: 'pr',
+      pr: { updated: false, number: 3, url: PR_URL, title: 'Fix failing pricing tests', branch: 'otto/s1', base: 'main',
+            additions: 1, deletions: 1, files: 1, tests: { passed: 9 } },
+    })
+  })
+
+  it('proposed → declined → opened later', () => {
+    const l = proposedRun().add('pr.declined')
+    expect(card(v(l.events).items)).toMatchObject({ kind: 'proposal', state: 'declined' })
+    l.add('pr.opened', { number: 3, html_url: PR_URL })
+    expect(card(v(l.events).items)).toMatchObject({ kind: 'pr', pr: { number: 3 } })
+  })
+
+  it('a newer proposal replaces the older one', () => {
+    const l = proposedRun().add('pr.declined')
+      .status('provisioning').status('running').msg('user', 'and more')
+      .act('git.push', {}, { exit_code: 0, stdout: '', stderr: '', branch: 'otto/s1', base: 'main', diffstat: { files: 2, additions: 5, deletions: 1 } })
+      .msg('assistant', 'More.').add('pr.proposed', { ...PROPOSAL, body: 'More.', additions: 5, files: 2 }).status('done')
+    const items = v(l.events).items
+    expect(items.filter((i) => i.kind === 'proposal')).toHaveLength(1)
+    expect(kinds(items)).toEqual(['user', 'work', 'prose', 'user', 'work', 'proposal', 'prose'])
+    expect(card(items)).toMatchObject({ state: 'proposed', proposal: { additions: 5, files: 2 } })
+  })
+
+  it('pr.updated: the later turn shows the PR card "updated" with the new counts', () => {
+    const l = proposedRun().add('pr.opened', { number: 3, html_url: PR_URL })
+      .status('provisioning').status('running').msg('user', 'also add a test')
+      .act('fs.replace', { path: 't.py', old_str: 'a', new_str: 'b' }, { exit_code: 0, stdout: '', stderr: '', diff: '+x', added: 3, removed: 0 })
+      .act('git.commit', { message: 'test' })
+      .act('git.push', {}, { exit_code: 0, stdout: '', stderr: '', branch: 'otto/s1', base: 'main', diffstat: { files: 2, additions: 4, deletions: 1 } })
+      .msg('assistant', 'Added.')
+      .add('pr.updated', { number: 3, url: PR_URL, additions: 4, deletions: 1, files: 2 })
+      .status('done')
+    const items = v(l.events).items
+    const prs = items.filter((i) => i.kind === 'pr')
+    expect(prs).toHaveLength(2)
+    expect(prs[1]).toMatchObject({ pr: { updated: true, number: 3, additions: 4, deletions: 1, files: 2, title: 'Fix failing pricing tests' } })
+    expect(steps(items, 1).at(-1)).toMatchObject({ verb: 'Pushed to pull request', code: '#3' })
+  })
+})
