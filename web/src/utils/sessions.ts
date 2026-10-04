@@ -1,4 +1,4 @@
-import type { SessionStatus, SessionSummary } from '@/api/types'
+import type { SessionSummary } from '@/api/types'
 
 export type GroupLabel = 'Today' | 'Yesterday' | 'Previous 7 days' | 'Older'
 export type Group = { label: GroupLabel; sessions: SessionSummary[] }
@@ -33,23 +33,4 @@ export function groupSessions(sessions: SessionSummary[], now: Date = new Date()
     by.set(g, [...(by.get(g) ?? []), s])
   }
   return ORDER.filter((l) => by.has(l)).map((label) => ({ label, sessions: by.get(label)! }))
-}
-
-export type Dot = 'warn' | 'ok' | 'bad' | 'idle' | null
-
-/** The status dot: working (amber), done (green), failed (red), stopped (gray); a plain chat has none. */
-export function statusDot(s: Pick<SessionSummary, 'status' | 'repo'>): Dot {
-  if (!s.repo) return null
-  const map: Record<SessionStatus, Dot> = {
-    pending: null,
-    provisioning: 'warn',
-    queued: 'warn',
-    running: 'warn',
-    done: 'ok',
-    failed: 'bad',
-    interrupted: 'bad',
-    stopped: 'idle',
-    limited: 'idle',
-  }
-  return map[s.status] ?? null
 }

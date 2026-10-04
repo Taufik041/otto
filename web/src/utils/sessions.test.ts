@@ -1,4 +1,4 @@
-import { daysAgo, groupSessions, statusDot } from './sessions'
+import { daysAgo, groupSessions } from './sessions'
 import { session } from '@/test/fixtures'
 
 // local times, so the test holds in any time zone
@@ -35,16 +35,5 @@ describe('groupSessions', () => {
   it('a time just after midnight is today, and a future clock skew is too', () => {
     expect(daysAgo(at(2026, 10, 1, 0, 0), now)).toBe(0)
     expect(groupSessions([session({ updated_at: at(2026, 10, 1, 16) })], now)[0]!.label).toBe('Today')
-  })
-})
-
-describe('statusDot', () => {
-  it('maps statuses to the design dots; plain chats have none', () => {
-    expect(statusDot({ status: 'running', repo: 'a/b' })).toBe('warn')
-    expect(statusDot({ status: 'queued', repo: 'a/b' })).toBe('warn')
-    expect(statusDot({ status: 'done', repo: 'a/b' })).toBe('ok')
-    expect(statusDot({ status: 'failed', repo: 'a/b' })).toBe('bad')
-    expect(statusDot({ status: 'stopped', repo: 'a/b' })).toBe('idle')
-    expect(statusDot({ status: 'done', repo: null })).toBeNull()
   })
 })

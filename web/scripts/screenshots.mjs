@@ -27,13 +27,16 @@ const models = {
 const repos = [
   ['otto_test', true, 2], ['portfolio', false, 72], ['petal', true, 170],
 ].map(([n, p, h]) => ({ full_name: `Taufik041/${n}`, private: p, updated_at: ago(h), default_branch: 'main', installation_id: 1 }))
+// the sidebar's dots: working, and unseen ends (s3 was seen; s4 is a plain chat at rest)
+const ATTENTION = { s1: 'done', s2: 'working', s5: 'failed' }
 const sessions = [
   ['s1', 'Fix failing pricing tests', 'done', 'Taufik041/otto_test', 1],
   ['s2', 'Portfolio contact form', 'running', 'Taufik041/portfolio', 2],
   ['s3', 'Add line_count() to Order', 'done', 'Taufik041/otto_test', 26],
   ['s4', 'Explain the catalog module', 'done', null, 80],
   ['s5', 'Refactor shipping fees', 'failed', 'Taufik041/otto_test', 300],
-].map(([id, title, status, repo, h]) => ({ id, title, status, repo, model: models.default_model, pr_url: null, updated_at: ago(h) }))
+].map(([id, title, status, repo, h]) => ({ id, title, status, repo, model: models.default_model, pr_url: null,
+    updated_at: ago(h), attention: ATTENTION[id] ?? null }))
 const DAILY = [8.2, 14.1, 6.3, 0, 3.4, 18.9, 22.4, 11.2, 9.8, 16.5, 4.1, 0, 7.7, 12.4]
 const usage = {
   today: { tokens: 12400, limit: 50000, resets_at: '2026-10-02T00:00:00+00:00' },

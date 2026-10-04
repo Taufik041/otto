@@ -17,7 +17,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { cn } from '@/utils/cn'
-import { groupSessions, statusDot } from '@/utils/sessions'
+import { useMediaQuery } from '@/hooks/useMediaQuery'
+import { groupSessions } from '@/utils/sessions'
 import { DeleteChatDialog } from './DeleteChatDialog'
 import { ThemeSwitch } from './ThemeSwitch'
 
@@ -164,8 +165,9 @@ function Expanded({
   )
 }
 
-const DOT_COLOR = { warn: 'var(--warn)', ok: 'var(--ok)', bad: 'var(--bad)', idle: 'var(--idle)' } as const
-const DOT_LABEL = { warn: 'Working', ok: 'Done', bad: 'Failed', idle: 'Stopped' } as const
+// the dot is "needs your attention": working, or a turn that ended since you last saw the chat
+const DOT_COLOR = { working: 'var(--warn)', done: 'var(--ok)', failed: 'var(--bad)' } as const
+const DOT_LABEL = { working: 'Working', done: 'Done', failed: 'Failed' } as const
 
 function ChatRow({
   chat,
@@ -178,7 +180,8 @@ function ChatRow({
   onPick: () => void
   onDelete: () => void
 }) {
-  const dot = statusDot(chat)
+  const dot = chat.attention
+  const steady = useMediaQuery('(prefers-reduced-motion: reduce)')
   return (
     <div
       className={cn(
@@ -193,7 +196,7 @@ function ChatRow({
         className="flex min-w-0 flex-1 items-start gap-2.5 py-2 pl-3 pr-9 leading-normal text-text hover:text-text [&_span]:leading-[normal]"
       >
         <span
-          className={cn('mt-2 size-[7px] shrink-0 rounded-full', dot === 'warn' && 'animate-pulse-dot')}
+          className={cn('mt-2 size-[7px] shrink-0 rounded-full', dot === 'working' && !steady && 'animate-pulse-dot')}
           style={{ background: dot ? DOT_COLOR[dot] : 'transparent' }}
           role={dot ? 'img' : undefined}
           aria-label={dot ? DOT_LABEL[dot] : undefined}
