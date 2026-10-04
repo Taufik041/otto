@@ -11,6 +11,9 @@ from shared.sessions import (auto_title, create_session, get_session, set_status
                              work_branch)
 
 TOOL_CONTENT_LIMIT = 20000
+# the style of every title Otto writes (chat titles, proposal titles)
+STYLE = ("in plain sentence case (only the first word capitalized, like \"Fix bulk discount threshold\"), "
+         "with no prefix like \"fix:\" or \"feat(x):\"")
 TRUNCATED = "\n[... truncated]"
 # result fields the runner adds for the UI and the brain's finish (kept in bus.result); the model
 # never sees them
@@ -210,9 +213,8 @@ async def finish(ch, pending, sid, messages, record):
         await propose(sid, record, messages)
 
 
-PR_TITLE_PROMPT = ("Write a pull request title for the changes below: in the imperative mood, like \"Fix the "
-                   "bulk discount threshold\", at most 60 characters. Reply with the title only: plain text, "
-                   "no quotes, no trailing period.")
+PR_TITLE_PROMPT = ("Write a pull request title for the changes below: in the imperative mood, " + STYLE + ", "
+                   "at most 60 characters. Reply with the title only: plain text, no quotes, no trailing period.")
 
 
 async def propose(sid, record, messages):
@@ -343,8 +345,8 @@ async def _turn(sid, messages, steps):
     return messages
 
 
-TITLE_PROMPT = ("Write a title of 3 to 6 words for the chat below. Reply with the title only: plain "
-                "text, no quotes, no trailing punctuation.")
+TITLE_PROMPT = ("Write a title of 3 to 6 words for the chat below, " + STYLE + ". Reply with the title "
+                "only: plain text, no quotes, no trailing punctuation.")
 
 
 async def _model_title(sid, record, prompt, content) -> str | None:
@@ -354,15 +356,36 @@ async def _model_title(sid, record, prompt, content) -> str | None:
     return clean_title(resp.choices[0].message.content)
 
 
+# a conventional-commit prefix the model may add anyway: "fix:", "feat(pricing):", "chore!:"
+COMMIT_PREFIX = re.compile(r"^(?:feat|fix|chore|docs|refactor|perf|tests?|build|ci|style|revert)(?:\([^)]*\))?!?:\s*",
+                           re.IGNORECASE)
+
+
+def _sentence_case(title) -> str:
+    """"Fix Bulk Discount Threshold" -> "Fix bulk discount threshold": only when the title is in
+    Title Case, and never acronyms, mixed-case names or code (API, GitHub, OrderTotal, line_count)."""
+    words = title.split(" ")
+    # Bulk, To, Sign-In; not API, GitHub, OrderTotal
+    plain = lambda w: all(p[:1].isupper() and p[1:].islower() and p.isalpha() for p in w.split("-"))
+    rest = [w for w in words[1:] if w[:1].isalpha()]
+    if rest and sum(w[:1].isupper() for w in rest) > len(rest) / 2:  # Title Case
+        words = words[:1] + [w.lower() if plain(w) else w for w in words[1:]]
+    first = words[0]
+    words[0] = first[:1].upper() + first[1:]
+    return " ".join(words)
+
+
 def clean_title(text) -> str | None:
-    """The model's title, tidied: its first line, without quotes, a "Title:" label or a trailing
-    period, at most TITLE_LENGTH characters. None if nothing is left."""
+    """The model's title, tidied: its first line, without quotes, a "Title:" label, a
+    conventional-commit prefix or a trailing period, in sentence case, at most TITLE_LENGTH
+    characters. None if nothing is left."""
     line = next((l for l in str(text or "").splitlines() if l.strip()), "").strip()
     line = line.removeprefix("Title:").removeprefix("title:").strip().strip("\"'`*").strip()
+    line = COMMIT_PREFIX.sub("", line).strip().strip("\"'`*").strip()
     line = line.rstrip(".!:;,").strip()
     if len(line) > TITLE_LENGTH:
         line = line[:TITLE_LENGTH].rsplit(" ", 1)[0]
-    return line or None
+    return _sentence_case(" ".join(line.split())) if line else None
 
 
 def _proposal(sid) -> dict | None:
