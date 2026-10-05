@@ -71,7 +71,7 @@ def model_catalog(env) -> list[dict]:
             raise ValueError(f"OTTO_MODELS has duplicate ids: {ids}")
         return models
     models = [{"id": "openrouter:openrouter/free", "provider": "openrouter", "model": "openrouter/free",
-               "label": "OpenRouter", "description": "Good for small tasks"}]
+               "label": "Otto", "description": "Good for small tasks"}]
     for name in (n.strip() for n in env.get("OTTO_OPENAI_MODELS", "").split(",")):
         if name:
             models.append({"id": f"openai:{name}", "provider": "openai", "model": name, "label": f"OpenAI {name}"})
