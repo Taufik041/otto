@@ -263,7 +263,7 @@ const STATES = {
     path: '/c/s1',
     api: { chat: 'done' },
     setup: async (p) => {
-      await p.getByRole('button', { name: /7 steps/ }).click()
+      await p.getByRole('button', { name: /\d+ steps/ }).click()
       await p.getByRole('button', { name: /^Ran python -m pytest -q 2 failed/ }).click()
       await p.getByRole('region', { name: 'Workspace' }).waitFor()
     },

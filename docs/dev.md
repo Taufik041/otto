@@ -47,10 +47,10 @@ sandbox image (the image step of `scripts/dev_up.sh`), or sandboxes keep running
     default it would get), a follow-up or a retry (the model asked for, or the chat's own).
   - Stop interrupts a model call within a second, whether it waits on a cooldown or on the request.
 - **Chats title themselves once.** After a chat's first turn ends `done`, while its title is still
-  its first message (`sessions.title_source = auto`), the brain gives it a better one: the PR's
-  title if the turn opened one, else 3–6 words from the chat's own model. That's one short call
+  its first message (`sessions.title_source = auto`), the brain gives it a better one: the PR
+  proposal's title if the turn made one, else 3–6 words from the chat's own model. That's one short call
   with no tools, counted in usage. It's stored with `title_source = generated` and announced as
-  `session.titled {title, source: "pr" | "model"}`. A rename (`PATCH /sessions/{id}`) sets
+  `session.titled {title, source: "proposal" | "model"}`. A rename (`PATCH /sessions/{id}`) sets
   `title_source = user`, and is never replaced, even one made during the turn. If titling fails
   (the limit, the model), the chat keeps its title and the turn is unaffected.
 - **Every agent turn ends with a deterministic finish** (`brain/loop.py`, `finish`). After the
@@ -129,9 +129,10 @@ Stop the gateway and workers first, since they hold connections.
 | `MAX_ACTIVE_SANDBOXES` | `3` | The same, for everyone together: protects the cluster. Sandboxes kept warm between turns don't count; they exit after `SANDBOX_IDLE_MINUTES`. |
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Origins allowed to call the API with credentials, to use the refresh cookie (`/auth/refresh`, `/auth/logout`; the gateway's own origin may too, for `/docs`), and to open the WebSocket. |
 
-`GITHUB_APP_ID` and `GITHUB_APP_KEY_PATH` are as before. `GITHUB_INSTALLATION_ID` is now only the
-fallback for `python -m orchestrator.cli create`; the gateway mints each sandbox's token for the
-installation of the chat's repo.
+`GITHUB_APP_ID` is the App's ID, and `GITHUB_APP_KEY_PATH` the path to its private key (a `.pem`;
+`*.pem` and `otto-secrets/` are gitignored). `GITHUB_INSTALLATION_ID` is only the fallback for
+`python -m orchestrator.cli create`; the gateway mints each sandbox's token for the installation
+of the chat's repo.
 
 ### The GitHub App's settings
 
@@ -145,7 +146,8 @@ In the App's settings on GitHub:
   signed-in user whose GitHub account can access the installation, and only refreshes its caches.
 - **Expire user authorization tokens:** either; Otto uses the user token once and doesn't keep it.
 - **Client secret:** generate one for `GITHUB_CLIENT_SECRET`.
-- **Permissions:** as before (repository contents and pull requests read & write, metadata read).
+- **Permissions:** repository contents and pull requests read & write, metadata read.
+- **Webhook:** off (uncheck "Active"); Otto doesn't use webhooks.
   No account permissions are needed: Otto doesn't read the GitHub email.
 - **Where can this App be installed:** "Any account" if other people will connect their repos.
 

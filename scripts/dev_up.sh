@@ -42,13 +42,13 @@ kubectl port-forward svc/rabbitmq 5672:5672 >/dev/null 2>&1 &
 sleep 2
 
 cat <<'EOF'
-ready. In two terminals:
+ready. In three terminals:
   uvicorn gateway.app:app --port 8000
   python -m brain.worker
+  cd web && npm run dev            # http://localhost:5173
 (SANDBOX_IDLE_MINUTES=2 on the gateway makes new sandboxes exit after 2 idle minutes)
-Then open http://localhost:8000/docs: sign up (POST /auth/signup), connect GitHub
-(http://localhost:8000/github/install), and start a chat (POST /sessions {"message", "repo"?}).
-See docs/dev.md ("Trying it without a frontend"). The API needs AUTH_SECRET, and GitHub needs
-GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET and GITHUB_APP_SLUG.
-A database from before migrations must be reset first (docs/dev.md).
+Then open http://localhost:5173, sign up, connect GitHub and start a chat. Without the web app,
+see docs/dev.md ("Trying it with /docs"). The API needs AUTH_SECRET, and GitHub needs
+GITHUB_APP_ID, GITHUB_APP_KEY_PATH, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET and GITHUB_APP_SLUG
+(see .env.example). A database from before migrations must be reset first (docs/dev.md).
 EOF

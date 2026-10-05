@@ -1127,7 +1127,7 @@ class Component extends DCLogic {
       sendBg: live ? "var(--text)" : hasText ? "var(--accent)" : "var(--sel)",
       sendColor: live ? "var(--bg)" : hasText ? "#fff" : "var(--muted)", sendCursor: live || hasText ? "pointer" : "default",
       sendIcon: live ? IC.stop : IC.up, sendFill: live ? "currentColor" : "none", sendStroke: live ? "none" : "currentColor",
-      hint: S.repo || isRepoChat || sc === "limit" ? "Otto works in a sandbox and opens a pull request. Otto uses AI models and can make mistakes, so review changes before merging." : "Otto uses AI models and can make mistakes.",
+      hint: S.repo || isRepoChat || sc === "limit" ? "Otto works in a sandbox and proposes a pull request for you to review. Otto uses AI models and can make mistakes, so review changes before merging." : "Otto uses AI models and can make mistakes.",
       hintMinH: mobile ? "32px" : "16px",
       bottomFlex: isEmpty && !mobile ? "1.35 1 0" : "0 0 0px",
 

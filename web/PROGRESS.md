@@ -1,7 +1,8 @@
 # Otto web: progress
 
-Parts 1 and 2 are done. `npm run build`, `npm test` (94 tests) and backend `pytest -q` (518 passed,
-5 skipped) pass. How to run it is in `README.md`; the chat's event → UI mapping is there too.
+Parts 1 and 2 are done, and so are the pull-request approval flow and the unread dots below.
+`npm run build`, `npm test` (144 tests) and backend `pytest -q` (617 passed, 5 skipped) pass. How
+to run it is in `README.md`; the chat's event → UI mapping is there too.
 
 ## Done
 
@@ -39,7 +40,7 @@ Parts 1 and 2 are done. `npm run build`, `npm test` (94 tests) and backend `pyte
   - Home with the composer.
   - The `/c/:id` placeholder.
   - Settings: Account, GitHub, Models, Usage and Appearance.
-- **Tests (46):**
+- **Tests (46 at the time):**
   - The auth client.
   - Mention parsing.
   - The model picker.
@@ -89,6 +90,31 @@ Parts 1 and 2 are done. `npm run build`, `npm test` (94 tests) and backend `pyte
   it work, follow-ups, Changes and Terminal, then screenshots at 1440 and 390 in light and dark.
   It opened Taufik041/otto_test#8.
 
+## Pull requests are the user's call
+
+- **Backend:** Otto no longer opens PRs. The model has no `git_open_pr` tool; the deterministic
+  finish commits, pushes and appends `pr.proposed {title, body, head, base, additions, deletions,
+  files, tests}`, with the title from one short model call (falling back to the trimmed task).
+  `POST /sessions/{id}/pr` opens it with the installation's token (`pr.opened`), and
+  `POST /sessions/{id}/pr/decline` appends `pr.declined`. A later push to an open PR is
+  `pr.updated`.
+- **Web:** the "Ready for review" card (`src/chat/ProposalCard.tsx`) shows the title, the branch,
+  the line counts and "N tests passed", with **Create pull request** and **Not now**, both disabled
+  while Otto works. Declining folds it to a quiet line that can still create the PR; once opened
+  it becomes the PR card.
+- **Copy:** a repo chat's disclaimer reads "Otto works in a sandbox and proposes a pull request for
+  you to review. …".
+
+## Unread dots
+
+- **Backend:** `sessions.last_seen_seq` (migration 0014) and `POST /sessions/{id}/seen {seq}`, which
+  never moves backwards and is capped at the chat's last event. `GET /sessions` gives each chat an
+  `attention`: `working`, `done`, `failed` or `null`.
+- **Web:** the open chat is marked seen (debounced) while the tab is visible, and again when it
+  becomes visible. The chat's row is cleared at once and the list refetched only after the post,
+  so a chat you're watching never gets a dot when it ends. The list refetches on window focus,
+  and every 10s only while a chat is `working`.
+
 ## Differences from the design
 
 - **"Help" is left out of the profile menu:** there's nowhere for it to go yet.
@@ -120,12 +146,11 @@ Parts 1 and 2 are done. `npm run build`, `npm test` (94 tests) and backend `pyte
 - **shadcn/Radix where it fits:** the dropdown menus (sidebar row, profile) and dialogs (delete
   confirmation, change password). The composer's @ and model popovers are custom: on mobile they
   have to become bottom sheets, and the mention list is driven from the textarea's keyboard.
-- **Session status dot:**
-  - Plain chat: no dot.
-  - provisioning, queued or running: amber, pulsing.
-  - done: green.
-  - failed or interrupted: red.
-  - stopped or limited: gray.
+- **The sidebar dot is the chat's `attention`** (from `GET /sessions`), not its raw status:
+  - `working` (provisioning, queued or running): amber, pulsing softly; steady with reduced motion.
+  - `done`: green, for a turn that ended after you last saw the chat.
+  - `failed` (failed or interrupted): red, the same way.
+  - `null`: no dot. That covers chats you've seen, chats you stopped, and anything else.
 - **A GitHub install ends on /settings/github,** which the backend hard-codes. An install started
   from onboarding sets a sessionStorage flag, and /settings/github sees it and sends you back to
   /welcome for the success state. No backend change is needed.
