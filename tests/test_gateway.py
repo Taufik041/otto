@@ -235,8 +235,8 @@ def test_models_reflect_the_keys_present(client, monkeypatch):
     assert client.get("/models").json() == {
         "default_model": "openai:model-a",
         "models": [
-            {"id": "openrouter:openrouter/free", "label": "OpenRouter Free", "provider": "openrouter",
-             "description": "Free, good for small tasks", "available": False,
+            {"id": "openrouter:openrouter/free", "label": "OpenRouter", "provider": "openrouter",
+             "description": "Good for small tasks", "available": False,
              "hint": "Unavailable right now. Try again later."},
             {"id": "openai:model-a", "label": "OpenAI model-a", "provider": "openai", "description": None,
              "available": True, "hint": None},
