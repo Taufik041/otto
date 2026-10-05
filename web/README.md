@@ -46,8 +46,8 @@ GitHub sends the browser back here. The defaults (`http://localhost:5173`) alrea
 - **`src/shell/`:** the sidebar (collapsible; a drawer on phones), the top bar, the profile menu
   and deleting a chat.
 - **`src/pages/`:** sign-in and sign-up, password reset, `/auth/callback`, onboarding
-  (`/welcome`), home, the chat page (a placeholder until Part 2) and Settings.
-- **`src/utils/`:** pure helpers with tests: mention parsing, grouping chats by day, status dots,
+  (`/welcome`), home, the chat page and Settings.
+- **`src/utils/`:** pure helpers with tests: mention parsing, grouping chats by day,
   formatting. (It isn't called `lib/`, because the repo's `.gitignore` ignores `lib/`.)
 
 ### GitHub round trips
