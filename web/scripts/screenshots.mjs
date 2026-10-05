@@ -27,13 +27,16 @@ const models = {
 const repos = [
   ['otto_test', true, 2], ['portfolio', false, 72], ['petal', true, 170],
 ].map(([n, p, h]) => ({ full_name: `Taufik041/${n}`, private: p, updated_at: ago(h), default_branch: 'main', installation_id: 1 }))
+// the sidebar's dots: working, and unseen ends (s3 was seen; s4 is a plain chat at rest)
+const ATTENTION = { s1: 'done', s2: 'working', s5: 'failed' }
 const sessions = [
   ['s1', 'Fix failing pricing tests', 'done', 'Taufik041/otto_test', 1],
   ['s2', 'Portfolio contact form', 'running', 'Taufik041/portfolio', 2],
   ['s3', 'Add line_count() to Order', 'done', 'Taufik041/otto_test', 26],
   ['s4', 'Explain the catalog module', 'done', null, 80],
   ['s5', 'Refactor shipping fees', 'failed', 'Taufik041/otto_test', 300],
-].map(([id, title, status, repo, h]) => ({ id, title, status, repo, model: models.default_model, pr_url: null, updated_at: ago(h) }))
+].map(([id, title, status, repo, h]) => ({ id, title, status, repo, model: models.default_model, pr_url: null,
+    updated_at: ago(h), attention: ATTENTION[id] ?? null }))
 const DAILY = [8.2, 14.1, 6.3, 0, 3.4, 18.9, 22.4, 11.2, 9.8, 16.5, 4.1, 0, 7.7, 12.4]
 const usage = {
   today: { tokens: 12400, limit: 50000, resets_at: '2026-10-02T00:00:00+00:00' },
@@ -134,10 +137,17 @@ function events(scene) {
   act('shell.exec', { cmd: 'python -m pytest -q' }, ok({ stdout: '.........                                [100%]\n9 passed in 0.09s' }))
   act('git.commit', { message: 'Fix bulk discount threshold' }, ok({ stdout: '[otto/4299fa2c3f 7c1e8a2] Fix bulk discount threshold\n 1 file changed, 1 insertion(+), 1 deletion(-)' }))
   act('git.push', {}, ok({ stderr: 'To github.com:Taufik041/otto_test.git\n * [new branch]      otto/4299fa2c3f -> otto/4299fa2c3f', branch: 'otto/4299fa2c3f', base: 'main', diffstat: { files: 1, additions: 1, deletions: 1 } }))
-  act('git.open_pr', { title: 'Fix bulk discount threshold', body: 'b' }, ok({ number: 3, html_url: 'https://github.com/Taufik041/otto_test/pull/3', title: 'Fix bulk discount threshold', base: 'main' }))
-  add('pr.opened', { number: 3, html_url: 'https://github.com/Taufik041/otto_test/pull/3' })
   add('llm.message', { message: { role: 'assistant', content: REPLY } })
+  // the finish proposes the PR; the user opens it ("Create pull request") or not
+  add('pr.proposed', { title: 'Fix bulk discount threshold', body: REPLY, head: 'otto/4299fa2c3f', base: 'main',
+    additions: 1, deletions: 1, files: 1, tests: { passed: 9, failed: 0, text: '9 passed' } })
   add('session.status', { status: 'done' })
+  if (scene === 'proposal') return out
+  if (scene === 'declined') {
+    add('pr.declined', {})
+    return out
+  }
+  add('pr.opened', { number: 3, html_url: 'https://github.com/Taufik041/otto_test/pull/3' })
   if (scene === 'followup') {
     add('session.status', { status: 'provisioning' })
     add('sandbox.reused', {})
@@ -148,6 +158,7 @@ function events(scene) {
     act('git.commit', { message: 'Add test for 11-unit orders' })
     act('git.push', {}, ok({ branch: 'otto/4299fa2c3f', base: 'main', diffstat: { files: 2, additions: 4, deletions: 1 } }))
     add('llm.message', { message: { role: 'assistant', content: 'Added a test for exactly 11 units. All 10 tests pass, and the commit is on the same pull request, #3.' } })
+    add('pr.updated', { number: 3, url: 'https://github.com/Taufik041/otto_test/pull/3', additions: 4, deletions: 1, files: 2 })
     add('session.status', { status: 'done' })
   }
   return out
@@ -237,6 +248,8 @@ const STATES = {
   // the chat (the mockup's states 6-11)
   working: { path: '/c/s1', api: { chat: 'working' }, setup: (p) => p.getByText('Editing').waitFor() },
   done: { path: '/c/s1', api: { chat: 'done' }, setup: (p) => p.getByText('Pull request opened').waitFor() },
+  proposal: { path: '/c/s1', api: { chat: 'proposal' }, setup: (p) => p.getByText('Ready for review').waitFor() },
+  declined: { path: '/c/s1', api: { chat: 'declined' }, setup: (p) => p.getByText('Pull request not created').waitFor() },
   workspace: {
     path: '/c/s1',
     api: { chat: 'done' },

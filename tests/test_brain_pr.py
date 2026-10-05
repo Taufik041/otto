@@ -33,34 +33,19 @@ def ok(**extra):
 
 
 @pytest.mark.asyncio
-async def test_opened_pr_is_recorded(monkeypatch):
-    ch, results = runner({"git.push": ok(branch="otto/s1"),
-                          "git.open_pr": ok(stdout=PR["html_url"], **PR)})
+async def test_the_model_cannot_open_a_pr(monkeypatch):
+    """git_open_pr isn't a tool: asking for it is an unknown tool, and nothing is opened."""
+    ch, results = runner({"git.push": ok(branch="otto/s1"), "git.open_pr": ok(stdout=PR["html_url"], **PR)})
     fake_client(monkeypatch, [
         llm_tool_calls(("git_push", {})),
         llm_tool_calls(("git_open_pr", {"title": "Fix", "body": "root cause, fix, tests"})),
-        llm_final("PR opened"),
+        llm_final("done"),
     ])
 
     await loop.run_session(ch, results, "s1", "fix it")
 
-    evs = load_events("s1")
-    types = [e.type for e in evs]
-    i = types.index("pr.opened")
-    assert types[i - 1] == "bus.result" and types[i + 1] == "llm.message"
-    assert evs[i].payload == PR
-    row = get_session("s1")
-    assert (row.pr_url, row.work_branch) == (PR["html_url"], "otto/s1")
-
-
-@pytest.mark.asyncio
-async def test_failed_pr_is_not_recorded(monkeypatch):
-    ch, results = runner({"git.open_pr": {"exit_code": 1, "stdout": "",
-                                          "stderr": "GitHub API 422: No commits between main and otto/s1"}})
-    fake_client(monkeypatch, [llm_tool_calls(("git_open_pr", {"title": "t", "body": "b"})), llm_final("no")])
-
-    await loop.run_session(ch, results, "s1", "fix it")
-
+    kinds = [e.payload["kind"] for e in load_events("s1") if e.type == "bus.action"]
+    assert "git.open_pr" not in kinds
     assert "pr.opened" not in [e.type for e in load_events("s1")]
     assert get_session("s1").pr_url is None
 
@@ -94,10 +79,10 @@ def test_show_prints_branch_and_pr(monkeypatch, capsys):
 
 def test_tools_and_prompt():
     names = [t["function"]["name"] for t in TOOLS]
-    assert "git_push" in names and "git_open_pr" in names
-    pr_tool = next(t for t in TOOLS if t["function"]["name"] == "git_open_pr")
-    assert pr_tool["function"]["parameters"]["required"] == ["title", "body"]
-    assert KIND["git_push"] == "git.push" and KIND["git_open_pr"] == "git.open_pr"
+    assert "git_push" in names and "git_commit" in names
+    assert "git_open_pr" not in names and "git_open_pr" not in KIND  # the user opens PRs, not the model
+    assert KIND["git_push"] == "git.push"
     assert SYSTEM.startswith("You are Otto, an autonomous coding agent")
     assert "git_commit with a short message" in SYSTEM  # the existing text is kept
-    assert "git_push" in SYSTEM and "git_open_pr" in SYSTEM
+    assert "git_push" in SYSTEM and "git_open_pr" not in SYSTEM
+    assert "the user decides whether to open a pull request" in SYSTEM

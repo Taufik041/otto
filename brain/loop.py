@@ -1,4 +1,4 @@
-import json, asyncio
+import json, asyncio, re
 from shared import config, health, usage
 from brain.providers import LLMError, ProviderUnusable, Stopped, complete
 from brain.tools import CHAT_SYSTEM, SYSTEM, TOOLS, KIND, missing_args
@@ -7,9 +7,13 @@ from brain.resume import rebuild_messages
 from shared.events import append_event, load_events
 from shared.github import parse_repo
 from shared.models import TITLE_LENGTH, make_title
-from shared.sessions import auto_title, create_session, get_session, record_pr, set_status, transition
+from shared.sessions import (auto_title, create_session, get_session, set_status, transition,
+                             work_branch)
 
 TOOL_CONTENT_LIMIT = 20000
+# the style of every title Otto writes (chat titles, proposal titles)
+STYLE = ("in plain sentence case (only the first word capitalized, like \"Fix bulk discount threshold\"), "
+         "with no prefix like \"fix:\" or \"feat(x):\"")
 TRUNCATED = "\n[... truncated]"
 # result fields the runner adds for the UI and the brain's finish (kept in bus.result); the model
 # never sees them
@@ -197,13 +201,105 @@ async def finish(ch, pending, sid, messages, record):
     if dirty:
         await act("git.commit", {"message": make_title(_last(messages, "user") or row.task)})
         work += 1
+    pushed = None
     if dirty or ahead is None or ahead > 0:
-        await act("git.push", {})
-    if row.pr_url is None and work > 0:
-        body = _last(messages, "assistant") or f"Changes by Otto for: {row.task}"
-        pr = await act("git.open_pr", {"title": make_title(row.task), "body": body})
-        if pr.get("html_url"):
-            record_pr(sid, pr.get("number"), pr["html_url"])
+        pushed = await act("git.push", {})
+    row = get_session(sid)
+    if row.pr_url:
+        if pushed is not None:  # the push updated the open PR
+            stat = _push_stat(sid)
+            record("pr.updated", {"number": _pr_number(sid, row.pr_url), "url": row.pr_url, **stat})
+    elif work > 0:
+        await propose(sid, record, messages)
+
+
+PR_TITLE_PROMPT = ("Write a pull request title for the changes below: in the imperative mood, " + STYLE + ", "
+                   "at most 60 characters. Reply with the title only: plain text, no quotes, no trailing period.")
+
+
+async def propose(sid, record, messages):
+    """Propose the branch as a pull request: the user opens it (POST /sessions/{id}/pr) or not.
+    A newer proposal replaces older ones."""
+    row = get_session(sid)
+    push = _latest_push(sid)
+    body = _last(messages, "assistant") or f"Changes by Otto for: {row.task}"
+    record("pr.proposed", {
+        "title": await _proposal_title(sid, record, row.task, body),
+        "body": body,
+        "head": work_branch(sid),
+        "base": push.get("base"),
+        **_push_stat(sid),
+        "tests": _last_tests(sid),
+    })
+
+
+async def _proposal_title(sid, record, task, body) -> str:
+    """The proposal's title: one short call on the chat's model, written from the task, the
+    model's final message and the changed files; the trimmed task if that fails (the daily limit,
+    the model). Never fails the turn."""
+    try:
+        files = "\n".join(_changed_files(sid)[:30]) or "(none listed)"
+        content = f"Task: {task[:1500]}\n\nWhat was done:\n{body[:2000]}\n\nChanged files:\n{files}"
+        if title := await _model_title(sid, record, PR_TITLE_PROMPT, content):
+            return title
+    except Exception as e:  # LimitReached, LLMError, Stopped, anything
+        print(f"[brain] no model title for {sid}'s proposal: {type(e).__name__}: {e}", flush=True)
+    return make_title(task)
+
+
+def _changed_files(sid) -> list[str]:
+    """The files the session's edits and writes changed, in order, relative to the workspace."""
+    done = {e.payload.get("action_id") for e in load_events(sid)
+            if e.type == "bus.result" and (e.payload.get("payload") or {}).get("exit_code") == 0}
+    paths = []
+    for e in load_events(sid):
+        p = e.payload
+        if e.type == "bus.action" and p.get("kind") in ("fs.replace", "fs.write") and p.get("action_id") in done:
+            path = str((p.get("payload") or {}).get("path") or "").removeprefix("/workspace/").removeprefix("./")
+            if path and path not in paths:
+                paths.append(path)
+    return paths
+
+
+def _latest_push(sid) -> dict:
+    """The result of the session's latest successful git.push (the model's or the finish's)."""
+    for e in reversed(load_events(sid)):
+        p = e.payload.get("payload") if e.type == "bus.result" else None
+        if isinstance(p, dict) and p.get("exit_code") == 0 and "branch" in p and p.get("branch"):
+            return p
+    return {}
+
+
+def _push_stat(sid) -> dict:
+    d = _latest_push(sid).get("diffstat") or {}
+    return {"additions": d.get("additions"), "deletions": d.get("deletions"), "files": d.get("files")}
+
+
+def _pr_number(sid, url):
+    for e in reversed(load_events(sid)):
+        if e.type == "pr.opened" and e.payload.get("html_url") == url:
+            return e.payload.get("number")
+    m = re.search(r"/pull/(\d+)", url or "")
+    return int(m.group(1)) if m else None
+
+
+TEST_SUMMARY = re.compile(r"(\d+ (?:failed|passed|errors?|skipped|xfailed|xpassed|deselected|warnings?)(?:, \d+ \w+)*) in [\d.]+s")
+
+
+def _last_tests(sid) -> dict | None:
+    """The session's latest pytest summary, from its shell commands: {passed, failed, text}."""
+    actions = {e.payload.get("action_id"): e.payload.get("kind") for e in load_events(sid) if e.type == "bus.action"}
+    for e in reversed(load_events(sid)):
+        if e.type != "bus.result" or actions.get(e.payload.get("action_id")) != "shell.exec":
+            continue
+        p = e.payload.get("payload") or {}
+        found = TEST_SUMMARY.findall(f"{p.get('stdout') or ''}\n{p.get('stderr') or ''}")
+        if found:
+            counts = dict((w, int(n)) for n, w in re.findall(r"(\d+) (\w+)", found[-1]))
+            passed, failed = counts.get("passed", 0), counts.get("failed", 0) + counts.get("error", 0) + counts.get("errors", 0)
+            return {"passed": passed, "failed": failed,
+                    "text": ", ".join(x for x in (failed and f"{failed} failed", f"{passed} passed") if x)}
+    return None
 
 
 async def _turn(sid, messages, steps):
@@ -249,28 +345,52 @@ async def _turn(sid, messages, steps):
     return messages
 
 
-TITLE_PROMPT = ("Write a title of 3 to 6 words for the chat below. Reply with the title only: plain "
-                "text, no quotes, no trailing punctuation.")
+TITLE_PROMPT = ("Write a title of 3 to 6 words for the chat below, " + STYLE + ". Reply with the title "
+                "only: plain text, no quotes, no trailing punctuation.")
+
+
+async def _model_title(sid, record, prompt, content) -> str | None:
+    """One short call on the chat's model (no tools, counted in usage, within the daily limit):
+    a title, cleaned (clean_title), or None. Raises like any model call."""
+    resp = await _complete(sid, record, [{"role": "system", "content": prompt}, {"role": "user", "content": content}])
+    return clean_title(resp.choices[0].message.content)
+
+
+# a conventional-commit prefix the model may add anyway: "fix:", "feat(pricing):", "chore!:"
+COMMIT_PREFIX = re.compile(r"^(?:feat|fix|chore|docs|refactor|perf|tests?|build|ci|style|revert)(?:\([^)]*\))?!?:\s*",
+                           re.IGNORECASE)
+
+
+def _sentence_case(title) -> str:
+    """"Fix Bulk Discount Threshold" -> "Fix bulk discount threshold": only when the title is in
+    Title Case, and never acronyms, mixed-case names or code (API, GitHub, OrderTotal, line_count)."""
+    words = title.split(" ")
+    # Bulk, To, Sign-In; not API, GitHub, OrderTotal
+    plain = lambda w: all(p[:1].isupper() and p[1:].islower() and p.isalpha() for p in w.split("-"))
+    rest = [w for w in words[1:] if w[:1].isalpha()]
+    if rest and sum(w[:1].isupper() for w in rest) > len(rest) / 2:  # Title Case
+        words = words[:1] + [w.lower() if plain(w) else w for w in words[1:]]
+    first = words[0]
+    words[0] = first[:1].upper() + first[1:]
+    return " ".join(words)
 
 
 def clean_title(text) -> str | None:
-    """The model's title, tidied: its first line, without quotes, a "Title:" label or a trailing
-    period, at most TITLE_LENGTH characters. None if nothing is left."""
+    """The model's title, tidied: its first line, without quotes, a "Title:" label, a
+    conventional-commit prefix or a trailing period, in sentence case, at most TITLE_LENGTH
+    characters. None if nothing is left."""
     line = next((l for l in str(text or "").splitlines() if l.strip()), "").strip()
     line = line.removeprefix("Title:").removeprefix("title:").strip().strip("\"'`*").strip()
+    line = COMMIT_PREFIX.sub("", line).strip().strip("\"'`*").strip()
     line = line.rstrip(".!:;,").strip()
     if len(line) > TITLE_LENGTH:
         line = line[:TITLE_LENGTH].rsplit(" ", 1)[0]
-    return line or None
+    return _sentence_case(" ".join(line.split())) if line else None
 
 
-def _pr_title(sid, pr_url) -> str | None:
-    """The title the session's PR was opened with (from its git.open_pr result)."""
-    for e in reversed(load_events(sid)):
-        p = e.payload.get("payload") if e.type == "bus.result" else None
-        if isinstance(p, dict) and p.get("html_url") == pr_url and p.get("title"):
-            return p["title"]
-    return None
+def _proposal(sid) -> dict | None:
+    """The session's latest pull-request proposal."""
+    return next((e.payload for e in reversed(load_events(sid)) if e.type == "pr.proposed"), None)
 
 
 async def title_chat(sid, record, messages):
@@ -281,14 +401,12 @@ async def title_chat(sid, record, messages):
         row = get_session(sid)
         if row is None or row.title_source != "auto":
             return  # renamed, or titled already
-        if row.pr_url and (title := _pr_title(sid, row.pr_url)):
-            auto_title(sid, make_title(title), "pr")
+        if (proposal := _proposal(sid)) and proposal.get("title"):
+            auto_title(sid, make_title(proposal["title"]), "proposal")
             return
         chat = [m for m in messages if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()]
         excerpt = "\n\n".join(f"{m['role']}: {m['content'][:1500]}" for m in chat[:2])
-        resp = await _complete(sid, record, [{"role": "system", "content": TITLE_PROMPT},
-                                             {"role": "user", "content": excerpt}])
-        if title := clean_title(resp.choices[0].message.content):
+        if title := await _model_title(sid, record, TITLE_PROMPT, excerpt):
             auto_title(sid, title, "model")
     except Exception as e:  # LimitReached, LLMError, anything: the chat keeps its first-message title
         print(f"[brain] no auto title for {sid}: {type(e).__name__}: {e}", flush=True)
@@ -369,8 +487,6 @@ async def _steps(ch, pending, sid, messages, record) -> tuple[bool, bool]:
                         result = await bus_call(ch, pending, sid, kind, args, record=record)
                 except Exception as e:
                     result = {"exit_code": 1, "stdout": "", "stderr": str(e)}
-                if kind == "git.open_pr" and result.get("exit_code") == 0 and result.get("html_url"):
-                    record_pr(sid, result.get("number"), result["html_url"])
             print(f"[exit {result.get('exit_code')}] {(result.get('stdout') or result.get('stderr') or '')[:200]}")
             add_message(sid, messages, {"role": "tool", "tool_call_id": tc.id,
                                         "content": tool_content(result)})

@@ -92,6 +92,21 @@ session's events into a view model: messages, work blocks with steps, PR cards, 
 terminal entries and status. It ignores events it has already seen (by `seq`), and replays from
 the start when an older event arrives late. Its tests (`reduce.test.ts`) cover every event kind.
 
+### The sidebar's dots
+
+A chat's dot is its `attention` from `GET /sessions`:
+
+- **amber, pulsing softly:** `working` (steady when reduced motion is on)
+- **green:** `done`, a turn that ended after you last saw the chat
+- **red:** `failed`, the same for a failed or interrupted turn
+- **none:** `null` (seen, stopped by you, or anything else)
+
+While a chat is open and the tab is visible, what arrives is seen. `useSessionView` posts
+`/sessions/{id}/seen` with the latest seq (debounced), clears the chat's row in the list at once,
+and refetches the list only after that post. So a chat you're watching never gets a dot when it
+finishes. A hidden tab posts when it becomes visible again. The list refetches on window focus,
+and every 10s while any chat is `working`; otherwise it doesn't poll.
+
 ### Events → UI
 
 | Event | Payload | What the chat shows |
@@ -107,7 +122,10 @@ the start when an older event arrives late. Its tests (`reduce.test.ts`) cover e
 | `llm.message` (assistant, no tool calls) | `{message}` | Otto's reply, as light markdown, after the block and PR card. |
 | `llm.message` (tool) | `{message}` | Hidden; `bus.result` has the same, in full. |
 | `bus.action` + `bus.result` | `{action_id, kind, payload}` + `{action_id, ok, payload}` | A step. See the table below. |
-| `pr.opened` | `{number, html_url}` | The session's PR. |
+| `pr.proposed` | `{title, body, head, base, additions, deletions, files, tests}` | The "Ready for review" card after the block (the latest proposal only): "Create pull request" (`POST /sessions/{id}/pr`) and "Not now" (`POST /sessions/{id}/pr/decline`), both disabled while Otto works. |
+| `pr.declined` | `{}` | The proposal folds to a quiet line: "Pull request not created · Create pull request". |
+| `pr.opened` | `{number, html_url}` | The PR the user opened: the proposal's card becomes the PR card ("Pull request opened"). |
+| `pr.updated` | `{number, url, additions, deletions, files}` | A later turn's push updated the open PR: the PR card again, "Pull request updated", with the new counts. |
 | `usage.limit_reached` | `{used, limit, resets_at}` | The usage-limit card. |
 | `error` | `{stage, step?, message}` | The error card with Retry (`POST /sessions/{id}/retry`), titled by what failed: `llm` → "Otto couldn't finish." (the model didn't respond after N tries); `model` (a provider error no wait fixes) with `reason` `quota` → "This model's provider is out of credit. Switch models and retry.", `auth` → "This model isn't set up correctly. Try another model.", `model` → "This model isn't available. Try another model.", each with a model picker beside Retry (`POST /sessions/{id}/retry {model}`); `create_sandbox`/`sandbox`/`enqueue` → "Otto couldn't set up the workspace."; `finish` with `step` `git.commit` → "Otto couldn't commit the changes.", `git.push` → "Otto couldn't push to GitHub.", `git.open_pr` → "Otto couldn't open the pull request."; anything else, or a failed turn with no error event → "Something went wrong." `destroy_sandbox`: hidden. The error's message is never shown. |
 | `llm.usage`, `llm.key_rotated` | | Hidden (infrastructure). |
@@ -124,19 +142,25 @@ the start when an older event arrives late. Its tests (`reduce.test.ts`) cover e
 | `git.status`, `git.diff` | Checked git status / Reviewed the diff | | Terminal |
 | `git.commit` | Committed `message`; with the push that follows: Committed and pushed `branch` | | Terminal: `$ git add -A && git commit -m …` |
 | `git.push` | Pushed `branch`, or Pushed to pull request `#n` once there's a PR | | Terminal: `$ git push -u origin branch` |
-| `git.open_pr` | Opened pull request `#n` | | Not in the Terminal: it's an API call, not a command |
+| `git.open_pr` | Opened pull request `#n` (older sessions only: Otto no longer opens PRs) | | Not in the Terminal: it's an API call, not a command |
 
 A failed action shows red, with "failed" and its first error line. An action with no result when
 the turn ended shows "Stopped".
 
-**The PR card** comes after the block of the turn that opened the PR ("Pull request opened") or
-pushed to it ("Pull request updated"). It shows:
+**Pull requests are the user's call.** Otto commits and pushes `otto/<id>`, and its turn ends with a
+proposal (`pr.proposed`). The "Ready for review" card (`src/chat/ProposalCard.tsx`) is in the PR
+card's family:
 
-- the title from `git.open_pr`
-- `#number` and the repo
-- branch → base, from `git.push`/`git.open_pr`
-- `+additions −deletions` and the file count, from the latest push's `diffstat`
-- "N tests passed", from the latest pytest run with no failures
+- the proposal's title, `repo · otto/<id> → base`, `+additions −deletions`, the file count, and
+  "N tests passed" when the last test run passed
+- **Create pull request**, the primary button: it shows a spinner and is disabled while it runs,
+  and GitHub's refusal shows under the buttons
+- **Not now**, the secondary button
+- both are disabled while Otto works, with "Otto is working…"; on phones they stack full-width
+
+Once the PR is open, the card is the PR card: title, `#number`, repo, branch → base, the counts and
+"View on GitHub". A newer proposal replaces an older one, and a later push to the open PR shows
+the PR card again as "Pull request updated".
 
 The diff, its line counts, `diffstat`, `base` and `title` are fields the runner adds to its
 results for the UI. The brain leaves them out of what the model sees.

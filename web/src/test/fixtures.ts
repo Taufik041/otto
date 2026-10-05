@@ -42,5 +42,6 @@ export const session = (over: Partial<SessionSummary>): SessionSummary => ({
   model: 'openrouter:openrouter/free',
   pr_url: null,
   updated_at: '2026-10-01T09:00:00+00:00',
+  attention: null,
   ...over,
 })

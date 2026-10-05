@@ -19,21 +19,18 @@ def usages(sid):
 
 
 @pytest.mark.asyncio
-async def test_an_agent_chat_with_a_pr_takes_the_prs_title(monkeypatch):
+async def test_an_agent_chat_with_a_proposal_takes_its_title(monkeypatch):
     ch, results, runner = setup(monkeypatch, [
-        llm_tool_calls(EDIT),
-        llm_tool_calls(("git_commit", {"message": "Fix"}), ("git_push", {})),
-        llm_tool_calls(("git_open_pr", {"title": "Fix bulk discount threshold", "body": "b"})),
-        llm_final("Done."),
+        llm_tool_calls(EDIT), llm_final("Done."), llm_final("Fix bulk discount threshold"),  # the proposal's title
     ])
 
     await run(ch, results)
 
     row = get_session("s1")
-    assert (row.status, row.pr_url) == ("done", PR_URL)
+    assert (row.status, row.pr_url) == ("done", None)
     assert (row.title, row.title_source) == ("Fix bulk discount threshold", "generated")
-    assert titled("s1") == [{"title": "Fix bulk discount threshold", "source": "pr"}]
-    assert len(usages("s1")) == 4  # the turn's own calls only: no title call
+    assert titled("s1") == [{"title": "Fix bulk discount threshold", "source": "proposal"}]
+    assert len(usages("s1")) == 3  # the turn's two calls and the proposal title's: no separate chat title
 
 
 @pytest.mark.asyncio
@@ -107,3 +104,32 @@ def test_renaming_through_the_api_marks_the_title_as_the_users(client, env):
     assert get_session(sid).title_source == "auto"
     assert client.patch(f"/sessions/{sid}", json={"title": "Mine"}).status_code == 200
     assert (get_session(sid).title, get_session(sid).title_source) == ("Mine", "user")
+
+
+@pytest.mark.parametrize("raw, title", [
+    ("fix: bulk discount threshold", "Bulk discount threshold"),
+    ("feat(pricing): Fix Bulk Discount Threshold.", "Fix bulk discount threshold"),
+    ("chore!: Update the README", "Update the README"),
+    ("Fix Bulk Discount Threshold", "Fix bulk discount threshold"),
+    ("add OAuth sign-in to the API", "Add OAuth sign-in to the API"),  # acronyms stay
+    ("Add GitHub Sign-In For OrderTotal", "Add GitHub sign-in for OrderTotal"),  # mixed case stays
+    ("Add Line Count To Order", "Add line count to order"),  # Title Case becomes sentence case
+    ("Add line_count() to Order", "Add line_count() to Order"),  # already sentence case: a class name stays
+    ("Fixes: the thing", "Fixes: the thing"),  # not a conventional-commit type: kept as written
+])
+def test_titles_are_plain_sentence_case_without_commit_prefixes(raw, title):
+    assert loop.clean_title(raw) == title
+
+
+def test_prompts_ask_for_that_style():
+    for prompt in (loop.TITLE_PROMPT, loop.PR_TITLE_PROMPT):
+        assert "sentence case" in prompt and "Fix bulk discount threshold" in prompt and "fix:" in prompt
+
+
+@pytest.mark.asyncio
+async def test_a_prefixed_proposal_title_is_cleaned(monkeypatch):
+    ch, results, runner = setup(monkeypatch, [
+        llm_tool_calls(EDIT), llm_final("Done."), llm_final("feat(pricing): Fix Bulk Discount Threshold."),
+    ])
+    await run(ch, results)
+    assert get_session("s1").title == "Fix bulk discount threshold"

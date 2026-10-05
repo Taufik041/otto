@@ -235,8 +235,8 @@ def test_models_reflect_the_keys_present(client, monkeypatch):
     assert client.get("/models").json() == {
         "default_model": "openai:model-a",
         "models": [
-            {"id": "openrouter:openrouter/free", "label": "OpenRouter Free", "provider": "openrouter",
-             "description": "Free, good for small tasks", "available": False,
+            {"id": "openrouter:openrouter/free", "label": "Otto", "provider": "openrouter",
+             "description": "Good for small tasks", "available": False,
              "hint": "Unavailable right now. Try again later."},
             {"id": "openai:model-a", "label": "OpenAI model-a", "provider": "openai", "description": None,
              "available": True, "hint": None},
@@ -257,7 +257,7 @@ def test_list_get_and_events(client, env):
 
     listed = client.get("/sessions").json()
     assert [s["id"] for s in listed] == [b, a]
-    assert set(listed[0]) == {"id", "title", "status", "repo", "model", "pr_url", "updated_at"}
+    assert set(listed[0]) == {"id", "title", "status", "repo", "model", "pr_url", "updated_at", "attention"}
     assert (listed[0]["title"], listed[0]["repo"]) == ("second", REPO)
 
     one = client.get(f"/sessions/{a}").json()

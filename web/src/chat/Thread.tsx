@@ -10,6 +10,7 @@ import { shortName } from '@/utils/mention'
 import { Glyph, IC } from './icons'
 import { Markdown } from './Markdown'
 import { PrCard } from './PrCard'
+import { ProposalCard } from './ProposalCard'
 import type { Item, Step } from './reduce'
 import { WorkBlock } from './WorkBlock'
 
@@ -195,6 +196,12 @@ export function Thread(p: ThreadProps) {
             )
           case 'model':
             return <ModelDivider key={it.id} to={it.to} />
+          case 'proposal':
+            return (
+              <Otto key={it.id} avatar={false} spinning={false}>
+                <ProposalCard sessionId={p.sessionId} proposal={it.proposal} state={it.state} live={p.live} />
+              </Otto>
+            )
           case 'stopped':
             return (
               <div key={it.id} className="flex items-center justify-center gap-[7px] pb-6 text-[13px] text-muted animate-rise">

@@ -58,6 +58,8 @@ export type SessionSummary = {
   model: string | null
   pr_url: string | null
   updated_at: string
+  /** the sidebar's dot: Otto works, or a turn ended done/failed since the user last saw the chat */
+  attention: 'working' | 'done' | 'failed' | null
 }
 
 export type SessionDetail = SessionSummary & {

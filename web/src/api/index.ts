@@ -62,6 +62,15 @@ export const api = {
   followUp: (id: string, body: { text: string; repo?: string | null; model?: string | null }) =>
     post<{ id: string; status: string; repo: string | null }>(`/sessions/${encodeURIComponent(id)}/messages`, body),
   stop: (id: string) => post<{ id: string; status: string }>(`/sessions/${encodeURIComponent(id)}/stop`),
+  /** the user saw the chat up to event `seq` (its finished turn stops wanting attention) */
+  seen: (id: string, seq: number) => post<{ last_seen_seq: number }>(`/sessions/${encodeURIComponent(id)}/seen`, { seq }),
+  /** open Otto's proposed pull request on GitHub (idempotent), or decline it for now */
+  createPr: (id: string, title?: string) =>
+    post<{ number: number; url: string; title: string; created: boolean }>(
+      `/sessions/${encodeURIComponent(id)}/pr`,
+      title ? { title } : undefined,
+    ),
+  declinePr: (id: string) => post<{ ok: true }>(`/sessions/${encodeURIComponent(id)}/pr/decline`),
   rename: (id: string, title: string) =>
     client.request<SessionSummary>(`/sessions/${encodeURIComponent(id)}`, { method: 'PATCH', body: { title } }),
   retry: (id: string, model?: string) =>

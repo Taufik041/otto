@@ -29,6 +29,8 @@ class Session(SQLModel, table=True):
     # where the title came from: "auto" (the first message, until the first turn completes),
     # "generated" (the PR's title or the model's), "user" (renamed: never replaced)
     title_source: str = Field(default="auto", sa_column_kwargs={"server_default": "auto"})
+    # the last event the user saw (POST /sessions/{id}/seen): a turn that ended after it wants attention
+    last_seen_seq: int = Field(default=0, sa_column_kwargs={"server_default": "0"})
     repo: str | None = None  # "owner/name"; None: a plain chat, with no sandbox
     task: str  # the first message
     status: str = "pending"  # one of STATUSES

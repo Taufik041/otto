@@ -15,11 +15,11 @@ SYSTEM = (
     "After every edit you MUST run the tests with shell_exec (python -m pytest -q) and "
     "report the result. Do not finish while tests are failing.\n"
     "\n"
-    "When the task is done and the tests pass, you MUST, in this order: git_commit with a short "
-    "message, git_push, then git_open_pr with a clear title and a body explaining the root cause, "
-    "the fix and the test results. If a PR is already open for this branch, git_push alone "
-    "updates it. Only then write your final summary of what you changed. Never end a task that "
-    "changed files without committing, pushing and a pull request."
+    "When the task is done and the tests pass, you MUST git_commit with a short message, then "
+    "git_push. Do not open a pull request: the user decides whether to open a pull request. "
+    "Then write your final summary: the root cause, the fix and the test results (it becomes "
+    "the pull request's description if the user opens one). Never end a task that changed "
+    "files without committing and pushing."
 )
 
 CHAT_SYSTEM = (
@@ -157,23 +157,6 @@ TOOLS = [
             }
         }
     },
-    { # git_open_pr
-        "type": "function",
-        "function": {
-            "name": "git_open_pr",
-            "description": ("Open a pull request from the pushed current branch. Returns the existing PR "
-                            "if one is already open for this branch."),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string"},
-                    "body": {"type": "string", "description": "root cause, fix, and test results"},
-                    "base": {"type": "string", "description": "target branch; omit to use the repo's default branch"}
-                },
-                "required": ["title", "body"]
-            }
-        }
-    },
 ]
 
 KIND = {
@@ -186,7 +169,6 @@ KIND = {
     "git_commit": "git.commit",
     "fs_replace": "fs.replace",
     "git_push": "git.push",
-    "git_open_pr": "git.open_pr",
 }
 
 PARAMETERS = {t["function"]["name"]: t["function"]["parameters"] for t in TOOLS}

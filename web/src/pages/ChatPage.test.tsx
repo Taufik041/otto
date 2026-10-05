@@ -226,3 +226,166 @@ it('a bad key says the model isn\'t set up correctly', async () => {
   expect(within(card).getByText('Try another model.')).toBeInTheDocument()
   expect(within(card).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
 })
+
+describe('the proposed pull request', () => {
+  const PROPOSAL = {
+    title: 'Fix failing pricing tests', body: 'Found it.', head: 'otto/s1', base: 'main',
+    additions: 1, deletions: 1, files: 1, tests: { passed: 9, failed: 0, text: '9 passed' },
+  }
+  function proposed(status = 'done') {
+    const l = log().created('fix the tests').status('running')
+      .act('git.push', {}, { exit_code: 0, stdout: '', stderr: '', branch: 'otto/s1', base: 'main', diffstat: { files: 1, additions: 1, deletions: 1 } })
+      .msg('assistant', 'Found it.')
+      .add('pr.proposed', PROPOSAL)
+    if (status !== 'running') l.status(status)
+    return l
+  }
+  function prRoutes(create?: () => Response | Promise<Response>) {
+    const calls: string[] = []
+    return {
+      calls,
+      handlers: [
+        http.post(`${API}/sessions/s1/pr`, async () => {
+          calls.push('create')
+          return create ? create() : HttpResponse.json({ number: 3, url: 'https://github.com/Taufik041/otto_test/pull/3', title: 'x', created: true }, { status: 201 })
+        }),
+        http.post(`${API}/sessions/s1/pr/decline`, () => {
+          calls.push('decline')
+          return HttpResponse.json({ ok: true })
+        }),
+      ],
+    }
+  }
+  const prCard = () => screen.getByRole('region', { name: 'Ready for review' })
+
+  it('shows the proposal; Create opens it, and the card becomes the PR card', async () => {
+    const { calls, handlers } = prRoutes()
+    backend(proposed().events, {}, handlers)
+    const card = await screen.findByRole('region', { name: 'Ready for review' })
+    expect(within(card).getByText('Fix failing pricing tests')).toBeInTheDocument()
+    expect(within(card).getByText('Taufik041/otto_test · otto/s1 → main')).toBeInTheDocument()
+    expect(within(card).getByText('9 tests passed')).toBeInTheDocument()
+    expect(within(card).getByText('1 file')).toBeInTheDocument()
+
+    await userEvent.click(within(card).getByRole('button', { name: 'Create pull request' }))
+    await waitFor(() => expect(calls).toEqual(['create']))
+    await waitFor(() => expect(FakeSocket.all.length).toBeGreaterThan(0))
+    FakeSocket.all.at(-1)!.deliver({ seq: 9, ts: '2026-10-02T14:10:00Z', type: 'pr.opened', payload: { number: 3, html_url: 'https://github.com/Taufik041/otto_test/pull/3' } })
+
+    expect(await screen.findByText('Pull request opened')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Ready for review' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /View on GitHub/ })).toHaveAttribute('href', 'https://github.com/Taufik041/otto_test/pull/3')
+  })
+
+  it('Create shows a spinner and is disabled while it runs', async () => {
+    const { handlers } = prRoutes(() => new Promise(() => {})) // never answers
+    backend(proposed().events, {}, handlers)
+    const create = await within(await screen.findByRole('region', { name: 'Ready for review' })).findByRole('button', { name: 'Create pull request' })
+    await userEvent.click(create)
+    await waitFor(() => expect(create).toBeDisabled())
+    expect(create).toHaveAttribute('aria-busy', 'true')
+  })
+
+  it('an error shows under the buttons', async () => {
+    const { handlers } = prRoutes(() =>
+      HttpResponse.json({ detail: "GitHub didn't open the pull request: Validation Failed" }, { status: 502 }),
+    )
+    backend(proposed().events, {}, handlers)
+    await userEvent.click(await within(await screen.findByRole('region', { name: 'Ready for review' })).findByRole('button', { name: 'Create pull request' }))
+    expect(await within(prCard()).findByText("GitHub didn't open the pull request: Validation Failed")).toBeInTheDocument()
+    expect(within(prCard()).getByRole('button', { name: 'Create pull request' })).toBeEnabled()
+  })
+
+  it('Not now collapses it to a quiet line whose link still creates it', async () => {
+    const { calls, handlers } = prRoutes()
+    backend(proposed().events, {}, handlers)
+    await userEvent.click(await within(await screen.findByRole('region', { name: 'Ready for review' })).findByRole('button', { name: 'Not now' }))
+    await waitFor(() => expect(calls).toEqual(['decline']))
+    await waitFor(() => expect(FakeSocket.all.length).toBeGreaterThan(0))
+    FakeSocket.all.at(-1)!.deliver({ seq: 9, ts: '2026-10-02T14:10:00Z', type: 'pr.declined', payload: {} })
+
+    expect(await screen.findByText('Pull request not created')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Create pull request' }))
+    await waitFor(() => expect(calls).toEqual(['decline', 'create']))
+  })
+
+  it('the buttons are disabled while Otto works', async () => {
+    const { handlers } = prRoutes()
+    backend(proposed('running').events, {}, handlers)
+    const card = await screen.findByRole('region', { name: 'Ready for review' })
+    expect(within(card).getByRole('button', { name: 'Create pull request' })).toBeDisabled()
+    expect(within(card).getByRole('button', { name: 'Not now' })).toBeDisabled()
+    expect(within(card).getByText('Otto is working…')).toBeInTheDocument()
+  })
+})
+
+describe('seen: the open chat never wants attention', () => {
+  /** /sessions answers like the gateway: "done" until a seen at or past the end */
+  function server_(endSeq: { v: number }, status: { v: string }) {
+    const log: string[] = []
+    let seen = 0
+    return {
+      log,
+      handlers: [
+        http.post(`${API}/sessions/s1/seen`, async ({ request }) => {
+          const { seq } = (await request.json()) as { seq: number }
+          seen = Math.max(seen, seq)
+          log.push(`seen:${seq}`)
+          return HttpResponse.json({ last_seen_seq: seen })
+        }),
+        http.get(`${API}/sessions`, () => {
+          const attention = status.v === 'running' ? 'working' : endSeq.v > seen ? 'done' : null
+          log.push(`list:${attention}`)
+          return HttpResponse.json([{ ...session({ id: 's1', repo: null }), attention }])
+        }),
+      ],
+    }
+  }
+  const dot = (name: string) => within(screen.getByRole('navigation', { name: 'Chats' })).queryByRole('img', { name })
+
+  it('opening a chat marks it seen, and its dot goes', async () => {
+    const l = log().created('hi', null).status('running').msg('user', 'hi').msg('assistant', 'Hello.').status('done')
+    const { log: calls, handlers } = server_({ v: l.events.length }, { v: 'done' })
+    backend(l.events, { repo: null, work_branch: null }, handlers)
+
+    await waitFor(() => expect(calls).toContain(`seen:${l.events.length}`))
+    await waitFor(() => expect(dot('Done')).not.toBeInTheDocument())
+  })
+
+  it('a turn that finishes while you watch never shows a dot', async () => {
+    const l = log().created('hi', null).status('running').msg('user', 'hi')
+    const end = { v: 0 }
+    const status = { v: 'running' }
+    const { log: calls, handlers } = server_(end, status)
+    backend(l.events, { repo: null, work_branch: null, status: 'running' }, handlers)
+    await waitFor(() => expect(FakeSocket.all.length).toBeGreaterThan(0))
+    await waitFor(() => expect(dot('Working')).toBeInTheDocument())
+    calls.length = 0
+
+    status.v = 'done'
+    end.v = 5
+    FakeSocket.all.at(-1)!.deliver({ seq: 4, ts: '2026-10-02T14:10:00Z', type: 'llm.message', payload: { message: { role: 'assistant', content: 'Hi.' } } })
+    FakeSocket.all.at(-1)!.deliver({ seq: 5, ts: '2026-10-02T14:10:01Z', type: 'session.status', payload: { status: 'done' } })
+
+    await waitFor(() => expect(calls).toContain('seen:5'))
+    await waitFor(() => expect(calls.some((c) => c.startsWith('list:'))).toBe(true))
+    // the list is only asked again after the seen post, so it never answers "done" meanwhile
+    expect(calls.indexOf('seen:5')).toBeLessThan(calls.findIndex((c) => c.startsWith('list:')))
+    expect(calls).not.toContain('list:done')
+    expect(dot('Done')).not.toBeInTheDocument()
+  })
+
+  it('a hidden tab doesn\'t mark it seen until it becomes visible again', async () => {
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    const l = log().created('hi', null).status('running').msg('user', 'hi').msg('assistant', 'Hello.').status('done')
+    const { log: calls, handlers } = server_({ v: l.events.length }, { v: 'done' })
+    backend(l.events, { repo: null, work_branch: null }, handlers)
+    await screen.findByText('Hello.')
+    await new Promise((r) => setTimeout(r, 700)) // longer than the debounce
+    expect(calls.filter((c) => c.startsWith('seen'))).toEqual([])
+
+    visibility.mockReturnValue('visible')
+    act(() => document.dispatchEvent(new Event('visibilitychange')))
+    await waitFor(() => expect(calls).toContain(`seen:${l.events.length}`))
+  })
+})

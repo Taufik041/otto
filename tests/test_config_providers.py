@@ -27,7 +27,7 @@ def test_provider_keys():
 
 
 FREE = {"id": "openrouter:openrouter/free", "provider": "openrouter", "model": "openrouter/free",
-        "label": "OpenRouter Free", "description": "Free, good for small tasks"}
+        "label": "Otto", "description": "Good for small tasks"}
 
 
 def test_default_catalog_has_no_invented_openai_models():

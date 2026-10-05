@@ -417,6 +417,41 @@ def _installed(user: User, installation_id: int, setup_action: str, code: str | 
     return done
 
 
+# --- pull requests ------------------------------------------------------------------
+
+def _pull_error(r) -> str:
+    """"Validation Failed; A pull request already exists for o:otto/x." from GitHub's answer."""
+    try:
+        data = r.json()
+    except ValueError:
+        data = {}
+    data = data if isinstance(data, dict) else {}
+    parts = [data.get("message") or f"HTTP {r.status_code}"]
+    parts += [e.get("message") or e.get("code") for e in data.get("errors") or [] if isinstance(e, dict)]
+    return "; ".join(p for p in parts if p)
+
+
+def open_pull(installation_id, full_name, title, body, head, base) -> dict:
+    """Open the pull request head -> base on full_name with the installation's token; if one is
+    already open for head, that one. Its {number, html_url, title, ...}. GitHubError with a plain
+    message (never the token) when GitHub refuses or can't be reached."""
+    token = installation_token(installation_id)
+    url = f"{API}/repos/{full_name}/pulls"
+    try:
+        r = request("POST", url, headers=_headers(token), json={"title": title, "body": body, "head": head, "base": base})
+        if r.status_code < 400:
+            return r.json()
+        msg = _pull_error(r)
+        if r.status_code == 422 and "already exists" in msg:
+            owner = full_name.split("/")[0]
+            found = request("GET", url, headers=_headers(token), params={"head": f"{owner}:{head}", "state": "open"})
+            if found.status_code < 400 and found.json():
+                return found.json()[0]
+    except requests.RequestException as e:
+        msg = f"GitHub couldn't be reached ({type(e).__name__})"
+    raise GitHubError(msg.replace(token, "[REDACTED]"))
+
+
 @router.get("/github")
 def github_status(user: User = Depends(auth.current_user)):
     rows = installations_of(user.id)
