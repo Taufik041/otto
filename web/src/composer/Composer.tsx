@@ -19,7 +19,7 @@ import { SendProblemCard } from './SendProblemCard'
 
 export const DISCLAIMER = 'Otto uses AI models and can make mistakes.'
 export const REPO_DISCLAIMER =
-  'Otto works in a sandbox and opens a pull request. Otto uses AI models and can make mistakes, so review changes before merging.'
+  'Otto works in a sandbox and proposes a pull request for you to review. Otto uses AI models and can make mistakes, so review changes before merging.'
 
 export type Suggestion = { text: string; repo: Repo | null; mentionAtEnd?: boolean }
 

@@ -56,6 +56,10 @@ it('sends the message, repo and model, then opens the chat', async () => {
   await userEvent.type(box(), '@otto')
   await userEvent.keyboard('{Enter}')
   expect(screen.getByText(REPO_DISCLAIMER)).toBeInTheDocument()
+  // Otto proposes the PR; the user opens it
+  expect(REPO_DISCLAIMER).toBe(
+    'Otto works in a sandbox and proposes a pull request for you to review. Otto uses AI models and can make mistakes, so review changes before merging.',
+  )
   await userEvent.type(box(), 'fix the failing tests{Enter}')
 
   await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent('/c/abc123'))

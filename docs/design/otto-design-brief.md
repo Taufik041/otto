@@ -112,7 +112,7 @@ Stack: ShadCN/ui + Tailwind, restyled to this system rather than the defaults.
   marked. On mobile this is a bottom sheet.
 - **Send button** (bottom-right). While Otto is working it becomes a **Stop** button.
 - Below the composer, in muted text, a hint that changes with context:
-  - "Otto works in a sandbox and opens a pull request."
+  - "Otto works in a sandbox and proposes a pull request for you to review."
   - "Otto is working… you can keep reading or stop it."
 
 ### 4.6 Conversation
