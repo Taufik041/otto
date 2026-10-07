@@ -223,4 +223,6 @@ docs/design/reference/
 docs/design/launch-spec.md
 docs/launch-progress.md
 docs/launch-progress.md
-docs/design/launch-spec.md
+docs/design/launch-spec.mddocs/design/*.dc.html
+docs/design/otto-data-*.js
+docs/design/support.js
