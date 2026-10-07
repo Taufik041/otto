@@ -218,3 +218,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 *.egg-info/
+.logs/
+docs/design/reference/
+docs/design/launch-spec.md
