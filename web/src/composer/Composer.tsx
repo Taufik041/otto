@@ -4,11 +4,10 @@ import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useSt
 import { useNavigate } from 'react-router'
 import { api, goToGitHub } from '@/api'
 import { messageOf } from '@/api/errors'
-import { keys, useModels, useRepos } from '@/api/queries'
+import { keys, useHealth, useModels, useRepos } from '@/api/queries'
 import type { Repo } from '@/api/types'
 import { rememberReturn, useMe } from '@/auth/auth'
 import { RepoIcon } from '@/components/icons'
-import { cn } from '@/utils/cn'
 import { activeMention, extractRepo, filterRepos, removeMention, shortName, type ActiveMention } from '@/utils/mention'
 import { MentionMenu, NoRepos } from './MentionMenu'
 import { ModelMenu } from './ModelMenu'
@@ -16,6 +15,7 @@ import { initialModel } from './models'
 import { ComposerPopover } from './Popover'
 import { sendProblem, type SendProblem } from './sendErrors'
 import { SendProblemCard } from './SendProblemCard'
+import { WORKERS_OFFLINE, WorkersOffline } from './WorkersOffline'
 
 export const DISCLAIMER = 'Otto uses AI models and can make mistakes.'
 export const REPO_DISCLAIMER =
@@ -58,6 +58,7 @@ export function Composer({
   const qc = useQueryClient()
   const models = useModels()
   const repos = useRepos()
+  const health = useHealth()
 
   const [draft, setDraft] = useState('')
   const [repo, setRepo] = useState<Repo | null>(null)
@@ -117,6 +118,7 @@ export function Composer({
       const p = sendProblem(e)
       setProblem(p)
       if (p.kind === 'model') qc.invalidateQueries({ queryKey: keys.models })
+      if (p.kind === 'offline') qc.invalidateQueries({ queryKey: keys.health })
     },
   })
 
@@ -124,7 +126,10 @@ export function Composer({
   const message = repo ? draft.trim() : typed.text
   const target = repo ?? typed.repo
   const working = reply?.live === true
-  const canSend = message.length > 0 && !send.isPending && !working
+  // the workers are offline: plain chat works, a repo task (or a repo chat's follow-up) can't go
+  const offline = health.data?.workers === 'offline' || problem?.kind === 'offline'
+  const blocked = offline && !!(target || reply?.repo)
+  const canSend = message.length > 0 && !send.isPending && !working && !blocked
   const stop = useMutation({
     mutationFn: () => api.stop(reply!.sessionId),
     onError: (e) => setProblem({ kind: 'other', message: messageOf(e) }),
@@ -230,7 +235,7 @@ export function Composer({
   return (
     <div style={{ padding: mobile ? '8px 12px 14px' : hero ? '0 32px' : '0 32px 16px' }} className="shrink-0 bg-bg">
       {mobile && hero && chips}
-      {problem && (
+      {problem && problem.kind !== 'offline' && (
         <div className="mx-auto mb-3 w-full" style={{ maxWidth: hero ? 720 : 760 }}>
           <SendProblemCard problem={problem} />
         </div>
@@ -277,6 +282,7 @@ export function Composer({
           </ComposerPopover>
         )}
 
+        {offline && <WorkersOffline />}
         <div
           className="rounded-3xl border border-solid bg-card shadow-card transition-[border-color] duration-200"
           style={{ padding: '14px 12px 10px 18px', borderColor: open ? 'var(--accent)' : 'var(--line)' }}
@@ -345,19 +351,23 @@ export function Composer({
                 aria-label="Stop"
                 disabled={stop.isPending}
                 onClick={() => stop.mutate()}
-                className="flex size-[34px] items-center justify-center rounded-full border-0 bg-text text-bg transition-[background] duration-200"
+                className="flex size-[34px] items-center justify-center rounded-full border-0 bg-inv text-inv-text"
               >
                 <Square size={13} fill="currentColor" strokeWidth={0} />
               </button>
             ) : (
               <button
                 type="button"
-                title="Send"
+                title={blocked ? WORKERS_OFFLINE : 'Send'}
                 aria-label="Send"
                 disabled={!canSend}
                 onClick={submit}
-                className={cn('flex size-[34px] items-center justify-center rounded-full border-0 transition-[background] duration-200')}
-                style={{ background: canSend ? 'var(--accent)' : 'var(--sel)', color: canSend ? '#fff' : 'var(--muted)' }}
+                className="flex size-[34px] items-center justify-center rounded-full border-0"
+                style={{
+                  background: canSend ? 'var(--inv)' : 'var(--sel)',
+                  color: canSend ? 'var(--inv-text)' : 'var(--muted)',
+                  cursor: canSend ? 'pointer' : blocked ? 'not-allowed' : 'default',
+                }}
               >
                 <ArrowUp size={16} strokeWidth={2.2} />
               </button>
@@ -421,7 +431,7 @@ function SuggestionChips({
           key={s.text}
           type="button"
           onClick={() => onPick(s)}
-          className="h-9 rounded-[980px] border border-solid border-line bg-transparent px-4 text-sm text-text transition-[background] duration-200 hover:bg-hover"
+          className="h-9 rounded-[980px] border border-solid border-line bg-transparent px-4 text-sm text-text hover:bg-hover"
         >
           {label(s)}
         </button>

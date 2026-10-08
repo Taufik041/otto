@@ -127,7 +127,15 @@ Stop the gateway and workers first, since they hold connections.
 | `OTTO_MODELS` | built from the env | A JSON list of `{id, provider, model, label, description}` replacing the model catalog (`GET /models`). `description` is the one line under the model in the picker; an unavailable model (its provider has no key) gets a `hint` instead of being hidden. |
 | `MAX_ACTIVE_SESSIONS` | `3` | Agent sessions (chats with a repo) one user may have at work at once (provisioning, queued or running). Plain chats don't count. |
 | `MAX_ACTIVE_SANDBOXES` | `3` | The same, for everyone together: protects the cluster. Sandboxes kept warm between turns don't count; they exit after `SANDBOX_IDLE_MINUTES`. |
-| `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Origins allowed to call the API with credentials, to use the refresh cookie (`/auth/refresh`, `/auth/logout`; the gateway's own origin may too, for `/docs`), and to open the WebSocket. |
+| `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Origins allowed to call the API with credentials, to use the refresh cookie (`/auth/refresh`, `/auth/logout`; the gateway's own origin may too, for `/docs`), and to open the WebSocket. In production it defaults to `FRONTEND_URL`. |
+| `OTTO_SIGNUP_MODE` | `open` (`allowlist` in production) | Who may make a new account: `open`, `allowlist` (`OTTO_ALLOWED_GITHUB`, `OTTO_ALLOWED_EMAILS`, approved access requests) or `closed`. Existing users always keep access. `OTTO_ACCEPTING=false` pauses every signup. See `docs/deploy.md`. |
+| `RESEND_API_KEY` | none | Resend's key: password-reset links and "bring it back up" requests are emailed. Unset in development: printed to the console. Unset in production: no email ("Forgot password?" is hidden). |
+| `OTTO_NOTIFY_TO` | none | The inbox "bring it back up" requests go to. |
+| `EMAIL_FROM` | `Otto <noreply@taufi.dev>` | The sender. |
+| `OTTO_SANDBOX_KUBECONFIG`, `OTTO_SANDBOX_NAMESPACE` | the default kubeconfig, `default` | The sandbox cluster. In development an unset kubeconfig means `~/.kube/config` (kind); in production it means the workers are offline. |
+
+The production settings (`OTTO_ENV=production`), the remaining launch variables, the sandbox
+cluster's RBAC and kubeconfig, and the rate limits are in [deploy.md](deploy.md).
 
 `GITHUB_APP_ID` is the App's ID, and `GITHUB_APP_KEY_PATH` the path to its private key (a `.pem`;
 `*.pem` and `otto-secrets/` are gitignored). `GITHUB_INSTALLATION_ID` is only the fallback for
@@ -170,7 +178,11 @@ In the App's settings on GitHub:
 
 | Endpoint | Auth | What it does |
 |---|---|---|
-| `POST /auth/signup`, `POST /auth/login` | none (JSON) | `{access_token, token_type: "bearer", expires_in, user}` and the refresh cookie |
+| `POST /auth/signup`, `POST /auth/login` | none (JSON) | `{access_token, token_type: "bearer", expires_in, user}` and the refresh cookie. A signup the signup mode refuses is 403 `{"error": "invite_only"}` (503 `{"error": "paused"}` while paused). Both are rate-limited per IP (429 `{"error": "rate_limited"}`, `Retry-After`). |
+| `POST /auth/email-status` `{email}` | none | `{exists}`: whether to ask for a password next or for a name and password (email-first sign-in). Rate-limited per IP. |
+| `POST /wake-requests` `{message?}` | user | the workers are offline: emails `OTTO_NOTIFY_TO` (the user is the reply-to). 202 `{ok: true}`; once an hour per user (429 after); 503 `email_unavailable` in production without `RESEND_API_KEY`; 502 `email_failed` (the try doesn't count). Without a key in development, the email is printed to the gateway's log. |
+| `POST /access-requests` `{github_login?, email?, note?}` | none | asks for an account while signups are invite-only: 201 `{ok: true}`, the same for a repeat. Rate-limited per IP. `python -m scripts.access_requests` lists and approves them. |
+| `GET /health` | none | `{status: "up" \| "paused", workers: "online" \| "offline", version, password_reset}` (`password_reset`: whether "Forgot password?" can email a link). While workers are offline, agent work (a new repo chat, a repo follow-up, a retry) is 503 `{"error": "workers_offline"}` with nothing created; plain chats work. |
 | `POST /auth/token` | none (form: `username`=email, `password`) | the same, for Swagger's Authorize button and OAuth2 clients |
 | `POST /auth/refresh` | refresh cookie | the same body, and a new refresh cookie |
 | `POST /auth/logout` | refresh cookie | revokes this device's refresh token family, clears the cookie; no body needed |
@@ -254,5 +266,7 @@ a token instead:
 
 `-c jar` keeps the refresh cookie; without it, sign in again when the access token runs out.
 
-Password reset links are printed to the gateway's console (`[auth] password reset for ...`) until
-there is email.
+Without `RESEND_API_KEY` (the default in development), emails are printed to the gateway's
+console instead of sent (`[email] not sent (no RESEND_API_KEY)`): the password-reset link, and
+the app's "Ask Taufik to bring it up" request. `./scripts/dev_all.sh` puts that console in
+`.logs/gateway.log`; the landing page's form prints to `.logs/landing.log`.

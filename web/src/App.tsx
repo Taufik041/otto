@@ -1,13 +1,14 @@
 import { lazy, Suspense } from 'react'
-import { Navigate, Route, Routes } from 'react-router'
+import { Navigate, Route, Routes, useLocation } from 'react-router'
 import { GuestOnly, RequireAuth } from './auth/guards'
 import { CallbackPage } from './pages/auth/CallbackPage'
-import { ForgotPage } from './pages/auth/ForgotPage'
 import { LoginPage } from './pages/auth/LoginPage'
 import { ResetPage } from './pages/auth/ResetPage'
-import { SignupPage } from './pages/auth/SignupPage'
 import { HomePage } from './pages/HomePage'
+import { LegalPage } from './pages/legal/LegalPage'
+import { NotFoundPage } from './pages/NotFoundPage'
 import { OnboardingPage } from './pages/OnboardingPage'
+import { RequestAccessPage } from './pages/RequestAccessPage'
 import { AppShell } from './shell/AppShell'
 
 const ChatPage = lazy(() => import('./pages/ChatPage').then((m) => ({ default: m.ChatPage })))
@@ -17,8 +18,11 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<GuestOnly><LoginPage /></GuestOnly>} />
-      <Route path="/signup" element={<GuestOnly><SignupPage /></GuestOnly>} />
-      <Route path="/forgot-password" element={<GuestOnly><ForgotPage /></GuestOnly>} />
+      {/* one "Log in or sign up" dialog now: the old pages land on it */}
+      <Route path="/signup" element={<ToLogin />} />
+      <Route path="/forgot-password" element={<ToLogin />} />
+      <Route path="/request-access" element={<RequestAccessPage />} />
+      <Route path="/legal/:doc" element={<LegalPage />} />
       <Route path="/reset-password" element={<ResetPage />} />
       <Route path="/auth/callback" element={<CallbackPage />} />
       <Route path="/welcome" element={<RequireAuth><OnboardingPage /></RequireAuth>} />
@@ -27,7 +31,12 @@ export default function App() {
         <Route index element={<HomePage />} />
         <Route path="/c/:id" element={<Suspense fallback={null}><ChatPage /></Suspense>} />
       </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<NotFoundPage />} />
     </Routes>
   )
+}
+
+function ToLogin() {
+  const { search } = useLocation()
+  return <Navigate to={`/login${search}`} replace />
 }

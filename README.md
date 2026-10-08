@@ -213,17 +213,19 @@ with `@repo`.
 
 Otto runs locally today. What it doesn't do yet:
 
-- **Pod hardening.** Sandboxes run as a non-root user with read-only runner code, resource limits
-  and a deadline, but on the default container runtime and with open network egress. Next: gVisor
-  as the runtime class, a NetworkPolicy that allows only the bus and GitHub, and a stricter pod
-  security context.
+- **Pod hardening.** Sandboxes run as a non-root user with no privileges, every capability
+  dropped, the RuntimeDefault seccomp profile, no service-account token, read-only runner code,
+  CPU, memory and disk limits, and a deadline. They still use the default container runtime and
+  have open network egress. Next: gVisor as the runtime class, and a NetworkPolicy that allows
+  only the bus and GitHub.
 - **The GitHub token out of the pod.** The installation token is scoped to one repo and lasts an
   hour, and the model's commands don't inherit it, but it's in the runner's environment in the
   same pod. Next: push through the gateway so the token never enters the sandbox.
 - **Per-language images.** There's one sandbox image (Python 3.12, Node, git, ripgrep, pytest), and
   it installs a repo's Python package if it has one. Other stacks need their own images.
-- **Deployment.** The gateway reads a local kubeconfig and the stack runs on kind. A deployment
-  needs in-cluster config, managed Postgres and RabbitMQ, and HTTPS.
+- **Deployment.** Locally the stack runs on kind. [docs/deploy.md](docs/deploy.md) covers
+  production: the settings, a remote sandbox cluster reached with a kubeconfig scoped to one
+  namespace, invite-only signups, and rate limits.
 - **Email.** Password-reset links are printed to the gateway's console.
 - **v2:** a file explorer in the workspace panel, and an interactive terminal (today's Terminal
   shows the commands Otto ran).

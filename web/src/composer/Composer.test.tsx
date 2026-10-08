@@ -150,3 +150,93 @@ it('Send is disabled without text', async () => {
   await userEvent.type(box(), '   ')
   expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
 })
+
+describe('workers offline (GET /health)', () => {
+  const offline = () =>
+    server.use(http.get(`${API}/health`, () => HttpResponse.json({ status: 'up', workers: 'offline', version: 't' })))
+  const NOTICE = "Otto's workers are offline right now. Plain chat still works."
+
+  it('says so above the box; a plain message still sends', async () => {
+    offline()
+    const sent = api()
+    await ready()
+    expect(await screen.findByText(NOTICE)).toBeInTheDocument()
+    await userEvent.type(box(), 'what is a closure?{Enter}')
+    await waitFor(() => expect(sent).toEqual([expect.objectContaining({ message: 'what is a closure?', repo: null })]))
+  })
+
+  it('a repo task can\'t be sent', async () => {
+    offline()
+    const sent = api()
+    await ready()
+    await screen.findByText(NOTICE)
+    await userEvent.type(box(), '@otto{Enter}fix the tests')
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+    await userEvent.type(box(), '{Enter}')
+    expect(sent).toEqual([])
+  })
+
+  it('online: no notice, and repo tasks send', async () => {
+    const sent = api()
+    await ready()
+    await userEvent.type(box(), '@otto{Enter}fix the tests{Enter}')
+    await waitFor(() => expect(sent).toHaveLength(1))
+    expect(screen.queryByText(NOTICE)).not.toBeInTheDocument()
+  })
+
+  it('"Ask Taufik to bring it up" emails him once, then says he has been notified', async () => {
+    offline()
+    api()
+    const asked: unknown[] = []
+    server.use(
+      http.post(`${API}/wake-requests`, async ({ request }) => {
+        asked.push(await request.json())
+        return HttpResponse.json({ ok: true }, { status: 202 })
+      }),
+    )
+    await ready()
+    await userEvent.click(await screen.findByRole('button', { name: 'Ask Taufik to bring it up' }))
+    expect(await screen.findByText('Taufik has been notified.')).toBeInTheDocument()
+    expect(asked).toEqual([{ message: '' }])
+    expect(screen.queryByRole('button', { name: 'Ask Taufik to bring it up' })).not.toBeInTheDocument()
+  })
+
+  it('asked within the hour already (429): he has been notified', async () => {
+    offline()
+    api()
+    server.use(
+      http.post(`${API}/wake-requests`, () =>
+        HttpResponse.json({ error: 'rate_limited', detail: 'Too many requests.' }, { status: 429 }),
+      ),
+    )
+    await ready()
+    await userEvent.click(await screen.findByRole('button', { name: 'Ask Taufik to bring it up' }))
+    expect(await screen.findByText('Taufik has been notified.')).toBeInTheDocument()
+  })
+
+  it('an email that can\'t go out says why, and can be tried again', async () => {
+    offline()
+    api()
+    server.use(
+      http.post(`${API}/wake-requests`, () =>
+        HttpResponse.json({ error: 'email_failed', detail: "The email didn't go out. Try again in a minute." }, { status: 502 }),
+      ),
+    )
+    await ready()
+    await userEvent.click(await screen.findByRole('button', { name: 'Ask Taufik to bring it up' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent("The email didn't go out")
+    expect(screen.getByRole('button', { name: 'Ask Taufik to bring it up' })).toBeEnabled()
+  })
+
+  it('a send refused with workers_offline shows the notice', async () => {
+    api({
+      create: () =>
+        HttpResponse.json({ error: 'workers_offline', detail: NOTICE }, { status: 503 }),
+    })
+    await ready()
+    offline() // what /health answers once asked again
+    await userEvent.type(box(), '@otto{Enter}fix the tests{Enter}')
+    expect(await screen.findByText(NOTICE)).toBeInTheDocument()
+    expect(screen.queryByText(/model isn.t available/)).not.toBeInTheDocument()
+  })
+})

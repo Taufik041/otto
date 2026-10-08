@@ -1,18 +1,13 @@
 import type { Model, Models } from '@/api/types'
 
-const PROVIDERS: Record<string, string> = { openrouter: 'OpenRouter', openai: 'OpenAI', custom: 'Custom' }
-
-export const providerName = (p: string) => PROVIDERS[p] ?? p
-
-/** The catalog grouped by provider, in catalog order. */
-export function groupModels(models: Model[]): { provider: string; models: Model[] }[] {
-  const groups: { provider: string; models: Model[] }[] = []
-  for (const m of models) {
-    const g = groups.find((x) => x.provider === m.provider)
-    if (g) g.models.push(m)
-    else groups.push({ provider: m.provider, models: [m] })
-  }
-  return groups
+/** The picker's groups: the default model first (no heading), then "Other models", in catalog order. */
+export function groupModels(models: Model[], defaultId: string | null): { label: string; heading: boolean; models: Model[] }[] {
+  const first = models.filter((m) => m.id === defaultId)
+  const rest = models.filter((m) => m.id !== defaultId)
+  return [
+    ...(first.length ? [{ label: 'Default model', heading: false, models: first }] : []),
+    ...(rest.length ? [{ label: 'Other models', heading: first.length > 0, models: rest }] : []),
+  ]
 }
 
 /** The model a new chat starts on: the user's default while it's available, else the server's

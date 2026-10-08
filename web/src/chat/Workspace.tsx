@@ -1,4 +1,5 @@
 import { useEffect, useRef, type CSSProperties } from 'react'
+import { HEADER_HEIGHT } from '@/components/layers'
 import { ownerOf, shortName } from '@/utils/mention'
 import { CodeLine } from './Code'
 import { languageOf, parseDiff } from './diff'
@@ -47,7 +48,7 @@ export function Workspace({
   return (
     <section
       aria-label="Workspace"
-      className="flex min-w-0 flex-col border-0 border-solid bg-bg"
+      className="flex min-w-0 flex-col border-0 border-solid bg-bg2"
       style={
         mobile
           ? { position: 'fixed', inset: 0, zIndex: 70, animation: 'otto-sheet .35s cubic-bezier(.2,.8,.2,1) both' }
@@ -55,14 +56,15 @@ export function Workspace({
       }
     >
       <div
+        data-testid="workspace-header"
         className="flex shrink-0 items-center gap-3 border-0 border-b border-solid border-hair"
-        style={{ padding: mobile ? '10px 12px 10px 18px' : '10px 14px 10px 20px' }}
+        style={{ height: HEADER_HEIGHT, boxSizing: 'border-box', padding: mobile ? '0 12px 0 18px' : '0 14px 0 20px' }}
       >
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[15px] font-semibold">
+          <div className="truncate text-sm font-medium leading-[18px]">
             {ownerOf(repo)}/{shortName(repo)}
           </div>
-          {branch && <div className="font-mono text-xs text-muted">{branch}</div>}
+          {branch && <div className="font-mono text-xs leading-4 text-muted">{branch}</div>}
         </div>
         <button
           type="button"
@@ -94,7 +96,7 @@ export function Workspace({
           })}
         </div>
       </div>
-      <div ref={scroller} className="min-h-0 flex-1 overflow-auto bg-bg">
+      <div ref={scroller} className="min-h-0 flex-1 overflow-auto bg-bg2">
         {state.tab === 'changes' ? (
           <div className="flex flex-col gap-3.5 p-4">
             {files.length === 0 ? (
@@ -277,7 +279,7 @@ function Command({ entry, selected }: { entry: TermEntry; selected: boolean }) {
         <div className="px-3.5 pb-3.5">
           <span className="inline-flex items-center gap-2.5 rounded-xl bg-ok-bg py-[9px] pl-3 pr-4 text-ok">
             <Glyph d={IC.checkCircle} size={20} width={1.8} />
-            <span className="text-xl font-semibold leading-none tracking-[-0.015em]">{passed.passed} passed</span>
+            <span className="text-xl font-normal leading-none tracking-[-0.03em]">{passed.passed} passed</span>
             {passed.duration && <span className="font-mono text-xs text-muted">{passed.duration}</span>}
           </span>
         </div>

@@ -49,6 +49,8 @@ export type Step = {
   icon: StepIcon
   /** the design's red row for a model that stopped answering (from the turn's error event) */
   modelFailed?: boolean
+  /** with modelFailed: the catalog id of the model that declined, to name it */
+  model?: string | null
   verb: string
   now: string
   code: string | null
@@ -619,18 +621,29 @@ function blockStatus(t: Turn, steps: number): BlockStatus {
 // the gateway's stages for setting up a turn's sandbox and queueing it
 const SETUP_STAGES = new Set(['create_sandbox', 'sandbox', 'enqueue'])
 // the brain's end-of-turn finish: the step that failed
-const FINISH_STEPS: Record<string, string> = {
-  'git.commit': "Otto couldn't commit the changes.",
-  'git.push': "Otto couldn't push to GitHub.",
-  'git.open_pr': "Otto couldn't open the pull request.",
+const FINISH_STEPS: Record<string, { title: string; message: string }> = {
+  'git.commit': { title: "Otto couldn't commit the changes.", message: 'Your changes are safe in the workspace. Retry to commit them.' },
+  'git.push': {
+    title: "Otto couldn't push to GitHub.",
+    message: 'GitHub rejected the push. Your commit is safe in the workspace. Retry to push again.',
+  },
+  'git.open_pr': { title: "Otto couldn't open the pull request.", message: "GitHub didn't open it. Your changes are safe, so try again." },
+}
+const SETUP = {
+  title: "Otto couldn't set up the workspace.",
+  message: "The workspace didn't start, so nothing ran and nothing changed. Retry to start again.",
 }
 
-// a model the provider can't serve (the brain's error stage "model"): pick another and retry
+// a model the provider can't serve (the brain's error stage "model"): pick another and retry.
+// {model} is the model's name, which the card fills in (labels come from GET /models)
 const MODEL_REASONS: Record<string, { title: string; message: string }> = {
-  quota: { title: "This model's provider is out of credit.", message: 'Switch models and retry.' },
+  quota: { title: "This model's provider is out of credit.", message: "{model} can't take more requests right now. Pick another model and retry." },
   auth: { title: "This model isn't set up correctly.", message: 'Try another model.' },
   model: { title: "This model isn't available.", message: 'Try another model.' },
 }
+
+// the red row's result for each reason a provider declines
+const MODEL_ROWS: Record<string, string> = { quota: 'Out of credit', auth: 'Not set up', model: 'Unavailable' }
 
 /** The error card: a title naming what failed, and what to do (switchModel: offer the model
  *  picker beside Retry). Never internals. */
@@ -638,30 +651,29 @@ export function errorCopy(
   error: { stage: string; step: string | null; reason?: string | null; message: string } | null,
   outcome: Status | null,
   committed: boolean,
+  steps = 0,
 ): { title: string; message: string; switchModel: boolean } {
   if (error?.stage === 'model') return { ...(MODEL_REASONS[error.reason ?? ''] ?? MODEL_REASONS.model!), switchModel: true }
-  return { ...plainCopy(error, outcome, committed), switchModel: false }
+  return { ...plainCopy(error, outcome, committed, steps), switchModel: false }
 }
 
 function plainCopy(
   error: { stage: string; step: string | null; message: string } | null,
   outcome: Status | null,
   committed: boolean,
+  steps: number,
 ): { title: string; message: string } {
-  const resume = committed ? 'Retry to continue from the last step.' : 'Nothing was committed. Retry to continue from the last step.'
-  if (error?.stage === 'llm') {
-    const n = error.message.match(/after (\d+) attempts/)
-    return {
-      title: "Otto couldn't finish.",
-      message: `${n ? `The model didn't respond after ${n[1]} tries.` : "The model didn't respond."} ${resume}`,
-    }
-  }
-  if (error && SETUP_STAGES.has(error.stage)) return { title: "Otto couldn't set up the workspace.", message: 'Retry to try again.' }
-  if (error?.stage === 'finish' && error.step && FINISH_STEPS[error.step])
-    return { title: FINISH_STEPS[error.step]!, message: 'Retry to try again.' }
+  if (error && SETUP_STAGES.has(error.stage)) return SETUP
+  if (error?.stage === 'finish' && error.step && FINISH_STEPS[error.step]) return FINISH_STEPS[error.step]!
+  const retry = 'Retry to continue from the last step.'
   if (!error && outcome === 'interrupted')
-    return { title: 'Something went wrong.', message: `Otto was interrupted before it finished. ${resume}` }
-  return { title: 'Something went wrong.', message: resume }
+    return { title: 'Something went wrong.', message: `Otto was interrupted before it finished. ${committed ? '' : 'Nothing was committed. '}${retry}` }
+  // a model that stopped answering (stage llm) reads the same: the block's red row says how
+  const stopped = steps > 0 ? `Otto stopped after ${steps} ${steps === 1 ? 'step' : 'steps'}` : ''
+  const message = stopped
+    ? `${stopped}${committed ? '' : ' and nothing was committed'}. ${retry}`
+    : `${committed ? '' : 'Nothing was committed. '}${retry}`
+  return { title: 'Something went wrong.', message }
 }
 
 export function view(s: State): View {
@@ -805,7 +817,26 @@ export function view(s: State): View {
       }
     }
 
-    // the model gave up mid-turn: the block ends with the design's red row
+    // the model gave up mid-turn, or its provider declined: the block ends with the design's red row
+    const declined = t.error?.stage === 'model' ? MODEL_ROWS[t.error.reason ?? ''] ?? MODEL_ROWS.model! : null
+    if (declined && (t.outcome === 'failed' || t.outcome === 'interrupted') && !live) {
+      rows.push({
+        id: `${t.id}-model`,
+        icon: 'git',
+        modelFailed: true,
+        model: s.model,
+        verb: 'Asked the model for the next step',
+        now: 'Asking the model for the next step',
+        code: null,
+        ok: false,
+        res: { text: declined, tone: 'bad', strong: true },
+        add: null,
+        del: null,
+        sub: 'The provider declined the request',
+        target: null,
+        tests: null,
+      })
+    }
     if (t.error?.stage === 'llm' && (t.outcome === 'failed' || t.outcome === 'interrupted') && !live) {
       const tries = t.error.message.match(/after (\d+) attempts/)?.[1]
       rows.push({
@@ -825,8 +856,9 @@ export function view(s: State): View {
       })
     }
 
-    // a turn the daily limit stopped before it did anything: just the limit card
-    const nothingDone = t.outcome === 'limited' && stepCount === 0
+    // a turn the daily limit stopped before it did anything: just the limit card; one that finished
+    // without running anything (a question about the change): just the reply
+    const nothingDone = (t.outcome === 'limited' && stepCount === 0) || (t.outcome === 'done' && rows.length === 0)
     if (t.agent && !nothingDone) {
       const status = blockStatus(t, stepCount)
       items.push({
@@ -841,9 +873,13 @@ export function view(s: State): View {
 
     if (t.stoppedHere) items.push({ kind: 'stopped', id: `${t.id}-stopped` })
     if ((t.outcome === 'failed' || t.outcome === 'interrupted') && !live) {
-      items.push({ kind: 'error', id: `${t.id}-error`, ...errorCopy(t.error, t.outcome, committed) })
+      items.push({ kind: 'error', id: `${t.id}-error`, ...errorCopy(t.error, t.outcome, committed, stepCount) })
     }
     if (t.limit) items.push({ kind: 'limit', id: `${t.id}-limit`, used: t.limit.used, limit: t.limit.limit, resetsAt: t.limit.resetsAt })
+    // Otto's reply, then what it proposes or opened (the card closes the turn)
+    // Otto speaks again after its work: the reply's first paragraph gets the mark too
+    avatar = true
+    for (const [i, text] of t.reply.entries()) items.push({ kind: 'prose', id: `${t.id}-r${i}`, text, avatar: otto() })
 
     // Otto's proposal (the latest), where it was made: waiting, declined, or opened by the user
     if (proposal && proposal.turn === t.id && s.repo) {
@@ -937,7 +973,6 @@ export function view(s: State): View {
     }
     const openedHere = opened as PrRef | null // assigned in the loop above; TS can't follow it
     if (openedHere) known.pr = { ...openedHere, title: openedHere.title ?? known.pr?.title ?? null }
-    for (const [i, text] of t.reply.entries()) items.push({ kind: 'prose', id: `${t.id}-r${i}`, text, avatar: otto() })
   }
 
   // a PR opened without our seeing its action (older sessions): still known

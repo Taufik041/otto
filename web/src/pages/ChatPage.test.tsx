@@ -1,8 +1,9 @@
-import { act, getDefaultNormalizer, screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { Route, Routes } from 'react-router'
 import type { SessionEvent } from '@/chat/reduce'
+import { HEADER_HEIGHT } from '@/components/layers'
 import { AppShell } from '@/shell/AppShell'
 import { log, mainRun } from '@/test/events'
 import { models, session } from '@/test/fixtures'
@@ -74,7 +75,7 @@ function backend(events: SessionEvent[], detail: Record<string, unknown> = {}, e
   return { posted }
 }
 
-it('shows a finished run: the message, the collapsed block, the PR card and the reply', async () => {
+it('shows a finished run: the message, the collapsed block, the reply and the PR card', async () => {
   backend(mainRun().events)
   expect(await screen.findByText('two tests are failing, find out why and fix the source, not the tests')).toBeInTheDocument()
   expect(screen.getByText("On it. I'll reproduce the failures first.")).toBeInTheDocument()
@@ -83,11 +84,25 @@ it('shows a finished run: the message, the collapsed block, the PR card and the 
   expect(screen.getByText('Pull request opened')).toBeInTheDocument()
   expect(screen.getByRole('link', { name: /View on GitHub/ })).toHaveAttribute('href', 'https://github.com/Taufik041/otto_test/pull/3')
   expect(screen.getByText('9 tests passed')).toBeInTheDocument()
-  expect(screen.getByText('otto/4299fa2c3f → main')).toBeInTheDocument()
+  expect(screen.getByText('Taufik041/otto_test · otto/4299fa2c3f → main')).toBeInTheDocument()
 
   await userEvent.click(toggle)
   expect(toggle).toHaveAttribute('aria-expanded', 'true')
   expect(screen.getByText('2 failed, 7 passed')).toBeInTheDocument()
+})
+
+it('the chat header and the workspace header are the same height, so their hairlines line up', async () => {
+  backend(mainRun().events)
+  await userEvent.click(await screen.findByRole('link', { name: 'See changes ›' }))
+  const chatHeader = screen.getByRole('banner')
+  const panelHeader = within(screen.getByRole('region', { name: 'Workspace' })).getByTestId('workspace-header')
+  for (const h of [chatHeader, panelHeader]) {
+    expect(h.style.height).toBe(`${HEADER_HEIGHT}px`)
+    expect(h.style.boxSizing).toBe('border-box') // the 1px hairline is inside the 56px
+  }
+  expect(HEADER_HEIGHT).toBe(56)
+  // the panel's two lines (repo, branch) fit: 18px + 16px
+  expect(within(panelHeader).getByText('otto/4299fa2c3f')).toBeInTheDocument()
 })
 
 it('"See changes" opens the workspace on the diff; Terminal lists the commands', async () => {
@@ -95,7 +110,8 @@ it('"See changes" opens the workspace on the diff; Terminal lists the commands',
   await userEvent.click(await screen.findByRole('link', { name: 'See changes ›' }))
   const panel = screen.getByRole('region', { name: 'Workspace' })
   expect(within(panel).getByText('Unified diff')).toBeInTheDocument()
-  expect(within(panel).getByText('    return quantity >= 10', { normalizer: getDefaultNormalizer({ trim: false, collapseWhitespace: false }) })).toBeInTheDocument()
+  // the line is one text node until the highlighter is warm, then token spans: match either
+  expect(panel.textContent).toContain('    return quantity >= 10')
   expect(within(panel).getAllByText('src/inventory/pricing.py').length).toBeGreaterThan(0)
 
   await userEvent.click(within(panel).getByRole('tab', { name: 'Terminal' }))
@@ -130,8 +146,9 @@ it('a failed run shows the error card, and Retry asks the gateway to run it agai
     .add('error', { stage: 'llm', message: 'no usable LLM response after 6 attempts' })
     .status('failed')
   const { posted } = backend(l.events)
-  expect(await screen.findByText("Otto couldn't finish.")).toBeInTheDocument()
-  expect(screen.getByText("The model didn't respond after 6 tries. Nothing was committed. Retry to continue from the last step.")).toBeInTheDocument()
+  expect(await screen.findByText('Something went wrong.')).toBeInTheDocument()
+  expect(screen.getByText('Otto stopped after 1 step and nothing was committed. Retry to continue from the last step.')).toBeInTheDocument()
+  expect(screen.getByText('6 tries')).toBeInTheDocument() // the block's red row says how the model failed
   await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
   await waitFor(() => expect(posted).toEqual(['retry']))
 })
@@ -206,7 +223,7 @@ it('out of credit: the card says so, offers the picker, and Retry runs on the mo
 
   const card = await screen.findByRole('alert')
   expect(within(card).getByText("This model's provider is out of credit.")).toBeInTheDocument()
-  expect(within(card).getByText('Switch models and retry.')).toBeInTheDocument()
+  expect(within(card).getByText("OpenRouter Free can't take more requests right now. Pick another model and retry.")).toBeInTheDocument()
 
   await userEvent.click(within(card).getByRole('button', { name: /OpenRouter Free/ }))
   expect(within(card).getByRole('option', { name: /OpenRouter Free/ })).toHaveAttribute('aria-disabled', 'true')
@@ -266,6 +283,7 @@ describe('the proposed pull request', () => {
     expect(within(card).getByText('Taufik041/otto_test · otto/s1 → main')).toBeInTheDocument()
     expect(within(card).getByText('9 tests passed')).toBeInTheDocument()
     expect(within(card).getByText('1 file')).toBeInTheDocument()
+    expect(within(card).getByText('Not on GitHub yet')).toBeInTheDocument()
 
     await userEvent.click(within(card).getByRole('button', { name: 'Create pull request' }))
     await waitFor(() => expect(calls).toEqual(['create']))
@@ -277,23 +295,28 @@ describe('the proposed pull request', () => {
     expect(screen.getByRole('link', { name: /View on GitHub/ })).toHaveAttribute('href', 'https://github.com/Taufik041/otto_test/pull/3')
   })
 
-  it('Create shows a spinner and is disabled while it runs', async () => {
+  it('Create says "Creating pull request…" with a spinner, and is disabled while it runs', async () => {
     const { handlers } = prRoutes(() => new Promise(() => {})) // never answers
     backend(proposed().events, {}, handlers)
     const create = await within(await screen.findByRole('region', { name: 'Ready for review' })).findByRole('button', { name: 'Create pull request' })
     await userEvent.click(create)
-    await waitFor(() => expect(create).toBeDisabled())
-    expect(create).toHaveAttribute('aria-busy', 'true')
+    const busy = await within(prCard()).findByRole('button', { name: 'Creating pull request…' })
+    expect(busy).toBeDisabled()
+    expect(busy).toHaveAttribute('aria-busy', 'true')
+    expect(within(prCard()).queryByRole('button', { name: 'Not now' })).not.toBeInTheDocument()
   })
 
-  it('an error shows under the buttons', async () => {
-    const { handlers } = prRoutes(() =>
+  it('an error shows in the card, in plain words, and Create tries again', async () => {
+    const { calls, handlers } = prRoutes(() =>
       HttpResponse.json({ detail: "GitHub didn't open the pull request: Validation Failed" }, { status: 502 }),
     )
     backend(proposed().events, {}, handlers)
     await userEvent.click(await within(await screen.findByRole('region', { name: 'Ready for review' })).findByRole('button', { name: 'Create pull request' }))
-    expect(await within(prCard()).findByText("GitHub didn't open the pull request: Validation Failed")).toBeInTheDocument()
-    expect(within(prCard()).getByRole('button', { name: 'Create pull request' })).toBeEnabled()
+    expect(await within(prCard()).findByRole('alert')).toHaveTextContent(
+      "Otto couldn't open the pull request. GitHub said: Validation Failed. Your changes are safe, so try again.",
+    )
+    await userEvent.click(within(prCard()).getByRole('button', { name: 'Create pull request' }))
+    await waitFor(() => expect(calls).toEqual(['create', 'create']))
   })
 
   it('Not now collapses it to a quiet line whose link still creates it', async () => {
@@ -304,7 +327,7 @@ describe('the proposed pull request', () => {
     await waitFor(() => expect(FakeSocket.all.length).toBeGreaterThan(0))
     FakeSocket.all.at(-1)!.deliver({ seq: 9, ts: '2026-10-02T14:10:00Z', type: 'pr.declined', payload: {} })
 
-    expect(await screen.findByText('Pull request not created')).toBeInTheDocument()
+    expect(await screen.findByText(/^Pull request not created/)).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Create pull request' }))
     await waitFor(() => expect(calls).toEqual(['decline', 'create']))
   })

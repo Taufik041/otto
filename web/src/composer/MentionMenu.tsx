@@ -26,7 +26,7 @@ export function MentionMenu({
   const rowPad = mobile ? '13px 12px' : '9px 12px'
   return (
     <>
-      <div className="px-3 pb-1.5 pt-2 text-xs font-semibold text-muted" id="mention-label">
+      <div className="px-3 pb-1.5 pt-2 text-xs font-medium text-muted" id="mention-label">
         Repositories
       </div>
       <div role="listbox" id="mention-list" aria-labelledby="mention-label" className="max-h-[300px] overflow-y-auto">
@@ -68,11 +68,11 @@ export function NoRepos({ linked, busy, onInstall }: { linked: boolean; busy: bo
   return (
     <div className="px-[18px] pb-[18px] pt-[22px] text-center">
       <GitHubIcon size={28} className="mx-auto text-text" />
-      <div className="mt-3 text-base font-semibold">
+      <div className="mt-3 text-base font-medium">
         {linked ? 'Install Otto on a repository' : 'Connect GitHub to mention repos'}
       </div>
       <div className="mt-1 text-sm text-muted">Otto only sees the repos you choose.</div>
-      <Button variant="dark" className="mt-4 gap-2" disabled={busy} onClick={onInstall}>
+      <Button variant="primary" className="mt-4 gap-2" disabled={busy} onClick={onInstall}>
         <GitHubIcon size={16} />
         {linked ? 'Install on repositories' : 'Connect GitHub'}
       </Button>

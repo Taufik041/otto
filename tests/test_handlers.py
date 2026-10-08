@@ -250,6 +250,7 @@ def test_fs_read_and_replace_path_with_space(ws):
     assert open(p).read() == "one\n2\n"
 
 
+@pytest.mark.skipif(shutil.which("rg") is None or shutil.which("git") is None, reason="needs git and ripgrep")
 def test_non_shell_handlers_never_use_a_shell(ws, monkeypatch):
     seen = []
     real_run = subprocess.run

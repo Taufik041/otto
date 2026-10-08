@@ -218,3 +218,17 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 *.egg-info/
+
+# production compose: its .env (ignored above as .env) and the files it mounts
+deploy/compose/secrets/
+
+# private design material (never committed) and the web app's local env
+docs/design/launch-spec.md
+docs/design/reference/
+web/.env.local
+web/.env.*.local
+.logs/
+docs/design/*.dc.html
+docs/design/otto-data-*.js
+docs/design/support.js
+docs/launch-progress.md

@@ -33,7 +33,7 @@ export function Avatar({
     <span
       aria-hidden="true"
       style={style}
-      className={cn('flex shrink-0 items-center justify-center rounded-full bg-inv font-semibold text-inv-text', className)}
+      className={cn('flex shrink-0 items-center justify-center rounded-full bg-inv font-medium text-inv-text', className)}
     >
       {initials(name, email)}
     </span>

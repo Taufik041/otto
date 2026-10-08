@@ -4,8 +4,8 @@ import { useIsMobile } from '@/hooks/useMediaQuery'
 
 // the tiles draw each theme's own colors, whatever the current theme
 const TILE = {
-  light: { bg: '#ffffff', side: '#f5f5f7', line: '#d2d2d7', accent: '#0071e3' },
-  dark: { bg: '#000000', side: '#1d1d1f', line: '#424245', accent: '#2997ff' },
+  light: { bg: '#FBFCFD', side: '#F5F7FA', line: 'rgba(15,23,42,.10)', accent: '#0071E3' },
+  dark: { bg: '#111318', side: '#16191F', line: 'rgba(255,255,255,.10)', accent: '#2997FF' },
 }
 type Colors = (typeof TILE)['light']
 
@@ -72,7 +72,7 @@ export function AppearancePage() {
                   </span>
                 )}
               </span>
-              <span className="flex items-center gap-2 text-[15px]" style={{ fontWeight: on ? 600 : 400 }}>
+              <span className="flex items-center gap-2 text-[15px]" style={{ fontWeight: on ? 500 : 400 }}>
                 <span
                   className="flex size-[18px] items-center justify-center rounded-full"
                   style={{ border: `1.5px solid ${on ? 'var(--accent)' : 'var(--line)'}` }}

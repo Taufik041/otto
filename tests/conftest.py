@@ -101,16 +101,43 @@ def accounts(monkeypatch):
     monkeypatch.setattr(tokens, "_tickets", {})
 
 
+@pytest.fixture(autouse=True)
+def launch_settings(monkeypatch):
+    """Open signups, no proxy, empty rate-limit windows, whatever .env says."""
+    from gateway import limits
+
+    monkeypatch.setattr(config, "SIGNUP_MODE", "open")
+    monkeypatch.setattr(config, "ACCEPTING", True)
+    monkeypatch.setattr(config, "ALLOWED_GITHUB", set())
+    monkeypatch.setattr(config, "ALLOWED_EMAILS", set())
+    monkeypatch.setattr(config, "TRUST_PROXY", False)
+    monkeypatch.setattr(config, "LANDING_ORIGINS", [])
+    monkeypatch.setattr(config, "PRODUCTION", False)
+    monkeypatch.setattr(config, "GITHUB_CALLBACK_URL", "")
+    limits.reset()
+    # no email goes anywhere: no key (development prints); tests that send install a fake
+    from shared import email
+
+    monkeypatch.setattr(config, "RESEND_API_KEY", None)
+    monkeypatch.setattr(config, "OTTO_NOTIFY_TO", None)
+
+    def no_network(payload):
+        raise AssertionError("a test tried to call Resend; use the resend fixture in tests/test_email.py")
+
+    monkeypatch.setattr(email, "post", no_network)
+
+
 @pytest.fixture
 def env(monkeypatch):
     """The gateway with a fake bus, fake runners and a fake orchestrator."""
-    from gateway import app as gateway_app
+    from gateway import app as gateway_app, workers
     from orchestrator import sandbox
 
     ch = FakeChannel()
     orch = FakeOrchestrator()
-    for name in ("create_sandbox", "remove_sandbox", "destroy_sandbox", "sandbox_status"):
+    for name in ("create_sandbox", "remove_sandbox", "destroy_sandbox", "sandbox_status", "reachable"):
         monkeypatch.setattr(sandbox, name, getattr(orch, name))
+    workers.forget()
 
     async def connect(url):
         return FakeConnection(ch)

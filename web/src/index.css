@@ -1,42 +1,47 @@
 @import "tailwindcss";
 
-/* Light and dark themes are set by data-theme on <html> (see src/theme). The values are copied from
-   the design mockup (docs/design/Otto v3.dc.html); keep them in step with it. */
+/* Light and dark themes are set by data-theme on <html> (see src/theme); Light is the default. The
+   values are copied from the design mockup (docs/design/Otto v4.dc.html); keep them in step with it.
+   Blue (--accent) is the brand, not the button: links, focus rings, live and selected states, the
+   PR cards' line and @repo chips. Buttons are black/white (--inv) or outlined pills. */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 :root {
-  --bg: #ffffff;
-  --bg2: #f5f5f7;
+  --bg: #fbfcfd;
+  --bg2: #f5f7fa;
   --card: #ffffff;
-  --text: #1d1d1f;
-  --muted: #6e6e73;
-  --line: #d2d2d7;
-  --hair: #e8e8ed;
+  --text: #15171c;
+  --muted: rgba(21, 23, 28, 0.56);
+  --ter: rgba(21, 23, 28, 0.4);
+  --line: rgba(15, 23, 42, 0.08);
+  --hair: rgba(15, 23, 42, 0.08);
+  --field: rgba(15, 23, 42, 0.12);
   --accent: #0071e3;
-  --accent-h: #0077ed;
-  --accent-bg: rgba(0, 113, 227, 0.1);
-  --tag: rgba(0, 0, 0, 0.05);
-  --hover: rgba(0, 0, 0, 0.04);
-  --sel: rgba(0, 0, 0, 0.065);
-  --nav: rgba(255, 255, 255, 0.72);
-  --shadow: 0 4px 24px rgba(0, 0, 0, 0.04);
-  --pop: 0 12px 40px rgba(0, 0, 0, 0.12), 0 0 0 0.5px rgba(0, 0, 0, 0.05);
-  --scrim: rgba(0, 0, 0, 0.28);
-  --inv: #1d1d1f;
+  --accent-h: #0071e3;
+  --accent-bg: rgba(0, 113, 227, 0.08);
+  --glow: rgba(0, 113, 227, 0.16);
+  --tag: rgba(15, 23, 42, 0.05);
+  --hover: rgba(15, 23, 42, 0.05);
+  --sel: rgba(15, 23, 42, 0.05);
+  --nav: rgba(251, 252, 253, 0.86);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --pop: 0 25px 50px -12px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(15, 23, 42, 0.06);
+  --scrim: rgba(15, 23, 42, 0.28);
+  --inv: #15171c;
   --inv-text: #ffffff;
-  --ok: #1d7d3f;
-  --ok-bg: rgba(29, 125, 63, 0.1);
-  --warn: #9a5b00;
-  --warn-bg: rgba(178, 110, 0, 0.11);
-  --live-bg: rgba(178, 110, 0, 0.05);
-  --bad: #c4332a;
-  --bad-bg: rgba(196, 51, 42, 0.08);
-  --idle: #8e8e93;
-  --idle-bg: rgba(110, 110, 115, 0.12);
-  --add-bg: rgba(29, 125, 63, 0.09);
-  --del-bg: rgba(196, 51, 42, 0.08);
-  --hunk: #f5f5f7;
-  --gutter: #a1a1a6;
+  --ok: #00a558;
+  --ok-bg: rgba(0, 165, 88, 0.1);
+  --warn: #e08a1e;
+  --warn-bg: rgba(224, 138, 30, 0.12);
+  --live-bg: rgba(0, 113, 227, 0.05);
+  --bad: #e5484d;
+  --bad-bg: rgba(229, 72, 77, 0.08);
+  --idle: rgba(21, 23, 28, 0.4);
+  --idle-bg: rgba(15, 23, 42, 0.06);
+  --add-bg: rgba(0, 165, 88, 0.09);
+  --del-bg: rgba(229, 72, 77, 0.08);
+  --hunk: #f5f7fa;
+  --gutter: rgba(21, 23, 28, 0.36);
   --c-kw: #ad3da4;
   --c-str: #c41a16;
   --c-num: #1c00cf;
@@ -50,38 +55,41 @@
 }
 
 :root[data-theme="dark"] {
-  --bg: #000000;
-  --bg2: #1d1d1f;
-  --card: #1d1d1f;
-  --text: #f5f5f7;
-  --muted: #86868b;
-  --line: #424245;
-  --hair: #2c2c2e;
+  --bg: #111318;
+  --bg2: #16191f;
+  --card: #1c2027;
+  --text: rgba(255, 255, 255, 0.9);
+  --muted: rgba(255, 255, 255, 0.56);
+  --ter: rgba(255, 255, 255, 0.4);
+  --line: rgba(255, 255, 255, 0.08);
+  --hair: rgba(255, 255, 255, 0.08);
+  --field: rgba(255, 255, 255, 0.12);
   --accent: #2997ff;
-  --accent-h: #47a3ff;
-  --accent-bg: rgba(41, 151, 255, 0.16);
-  --tag: rgba(255, 255, 255, 0.08);
-  --hover: rgba(255, 255, 255, 0.05);
-  --sel: rgba(255, 255, 255, 0.09);
-  --nav: rgba(0, 0, 0, 0.7);
-  --shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
-  --pop: 0 16px 48px rgba(0, 0, 0, 0.6), 0 0 0 0.5px rgba(255, 255, 255, 0.1);
-  --scrim: rgba(0, 0, 0, 0.55);
-  --inv: #f5f5f7;
-  --inv-text: #000000;
-  --ok: #30d158;
-  --ok-bg: rgba(48, 209, 88, 0.14);
-  --warn: #ffb340;
-  --warn-bg: rgba(255, 179, 64, 0.14);
-  --live-bg: rgba(255, 179, 64, 0.06);
-  --bad: #ff6961;
-  --bad-bg: rgba(255, 105, 97, 0.13);
-  --idle: #98989d;
-  --idle-bg: rgba(152, 152, 157, 0.16);
-  --add-bg: rgba(48, 209, 88, 0.13);
-  --del-bg: rgba(255, 105, 97, 0.12);
-  --hunk: #1d1d1f;
-  --gutter: #6e6e73;
+  --accent-h: #2997ff;
+  --accent-bg: rgba(41, 151, 255, 0.14);
+  --glow: rgba(41, 151, 255, 0.18);
+  --tag: rgba(255, 255, 255, 0.07);
+  --hover: rgba(255, 255, 255, 0.06);
+  --sel: rgba(255, 255, 255, 0.06);
+  --nav: rgba(17, 19, 24, 0.86);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --pop: 0 25px 50px -12px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --scrim: rgba(0, 0, 0, 0.5);
+  --inv: #ffffff;
+  --inv-text: #111318;
+  --ok: #2fbf71;
+  --ok-bg: rgba(47, 191, 113, 0.14);
+  --warn: #f0a23b;
+  --warn-bg: rgba(240, 162, 59, 0.14);
+  --live-bg: rgba(41, 151, 255, 0.07);
+  --bad: #ff6369;
+  --bad-bg: rgba(255, 99, 105, 0.12);
+  --idle: rgba(255, 255, 255, 0.4);
+  --idle-bg: rgba(255, 255, 255, 0.07);
+  --add-bg: rgba(47, 191, 113, 0.13);
+  --del-bg: rgba(255, 99, 105, 0.12);
+  --hunk: #16191f;
+  --gutter: rgba(255, 255, 255, 0.32);
   --c-kw: #ff7ab2;
   --c-str: #ff8170;
   --c-num: #d9c97c;
@@ -98,6 +106,8 @@
   --color-card: var(--card);
   --color-text: var(--text);
   --color-muted: var(--muted);
+  --color-ter: var(--ter);
+  --color-field: var(--field);
   --color-line: var(--line);
   --color-hair: var(--hair);
   --color-accent: var(--accent);
@@ -130,6 +140,7 @@
   --animate-sheet: otto-sheet 0.32s cubic-bezier(0.2, 0.8, 0.2, 1) both;
   --animate-spin-slow: otto-spin 1s linear infinite;
   --animate-pulse-dot: otto-pulse 1.6s ease-in-out infinite;
+  --animate-once: otto-once 2.4s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
 @keyframes otto-rise {
@@ -158,6 +169,19 @@
   to { opacity: 1; transform: none; }
 }
 @keyframes otto-spin {
+  to { transform: rotate(360deg); }
+}
+/* the landing page: code fragments drifting behind the hero, and the stack marquee */
+@keyframes otto-drift {
+  from { transform: translateX(0); }
+  to { transform: translateX(-160px); }
+}
+@keyframes otto-marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+@keyframes otto-once {
+  from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
 @keyframes otto-pulse {

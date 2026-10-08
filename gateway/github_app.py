@@ -35,7 +35,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
 from gateway import auth, tokens
-from shared import config
+from gateway.errors import Refused
+from shared import access, config
 from shared.db import get_db
 from shared.models import Installation, User
 
@@ -268,8 +269,10 @@ def github_user(user_token) -> dict:
 
 
 def _authorize(response: Response, user: User | None) -> str:
-    return _with_state(response, f"{WEB}/login/oauth/authorize", {"client_id": config.GITHUB_CLIENT_ID},
-                       "signin", user)
+    params = {"client_id": config.GITHUB_CLIENT_ID}
+    if config.GITHUB_CALLBACK_URL:  # one of the App's callback URLs: the gateway's, as GitHub reaches it
+        params["redirect_uri"] = config.GITHUB_CALLBACK_URL
+    return _with_state(response, f"{WEB}/login/oauth/authorize", params, "signin", user)
 
 
 class GitHubUrl(BaseModel):
@@ -333,7 +336,10 @@ def github_callback(request: Request, state: str | None = None, code: str | None
     except GitHubError as e:
         print(f"[github] sign-in failed: {e}", flush=True)
         raise _refused(e, "GitHub sign-in failed; try again") from None
-    user = _sign_in(user, gh)
+    try:
+        user = _sign_in(user, gh)
+    except Refused as e:  # a new account while signups are invite-only or paused
+        return _finish(f"{config.FRONTEND_URL}/auth/callback?error={e.error}", claims)
     r = _finish(f"{config.FRONTEND_URL}/auth/callback", claims)
     auth.set_refresh(r, tokens.issue_refresh(user.id, request.headers.get("user-agent")))
     return r
@@ -341,7 +347,8 @@ def github_callback(request: Request, state: str | None = None, code: str | None
 
 def _sign_in(current: User | None, gh: dict) -> User:
     """The user for this GitHub account: the signed-in one (linking it), the one already linked
-    to it, or a new one. Never matched by email: that would hand over accounts."""
+    to it, or a new one (Refused unless signups are open to its login). Never matched by email:
+    that would hand over accounts."""
     with get_db() as s:
         linked = s.exec(select(User).where(User.github_id == gh["id"])).first()
         if current is not None:
@@ -350,8 +357,12 @@ def _sign_in(current: User | None, gh: dict) -> User:
             user = s.get(User, current.id)
             if user.github_id not in (None, gh["id"]):
                 raise HTTPException(409, "your account is linked to a different GitHub account")
-        else:
-            user = linked or User(id=uuid.uuid4().hex, name=gh.get("name") or gh["login"])
+        elif linked is not None:
+            user = linked
+        else:  # a new account: only if signups are open to this GitHub login
+            if code := access.signup_refusal(github_login=gh["login"]):
+                raise auth.refusal(code)
+            user = User(id=uuid.uuid4().hex, name=gh.get("name") or gh["login"])
         user.github_id, user.github_login, user.avatar_url = gh["id"], gh["login"], gh.get("avatar_url")
         s.add(user)
         try:

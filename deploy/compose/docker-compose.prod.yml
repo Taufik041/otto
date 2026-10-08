@@ -1,0 +1,183 @@
+# Otto's backend on one 2 GB x86 server: the gateway and a brain worker (one image,
+# otto-backend), RabbitMQ, Postgres 16, cloudflared (the only way in), and nightly backups.
+# Sandboxes run elsewhere: the sandbox cluster in OTTO_SANDBOX_KUBECONFIG (docs/deploy.md).
+#
+#   cd deploy/compose
+#   cp .env.prod.example .env    # fill it in; secrets/ holds the kubeconfig and the App's key
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Nothing is published on a public interface: cloudflared reaches the gateway inside the
+# network, the gateway listens on the server's loopback (for ssh tunnels and checks), and
+# RabbitMQ on RABBITMQ_BIND (loopback, or the private address the sandbox cluster reaches).
+#
+# Memory (limits, MiB): postgres 320, rabbitmq 320, gateway 320, worker 448, cloudflared 96,
+# backup 128 = ~1.6 GiB, leaving the rest of 2 GiB to the system.
+
+name: otto
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-backend: &backend
+  image: ${OTTO_IMAGE:-ghcr.io/taufik041/otto-backend:main}
+  restart: unless-stopped
+  logging: *logging
+  env_file: .env
+  environment: &backend-env
+    OTTO_ENV: production
+    DATABASE_URL: postgresql+psycopg://otto:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/otto
+    BUS_URL: amqp://otto:${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}@rabbitmq:5672/
+    # the files in ./secrets (read-only): the sandbox cluster's kubeconfig, the GitHub App's key
+    OTTO_SANDBOX_KUBECONFIG: /run/otto/sandbox.kubeconfig
+    GITHUB_APP_KEY_PATH: /run/otto/github-app.pem
+  volumes:
+    - ./secrets:/run/otto:ro
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_USER: otto
+      POSTGRES_DB: otto
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    # small-server settings: a few connections, modest buffers
+    command:
+      - postgres
+      - -c
+      - max_connections=40
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - effective_cache_size=192MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=32MB
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U otto -d otto"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 320m
+
+  rabbitmq:
+    image: rabbitmq:3.13-alpine
+    restart: unless-stopped
+    logging: *logging
+    hostname: rabbitmq # its data directory is named after it: keep it stable
+    environment:
+      RABBITMQ_DEFAULT_USER: otto
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}
+    volumes:
+      - rabbitmq:/var/lib/rabbitmq
+      - ./rabbitmq.conf:/etc/rabbitmq/conf.d/90-otto.conf:ro
+    ports:
+      # runners in the sandbox cluster connect here: a private address only (never 0.0.0.0)
+      - "${RABBITMQ_BIND:-127.0.0.1}:5672:5672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 320m
+
+  gateway:
+    <<: *backend
+    command: ["gateway"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status != 200)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 320m
+
+  worker:
+    <<: *backend
+    command: ["worker"]
+    depends_on:
+      # the gateway migrates the database when it starts: wait for it
+      gateway:
+        condition: service_healthy
+    # alive, and can still reach Postgres and RabbitMQ
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; [socket.create_connection(a, 3).close() for a in (('postgres', 5432), ('rabbitmq', 5672))]"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 448m
+
+  cloudflared:
+    image: cloudflare/cloudflared:${CLOUDFLARED_VERSION:-2026.10.0}
+    restart: unless-stopped
+    logging: *logging
+    # the tunnel's public hostname (Cloudflare dashboard) points at http://gateway:8000
+    command: ["tunnel", "--no-autoupdate", "--metrics", "0.0.0.0:2000", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in .env}
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "--metrics", "localhost:2000", "ready"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 96m
+
+  backup:
+    build:
+      context: ../..
+      dockerfile: deploy/backup/Dockerfile
+    image: otto-backup:local
+    restart: unless-stopped
+    logging: *logging
+    env_file: .env
+    environment:
+      PGHOST: postgres
+      PGUSER: otto
+      PGDATABASE: otto
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+volumes:
+  postgres:
+  rabbitmq:

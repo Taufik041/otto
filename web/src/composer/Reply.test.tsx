@@ -116,3 +116,20 @@ it('a 429 cap is shown inline', async () => {
   await userEvent.type(box(), 'x{Enter}')
   expect(await screen.findByText("You've used today's limit.")).toBeInTheDocument()
 })
+
+it('workers offline: a repo chat can\'t take a follow-up, and says why', async () => {
+  server.use(http.get(`${API}/health`, () => HttpResponse.json({ status: 'up', workers: 'offline', version: 't' })))
+  const { calls } = setup()
+  expect(await screen.findByText("Otto's workers are offline right now. Plain chat still works.")).toBeInTheDocument()
+  await userEvent.type(box(), 'and the docs{Enter}')
+  expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+  expect(calls).toEqual([])
+})
+
+it('workers offline: a plain chat still takes a follow-up', async () => {
+  server.use(http.get(`${API}/health`, () => HttpResponse.json({ status: 'up', workers: 'offline', version: 't' })))
+  const { calls } = setup({ repo: null })
+  await screen.findByText("Otto's workers are offline right now. Plain chat still works.")
+  await userEvent.type(box(), 'and in Python?{Enter}')
+  await waitFor(() => expect(calls.map((c) => c.path)).toEqual(['messages']))
+})

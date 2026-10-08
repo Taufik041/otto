@@ -3,17 +3,17 @@ import { Slot } from 'radix-ui'
 import type { ComponentProps } from 'react'
 import { cn } from '@/utils/cn'
 
-// shadcn's Button, restyled to the design: pills (980px radius), one accent, no default shadcn look.
+// shadcn's Button, restyled to the design: pills. Blue is the brand, not the button: the primary
+// pill is black in light and white in dark, the rest are outlined. Hover is instant (no transition).
 export const buttonVariants = cva(
-  'inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap border-0 transition-colors disabled:opacity-50 disabled:pointer-events-none [&_svg]:shrink-0',
+  'inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap border-0 disabled:opacity-50 disabled:pointer-events-none [&_svg]:shrink-0',
   {
     variants: {
       variant: {
-        primary: 'rounded-[980px] bg-accent text-white hover:bg-accent-h hover:text-white',
-        dark: 'rounded-[980px] bg-inv text-inv-text hover:text-inv-text',
-        outline: 'rounded-[980px] border border-solid border-line bg-transparent text-text hover:bg-hover',
-        danger: 'rounded-[980px] border border-solid border-bad bg-transparent text-bad hover:bg-bad-bg',
-        dangerSolid: 'rounded-[980px] bg-bad text-white hover:opacity-90',
+        primary: 'rounded-full bg-inv text-inv-text hover:text-inv-text hover:opacity-[.82]',
+        outline: 'rounded-full border border-solid border-line bg-transparent text-text hover:bg-hover',
+        danger: 'rounded-full border border-solid border-bad bg-transparent text-bad hover:bg-bad-bg',
+        dangerSolid: 'rounded-full bg-bad text-white hover:opacity-90',
         ghost: 'rounded-[10px] bg-transparent text-text hover:bg-sel',
         link: 'bg-transparent p-0 text-accent hover:text-accent-h',
       },

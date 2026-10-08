@@ -14,7 +14,7 @@ it.each([
   ['a click', async (b: HTMLElement) => userEvent.click(b)],
   ['Enter', async (b: HTMLElement) => (b.focus(), userEvent.keyboard('{Enter}'))],
   ['Space', async (b: HTMLElement) => (b.focus(), userEvent.keyboard(' '))],
-])('%s opens the profile menu: Settings, Usage, Theme, Sign out', async (_, open) => {
+])('%s opens the profile menu: Settings, Usage, Theme, Terms & Privacy, Sign out', async (_, open) => {
   renderSignedIn(<ProfileMenu />)
   await open(screen.getByRole('button', { name: 'Account menu' }))
 
@@ -22,7 +22,10 @@ it.each([
   expect(screen.getByRole('menuitem', { name: 'Settings' })).toBeInTheDocument()
   expect(screen.getByRole('menuitem', { name: 'Usage' })).toBeInTheDocument()
   expect(screen.getByRole('radiogroup', { name: 'Theme' })).toBeInTheDocument()
+  expect(screen.getByRole('menuitem', { name: 'Terms & Privacy' })).toBeInTheDocument()
   expect(screen.getByRole('menuitem', { name: 'Sign out' })).toBeInTheDocument()
+  const names = screen.getAllByRole('menuitem').map((m) => m.textContent)
+  expect(names).toEqual(['Settings', 'Usage', 'Terms & Privacy', 'Sign out']) // Theme sits between Usage and Terms
   // drawn above the sidebar (and the mobile drawer) it opens over
   expect(menu.style.zIndex).toBe(String(LAYER.menu))
 })
@@ -32,6 +35,19 @@ it('Settings navigates to /settings', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Account menu' }))
   await userEvent.click(await screen.findByRole('menuitem', { name: 'Settings' }))
   await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent('/settings/account'))
+})
+
+it('Terms & Privacy opens the privacy policy (which links the terms)', async () => {
+  renderSignedIn(<ProfileMenu />)
+  await userEvent.click(screen.getByRole('button', { name: 'Account menu' }))
+  await userEvent.click(await screen.findByRole('menuitem', { name: 'Terms & Privacy' }))
+  await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent('/legal/privacy'))
+})
+
+it('the Theme control defaults to Light', async () => {
+  renderSignedIn(<ProfileMenu />)
+  await userEvent.click(screen.getByRole('button', { name: 'Account menu' }))
+  expect(await screen.findByRole('radio', { name: 'Light' })).toHaveAttribute('aria-checked', 'true')
 })
 
 it('the collapsed rail opens the same menu', async () => {

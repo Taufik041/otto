@@ -176,3 +176,132 @@ def test_remove_sandbox(k8s):
     assert sandbox.remove_sandbox("s1") is True
     assert fake.deleted == ["otto-s1"]
     assert sandbox.remove_sandbox("s1") is False  # nothing left; not an error
+
+
+# --- the Job's hardening, resources and the bus Secret ------------------------------------
+
+def test_the_pod_is_locked_down(jobs):
+    sandbox.create_sandbox("s1", "https://github.com/o/r")
+    pod = jobs[0].spec.template.spec
+    [c] = pod.containers
+    assert pod.automount_service_account_token is False
+    assert pod.security_context.run_as_non_root is True
+    assert pod.security_context.run_as_user == 1000 and pod.security_context.fs_group == 1000
+    assert pod.security_context.seccomp_profile.type == "RuntimeDefault"
+    assert c.security_context.allow_privilege_escalation is False
+    assert c.security_context.capabilities.drop == ["ALL"]
+    assert c.security_context.run_as_non_root is True
+
+
+def test_resources_come_from_the_config(jobs, monkeypatch):
+    monkeypatch.setattr(config, "SANDBOX_RESOURCES", {
+        "requests": {"cpu": "100m", "memory": "200Mi", "ephemeral-storage": "512Mi"},
+        "limits": {"cpu": "2", "memory": "2Gi", "ephemeral-storage": "8Gi"}})
+    sandbox.create_sandbox("s1", "https://github.com/o/r")
+    res = jobs[0].spec.template.spec.containers[0].resources
+    assert res.requests == {"cpu": "100m", "memory": "200Mi", "ephemeral-storage": "512Mi"}
+    assert res.limits == {"cpu": "2", "memory": "2Gi", "ephemeral-storage": "8Gi"}
+
+
+def test_the_default_resources_include_ephemeral_storage(jobs):
+    sandbox.create_sandbox("s1", "https://github.com/o/r")
+    res = jobs[0].spec.template.spec.containers[0].resources
+    assert {"cpu", "memory", "ephemeral-storage"} == set(res.requests) == set(res.limits)
+
+
+def bus_env(job):
+    return next(e for e in job.spec.template.spec.containers[0].env if e.name == "BUS_URL")
+
+
+def test_the_bus_url_comes_from_a_secret_when_one_is_named(jobs, monkeypatch):
+    monkeypatch.setattr(config, "RUNNER_AMQP_SECRET", "otto-runner-amqp")
+    monkeypatch.setattr(config, "RUNNER_AMQP_SECRET_KEY", "url")
+    monkeypatch.setattr(config, "SANDBOX_BUS_URL", "amqp://runner:secret@bus:5672/")
+    sandbox.create_sandbox("s1", "https://github.com/o/r")
+    env = bus_env(jobs[0])
+    assert env.value is None
+    assert (env.value_from.secret_key_ref.name, env.value_from.secret_key_ref.key) == ("otto-runner-amqp", "url")
+    assert "secret@bus" not in str(jobs[0])
+
+
+def test_without_a_secret_the_bus_url_is_set_directly(jobs, monkeypatch):
+    monkeypatch.setattr(config, "RUNNER_AMQP_SECRET", "")
+    monkeypatch.setattr(config, "SANDBOX_BUS_URL", "amqp://guest:guest@rabbitmq:5672/")
+    sandbox.create_sandbox("s1", "https://github.com/o/r")
+    assert bus_env(jobs[0]).value == "amqp://guest:guest@rabbitmq:5672/"
+
+
+def test_jobs_go_to_the_sandbox_namespace(monkeypatch):
+    calls = []
+
+    class FakeBatch:
+        def create_namespaced_job(self, body, namespace):
+            calls.append(namespace)
+
+    monkeypatch.setattr(sandbox, "_batch_api", lambda: FakeBatch())
+    monkeypatch.setattr(config, "K8S_NAMESPACE", "otto-sandboxes")
+    sandbox.create_sandbox("s1", "https://github.com/o/r")
+    assert calls == ["otto-sandboxes"]
+
+
+# --- the cluster connection ------------------------------------------------------------------
+
+@pytest.fixture
+def fresh_client(monkeypatch):
+    monkeypatch.setattr(sandbox, "_client", None)
+    monkeypatch.setattr(sandbox, "_batch", None)
+    monkeypatch.setattr(sandbox, "_core", None)
+
+
+def test_the_kubeconfig_file_is_loaded(fresh_client, monkeypatch):
+    loaded = []
+    monkeypatch.setattr(config, "SANDBOX_KUBECONFIG", "/etc/otto/sandbox.kubeconfig")
+    monkeypatch.setattr(sandbox.k8s_config, "new_client_from_config",
+                        lambda config_file: loaded.append(config_file) or sandbox.client.ApiClient())
+    sandbox._batch_api()
+    sandbox._core_api()
+    assert loaded == ["/etc/otto/sandbox.kubeconfig"]  # once, shared
+
+
+def test_no_kubeconfig_in_production_means_not_configured(fresh_client, monkeypatch):
+    monkeypatch.setattr(config, "SANDBOX_KUBECONFIG", "")
+    monkeypatch.setattr(config, "PRODUCTION", True)
+    monkeypatch.setattr(sandbox.k8s_config, "new_client_from_config",
+                        lambda **kw: pytest.fail("no default kubeconfig in production"))
+    with pytest.raises(sandbox.NotConfigured, match="OTTO_SANDBOX_KUBECONFIG"):
+        sandbox._batch_api()
+    assert sandbox.reachable() is False
+
+
+def test_no_kubeconfig_in_development_uses_the_default_one(fresh_client, monkeypatch):
+    loaded = []
+    monkeypatch.setattr(config, "SANDBOX_KUBECONFIG", "")
+    monkeypatch.setattr(config, "PRODUCTION", False)
+    monkeypatch.setattr(sandbox.k8s_config, "new_client_from_config",
+                        lambda config_file=None: loaded.append(config_file) or sandbox.client.ApiClient())
+    sandbox._batch_api()
+    assert loaded == [None]
+
+
+def test_reachable_lists_jobs_in_the_namespace(monkeypatch):
+    seen = []
+
+    class FakeBatch:
+        def list_namespaced_job(self, namespace, limit, _request_timeout):
+            seen.append((namespace, limit))
+            return NS(items=[])
+
+    monkeypatch.setattr(sandbox, "_batch_api", lambda: FakeBatch())
+    monkeypatch.setattr(config, "K8S_NAMESPACE", "otto-sandboxes")
+    assert sandbox.reachable() is True
+    assert seen == [("otto-sandboxes", 1)]
+
+
+def test_an_unreachable_cluster_is_not_reachable(monkeypatch, fresh_client, capsys):
+    class FakeBatch:
+        def list_namespaced_job(self, **kw):
+            raise ConnectionRefusedError("connection refused")
+
+    monkeypatch.setattr(sandbox, "_batch_api", lambda: FakeBatch())
+    assert sandbox.reachable() is False
+    assert "unreachable" in capsys.readouterr().out

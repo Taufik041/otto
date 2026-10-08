@@ -1,0 +1,17 @@
+# Docker build contexts are the repo root (deploy/backend.Dockerfile, infra/sandbox.Dockerfile):
+# send only what an image copies
+.git
+.venv
+.env
+**/.env*
+!**/.env*.example
+**/__pycache__
+**/*.pyc
+.pytest_cache
+*.egg-info
+web
+docs
+skeleton
+otto-secrets
+deploy/compose/secrets
+*.pem

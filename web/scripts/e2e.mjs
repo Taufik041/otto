@@ -41,9 +41,11 @@ async function signIn(page) {
   await page.goto(APP + '/')
   if (state) return page.getByText('What should we build today').waitFor() // still signed in
   await page.waitForURL('**/login')
-  await page.getByLabel('Email').fill(process.env.OTTO_EMAIL)
+  // email first: Continue, then "Welcome back" asks for the password
+  await page.getByLabel('Email address').fill(process.env.OTTO_EMAIL)
+  await page.getByRole('button', { name: 'Continue', exact: true }).click()
   await page.getByLabel('Password').fill(process.env.OTTO_PASSWORD)
-  await page.getByRole('button', { name: 'Sign in' }).click()
+  await page.getByRole('button', { name: 'Continue', exact: true }).click()
   await page.getByText('What should we build today').waitFor()
 }
 

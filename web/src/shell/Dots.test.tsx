@@ -13,7 +13,7 @@ function list(attention: 'working' | 'done' | 'failed' | null) {
 const row = async () => (await screen.findByText('A chat')).closest('a')!
 
 it.each([
-  ['working', 'Working', 'var(--warn)'],
+  ['working', 'Working', 'var(--accent)'],
   ['done', 'Done', 'var(--ok)'],
   ['failed', 'Failed', 'var(--bad)'],
 ] as const)('attention %s is a dot (%s)', async (attention, label, color) => {
@@ -27,7 +27,7 @@ it('no attention, no dot (seen, stopped, a plain chat at rest)', async () => {
   expect(within(await row()).queryByRole('img')).not.toBeInTheDocument()
 })
 
-it('a working dot pulses softly', async () => {
+it('a working dot is blue and pulses softly', async () => {
   list('working')
   expect(within(await row()).getByRole('img', { name: 'Working' })).toHaveClass('animate-pulse-dot')
 })
@@ -41,4 +41,10 @@ it('with reduced motion it stays steady', async () => {
   } finally {
     window.matchMedia = real
   }
+})
+
+it('the sidebar wears a Beta pill beside the wordmark', async () => {
+  list(null)
+  await row()
+  expect(screen.getByText('Beta')).toBeInTheDocument()
 })

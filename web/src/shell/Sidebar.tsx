@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { BarChart3, ChevronsUpDown, Ellipsis, LogOut, Palette, PanelLeft, Search, Settings, SquarePen, Trash2, X } from 'lucide-react'
+import { BarChart3, ChevronsUpDown, Ellipsis, FileText, LogOut, Palette, PanelLeft, Search, Settings, SquarePen, Trash2, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { client } from '@/api'
@@ -7,7 +7,7 @@ import { useSessions } from '@/api/queries'
 import type { SessionSummary } from '@/api/types'
 import { useMe } from '@/auth/auth'
 import { Avatar } from '@/components/Avatar'
-import { Lockup, Mark } from '@/components/brand'
+import { BetaPill, Lockup, Mark } from '@/components/brand'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -109,7 +109,10 @@ function Expanded({
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center pb-2.5 pl-[18px] pr-3 pt-4">
         <Link to="/" onClick={onNavigate} aria-label="Otto home" className="flex">
-          <Lockup height={22} />
+          <span className="flex items-center gap-2">
+            <Lockup height={22} />
+            <BetaPill />
+          </span>
         </Link>
         <div className="flex-1" />
         <button
@@ -127,7 +130,7 @@ function Expanded({
         <button
           type="button"
           onClick={onNewChat}
-          className="flex h-10 items-center gap-2.5 rounded-xl border border-solid border-line bg-card px-3 text-[14.5px] font-medium text-text transition-colors duration-200 hover:bg-hover"
+          className="flex h-10 items-center gap-2.5 rounded-xl border border-solid border-line bg-card px-3 text-[14.5px] font-medium text-text hover:bg-hover"
         >
           <SquarePen size={16} strokeWidth={1.7} />
           New chat
@@ -147,7 +150,7 @@ function Expanded({
       <nav aria-label="Chats" className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 pt-1">
         {groups.map((g) => (
           <section key={g.label}>
-            <h2 className="m-0 px-3 pb-1.5 pt-4 text-xs font-semibold text-muted">{g.label}</h2>
+            <h2 className="m-0 px-3 pb-1.5 pt-4 text-xs font-medium text-muted">{g.label}</h2>
             {g.sessions.map((s) => (
               <ChatRow key={s.id} chat={s} current={s.id === current} onPick={onNavigate} onDelete={() => onDelete(s)} />
             ))}
@@ -165,8 +168,9 @@ function Expanded({
   )
 }
 
-// the dot is "needs your attention": working, or a turn that ended since you last saw the chat
-const DOT_COLOR = { working: 'var(--warn)', done: 'var(--ok)', failed: 'var(--bad)' } as const
+// the dot is "needs your attention": blue and pulsing while Otto works, then green or red for a
+// turn that ended since you last saw the chat; none once seen, or when you stopped it
+const DOT_COLOR = { working: 'var(--accent)', done: 'var(--ok)', failed: 'var(--bad)' } as const
 const DOT_LABEL = { working: 'Working', done: 'Done', failed: 'Failed' } as const
 
 function ChatRow({
@@ -185,7 +189,7 @@ function ChatRow({
   return (
     <div
       className={cn(
-        'group relative flex items-start rounded-[10px] transition-colors duration-150 hover:bg-sel has-[[data-state=open]]:bg-sel',
+        'group relative flex items-start rounded-[10px] hover:bg-sel has-[[data-state=open]]:bg-sel',
         current && 'bg-sel',
       )}
     >
@@ -227,7 +231,7 @@ function ChatRow({
   )
 }
 
-/** The user button and its menu: Settings, Usage, Theme, Sign out. */
+/** The user button and its menu, opening above it: Settings, Usage, Theme, Terms & Privacy, Sign out. */
 export function ProfileMenu({ compact = false }: { compact?: boolean }) {
   const me = useMe()
   const navigate = useNavigate()
@@ -276,6 +280,10 @@ export function ProfileMenu({ compact = false }: { compact?: boolean }) {
           <span className="flex-1 text-[14.5px]">Theme</span>
           <ThemeSwitch />
         </div>
+        <DropdownMenuItem onSelect={() => navigate('/legal/privacy')}>
+          <FileText strokeWidth={1.6} />
+          Terms &amp; Privacy
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={signOut}>
           <LogOut strokeWidth={1.6} />

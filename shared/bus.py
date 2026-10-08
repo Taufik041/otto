@@ -1,4 +1,6 @@
-import uuid
+import asyncio, uuid
+
+RECONNECT_MAX = 30  # seconds between first-connect attempts, at most
 
 
 def actions_queue(sid: str) -> str:
@@ -47,3 +49,17 @@ def chat_job(sid: str, text: str | None = None) -> dict:
 def retry_job(sid: str) -> dict:
     """Run a failed turn again from where it stopped, with no new message."""
     return {"type": "retry", "session_id": sid}
+
+
+async def connect_with_backoff(connect, url, name, max_delay=RECONNECT_MAX, sleep=asyncio.sleep):
+    """connect(url) (aio_pika's connect_robust), retried with exponential backoff until the broker
+    answers: connect_robust reconnects by itself, but only after a first successful connect. The
+    URL is never printed (it holds the password)."""
+    delay = 1
+    while True:
+        try:
+            return await connect(url)
+        except Exception as e:
+            print(f"[{name}] bus connect failed ({type(e).__name__}); retrying in {delay}s", flush=True)
+            await sleep(delay)
+            delay = min(delay * 2, max_delay)

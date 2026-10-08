@@ -5,9 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:landing": "vite --config vite.landing.config.ts",
     "build": "tsc -b && vite build",
+    "build:landing": "tsc -b && vite build --config vite.landing.config.ts",
     "lint": "oxlint",
     "preview": "vite preview",
+    "preview:landing": "vite preview --config vite.landing.config.ts",
+    "vercel:app": "npm run build && node scripts/vercel-output.mjs app",
+    "vercel:landing": "npm run build:landing && node scripts/vercel-output.mjs landing",
     "test": "vitest run",
     "test:watch": "vitest",
     "screenshots": "node scripts/screenshots.mjs"
