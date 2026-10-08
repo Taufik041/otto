@@ -38,7 +38,7 @@ export function AccountPage() {
       <div className="flex items-center gap-4">
         <Avatar name={me.name} email={me.email} url={me.avatar_url} size={64} />
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-[19px] font-semibold">{me.name}</span>
+          <span className="block truncate text-[19px] font-normal tracking-[-0.03em]">{me.name}</span>
           {me.email && <span className="block truncate text-[15px] text-muted">{me.email}</span>}
         </span>
       </div>
@@ -90,7 +90,7 @@ export function AccountPage() {
       </div>
 
       <Card className="px-5 py-[18px]">
-        <div className="text-[15px] font-semibold text-bad">Delete account</div>
+        <div className="text-[15px] font-medium text-bad">Delete account</div>
         <div className="mt-1 text-sm text-muted">This deletes your chats and disconnects GitHub. It can't be undone.</div>
         <Button variant="danger" size="none" className="mt-3.5 h-9 px-4 text-sm" onClick={() => setDeleteOpen(true)}>
           Delete account
@@ -257,7 +257,7 @@ function DeleteAccount({ open, onOpenChange }: { open: boolean; onOpenChange: (o
     onSuccess: async () => {
       await client.logout()
       qc.clear()
-      navigate('/signup', { replace: true })
+      navigate('/login', { replace: true })
     },
   })
   return (

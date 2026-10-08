@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import { Mark } from '@/components/brand'
 import { RepoIcon } from '@/components/icons'
+import { HEADER_HEIGHT } from '@/components/layers'
 import { useShell } from './AppShell'
 
 /** The thin frosted bar over the page: (phones) the drawer button and the mark, then the chat
@@ -27,8 +28,13 @@ export function TopBar({
   const navigate = useNavigate()
   return (
     <header
-      className="absolute inset-x-0 top-0 z-20 flex h-[52px] items-center gap-2.5 border-0 border-b border-solid bg-nav backdrop-blur-[20px] backdrop-saturate-[1.8]"
-      style={{ padding: mobile ? '0 6px' : '0 14px 0 24px', borderBottomColor: bordered ? 'var(--hair)' : 'transparent' }}
+      className="absolute inset-x-0 top-0 z-20 flex items-center gap-2.5 border-0 border-b border-solid bg-nav backdrop-blur-[20px] backdrop-saturate-[1.8]"
+      style={{
+        height: HEADER_HEIGHT,
+        boxSizing: 'border-box',
+        padding: mobile ? '0 6px' : '0 14px 0 22px',
+        borderBottomColor: bordered ? 'var(--hair)' : 'transparent',
+      }}
     >
       {mobile && (
         <>
@@ -45,7 +51,7 @@ export function TopBar({
         </>
       )}
       <div className="flex min-w-0 flex-1 items-center gap-2.5">
-        {title && <span className="min-w-0 truncate text-[15px] font-semibold tracking-[-0.01em]">{title}</span>}
+        {title && <span className="min-w-0 truncate text-[15px] tracking-[-0.03em]">{title}</span>}
         {repo && !mobile && (
           <span className="inline-flex shrink-0 items-center gap-[5px] rounded-[7px] bg-tag px-2 py-[3px] font-mono text-xs text-text">
             <RepoIcon size={12} className="text-muted" />

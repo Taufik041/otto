@@ -3,7 +3,7 @@ import asyncio, json, sys, traceback
 from aio_pika import connect_robust
 
 from shared import config
-from shared.bus import SESSIONS_QUEUE, actions_queue, results_queue
+from shared.bus import SESSIONS_QUEUE, actions_queue, connect_with_backoff, results_queue
 from shared.sessions import get_session, transition
 from brain.loop import chat_session, has_conversation, resume_session, retry_chat, start_session
 from brain.main import connect_db
@@ -104,7 +104,7 @@ async def consume(conn, queue, concurrency):
 
 async def main():
     connect_db()
-    conn = await connect_robust(config.BUS_URL)
+    conn = await connect_with_backoff(connect_robust, config.BUS_URL, "worker")
     try:
         ch = await conn.channel()
         await ch.set_qos(prefetch_count=config.WORKER_CONCURRENCY)

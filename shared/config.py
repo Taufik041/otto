@@ -3,6 +3,28 @@ from dotenv import load_dotenv
 
 load_dotenv(override=False)
 
+
+def flag(env, name, default=False) -> bool:
+    """A boolean env var: 1/true/yes/on (any case) is True, 0/false/no/off False, unset the default."""
+    value = (env.get(name) or "").strip().lower()
+    if not value:
+        return default
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(f"{name} must be 1/true/yes/on or 0/false/no/off; got {env[name]!r}")
+
+
+def csv(env, name, default="") -> list[str]:
+    return [v.strip() for v in env.get(name, default).split(",") if v.strip()]
+
+
+# "production" turns on the production settings (Secure cookies, no /docs unless OTTO_DOCS=1, ...)
+ENV = os.environ.get("OTTO_ENV", "development").strip().lower()
+PRODUCTION = ENV == "production"
+VERSION = os.environ.get("OTTO_VERSION", "").strip()  # GET /health shows it; else the package version
+
 # bus
 BUS_URL = os.environ.get("BUS_URL", "amqp://guest:guest@localhost/")
 SESSION_ID = os.environ.get("SESSION_ID", "s1")  # the runner's own session; only a default for the brain CLI
@@ -117,26 +139,65 @@ MODEL_WAIT_BUDGET_SECONDS = float(os.environ.get("MODEL_WAIT_BUDGET_SECONDS", "1
 LLM_TIMEOUT = float(os.environ.get("OTTO_LLM_TIMEOUT", "120"))  # seconds per request: long chats are slow
 SANDBOX_MAX_AGE_SECONDS = int(os.environ.get("SANDBOX_MAX_AGE_SECONDS", "3000"))  # < the 1h GitHub token
 SANDBOX_IDLE_MINUTES = float(os.environ.get("SANDBOX_IDLE_MINUTES", "30"))  # runner exits after this long without actions
-SANDBOX_IMAGE = os.environ.get("SANDBOX_IMAGE", "taufik041/otto-sandbox:dev")
-K8S_NAMESPACE = os.environ.get("K8S_NAMESPACE", "default")
-SANDBOX_BUS_URL = os.environ.get("SANDBOX_BUS_URL", "amqp://guest:guest@rabbitmq:5672/")  # bus URL as seen from inside the pod
+SANDBOX_IMAGE = os.environ.get("SANDBOX_IMAGE") or "taufik041/otto-sandbox:dev"
+# the sandbox cluster: a kubeconfig file and the namespace sandbox Jobs run in. Unset kubeconfig:
+# workers are offline in production; in development the default kubeconfig (kind) is used
+SANDBOX_KUBECONFIG = os.environ.get("OTTO_SANDBOX_KUBECONFIG", "").strip()
+K8S_NAMESPACE = (os.environ.get("OTTO_SANDBOX_NAMESPACE") or os.environ.get("K8S_NAMESPACE") or "default").strip()
+WORKERS_CHECK_SECONDS = float(os.environ.get("OTTO_WORKERS_CHECK_SECONDS", "30"))  # how long a reachability check counts
+# the bus URL as a sandbox pod reaches it: from a k8s Secret (OTTO_RUNNER_AMQP_SECRET, key
+# OTTO_RUNNER_AMQP_SECRET_KEY) when set, so it never sits in the Job spec; else this literal value
+SANDBOX_BUS_URL = (os.environ.get("OTTO_RUNNER_AMQP_URL") or os.environ.get("SANDBOX_BUS_URL")
+                   or "amqp://guest:guest@rabbitmq:5672/")
+RUNNER_AMQP_SECRET = os.environ.get("OTTO_RUNNER_AMQP_SECRET", "").strip()
+RUNNER_AMQP_SECRET_KEY = os.environ.get("OTTO_RUNNER_AMQP_SECRET_KEY", "url").strip()
+# a sandbox's resources (Kubernetes quantities)
+SANDBOX_RESOURCES = {
+    "requests": {"cpu": os.environ.get("OTTO_SANDBOX_CPU_REQUEST", "200m"),
+                 "memory": os.environ.get("OTTO_SANDBOX_MEMORY_REQUEST", "300Mi"),
+                 "ephemeral-storage": os.environ.get("OTTO_SANDBOX_STORAGE_REQUEST", "1Gi")},
+    "limits": {"cpu": os.environ.get("OTTO_SANDBOX_CPU_LIMIT", "1"),
+               "memory": os.environ.get("OTTO_SANDBOX_MEMORY_LIMIT", "1Gi"),
+               "ephemeral-storage": os.environ.get("OTTO_SANDBOX_STORAGE_LIMIT", "4Gi")},
+}
+SANDBOX_UID = int(os.environ.get("OTTO_SANDBOX_UID", "1000"))  # the image's non-root user (otto)
 
 # gateway / worker
 MAX_ACTIVE_SESSIONS = int(os.environ.get("MAX_ACTIVE_SESSIONS", "3"))    # agent sessions at work, per user
 MAX_ACTIVE_SANDBOXES = int(os.environ.get("MAX_ACTIVE_SANDBOXES", "3"))  # agent sessions at work, everyone's
 WORKER_CONCURRENCY = int(os.environ.get("WORKER_CONCURRENCY", "3"))
-CORS_ORIGINS = [o.strip() for o in os.environ.get(
-    "CORS_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",") if o.strip()]
-
 # accounts
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+# origins that may call the API with credentials and open the WebSocket; in production, the app's
+CORS_ORIGINS = csv(os.environ, "CORS_ORIGINS", FRONTEND_URL if PRODUCTION else "http://localhost:5173,http://localhost:3000")
+# origins that may also read GET /health (the landing page's status pill); no credentials
+LANDING_ORIGINS = csv(os.environ, "OTTO_LANDING_ORIGINS", "" if PRODUCTION else "http://localhost:5174")  # dev: npm run dev:landing
+DOCS = flag(os.environ, "OTTO_DOCS", default=not PRODUCTION)  # /docs, /redoc and /openapi.json
+TRUST_PROXY = flag(os.environ, "OTTO_TRUST_PROXY")  # trust CF-Connecting-IP as the client's IP
+
 AUTH_SECRET = os.environ.get("AUTH_SECRET")  # signs access tokens and OAuth state; at least 32 characters
 ACCESS_TOKEN_MINUTES = int(os.environ.get("ACCESS_TOKEN_MINUTES", "15"))
 REFRESH_TOKEN_DAYS = int(os.environ.get("REFRESH_TOKEN_DAYS", "30"))
 # a token rotated this recently may come back once more (a lost response, two tabs): not theft
 REFRESH_REUSE_GRACE_SECONDS = int(os.environ.get("REFRESH_REUSE_GRACE_SECONDS", "20"))
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173").rstrip("/")
-COOKIE_SECURE = FRONTEND_URL.startswith("https://")
+COOKIE_SECURE = PRODUCTION or FRONTEND_URL.startswith("https://")
+# email through Resend: password resets, and "bring it back up" requests to OTTO_NOTIFY_TO.
+# Without RESEND_API_KEY, development prints emails and production sends none (shared/email.py)
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip() or None
+EMAIL_FROM = os.environ.get("EMAIL_FROM", "").strip() or "Otto <noreply@taufi.dev>"
+OTTO_NOTIFY_TO = os.environ.get("OTTO_NOTIFY_TO", "").strip() or None
 DAILY_TOKEN_LIMIT = int(os.environ.get("DAILY_TOKEN_LIMIT", "300000"))  # a new user's limit
+
+# who may make a new account. open: anyone; allowlist: GitHub logins in OTTO_ALLOWED_GITHUB,
+# emails in OTTO_ALLOWED_EMAILS and approved access requests; closed: no one. Existing users
+# always keep access
+SIGNUP_MODES = ("open", "allowlist", "closed")
+SIGNUP_MODE = os.environ.get("OTTO_SIGNUP_MODE", "allowlist" if PRODUCTION else "open").strip().lower()
+if SIGNUP_MODE not in SIGNUP_MODES:
+    raise ValueError(f"OTTO_SIGNUP_MODE must be one of {', '.join(SIGNUP_MODES)}; got {SIGNUP_MODE!r}")
+ALLOWED_GITHUB = {v.lower().removeprefix("@") for v in csv(os.environ, "OTTO_ALLOWED_GITHUB")}
+ALLOWED_EMAILS = {v.lower() for v in csv(os.environ, "OTTO_ALLOWED_EMAILS")}
+ACCEPTING = flag(os.environ, "OTTO_ACCEPTING", default=True)  # false: "paused", no new accounts at all
 
 
 def model_prices(env) -> dict[str, dict[str, float]]:
@@ -170,3 +231,5 @@ GITHUB_APP_KEY_PATH = os.environ.get("GITHUB_APP_KEY_PATH", "")
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID")          # the App's user OAuth: sign-in, installs
 GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET")
 GITHUB_APP_SLUG = os.environ.get("GITHUB_APP_SLUG")            # github.com/apps/<slug>
+# the gateway's /auth/github/callback as GitHub reaches it; sent as redirect_uri when set
+GITHUB_CALLBACK_URL = os.environ.get("OTTO_GITHUB_CALLBACK_URL", "").strip()

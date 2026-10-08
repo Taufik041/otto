@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import { useModels } from '@/api/queries'
 import { ownerOf, shortName } from '@/utils/mention'
 import { Glyph, IC } from './icons'
 import { Markdown } from './Markdown'
@@ -71,8 +72,8 @@ export function WorkBlock({
   const steps = `${n} ${n === 1 ? 'step' : 'steps'}`
 
   const head = {
-    setup: { color: 'var(--warn)', icon: IC.spin, spin: true },
-    live: { color: 'var(--warn)', icon: IC.spin, spin: true },
+    setup: { color: 'var(--accent)', icon: IC.spin, spin: true },
+    live: { color: 'var(--accent)', icon: IC.spin, spin: true },
     done: { color: 'var(--ok)', icon: IC.checkCircle, spin: false },
     failed: { color: 'var(--bad)', icon: IC.alert, spin: false },
     stopped: { color: 'var(--idle)', icon: IC.x, spin: false },
@@ -136,7 +137,7 @@ export function WorkBlock({
             )}
             {block.status === 'setup' && (
               <div className="flex items-start gap-3 bg-live-bg px-4 py-2 animate-rise">
-                <span className="flex w-5 shrink-0 justify-center pt-0.5 text-warn">
+                <span className="flex w-5 shrink-0 justify-center pt-0.5 text-accent">
                   <Glyph d={IC.spin} className="animate-spin-slow" />
                 </span>
                 <span className="text-[14.5px] text-muted">Setting up workspace…</span>
@@ -177,8 +178,12 @@ function StepRow({ step, live, selected, onOpen }: { step: Step; live: boolean; 
   const running = step.ok === null && live
   const halted = step.ok === false && step.res?.text === 'Stopped'
   const failedModel = step.modelFailed === true
+  const models = useModels()
+  // a model that declined is named: "Asked GPT-4.1 mini for the next step"
+  const asked = failedModel && step.model ? models.data?.models.find((m) => m.id === step.model)?.label : undefined
+  const verb = asked ? `Asked ${asked} for the next step` : step.verb
   const color = running
-    ? 'var(--warn)'
+    ? 'var(--accent)'
     : halted
       ? 'var(--idle)'
       : step.ok === false
@@ -194,7 +199,7 @@ function StepRow({ step, live, selected, onOpen }: { step: Step; live: boolean; 
       tabIndex={0}
       onClick={() => onOpen(step)}
       onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onOpen(step))}
-      className="flex cursor-pointer items-start gap-3 px-4 py-2 transition-[background] duration-200 animate-rise hover:bg-hover"
+      className="flex cursor-pointer items-start gap-3 px-4 py-2 animate-rise hover:bg-hover"
       style={{ background: running ? 'var(--live-bg)' : failedModel ? 'var(--bad-bg)' : selected ? 'var(--sel)' : undefined }}
     >
       <span className="flex w-5 shrink-0 justify-center pt-0.5" style={{ color }}>
@@ -203,7 +208,7 @@ function StepRow({ step, live, selected, onOpen }: { step: Step; live: boolean; 
       <span className="min-w-0 flex-1">
         <span className="flex flex-wrap items-baseline gap-x-2.5">
           <span className="min-w-0 text-[14.5px] [overflow-wrap:anywhere]">
-            {running ? step.now : step.verb}
+            {running ? step.now : verb}
             {step.code && (
               <>
                 {' '}
@@ -216,7 +221,7 @@ function StepRow({ step, live, selected, onOpen }: { step: Step; live: boolean; 
             {!running && step.add !== null && <span className="font-mono text-[13px] text-ok">+{step.add}</span>}
             {!running && step.del ? <span className="font-mono text-[13px] text-bad"> −{step.del}</span> : null}
             {!running && step.res && (
-              <span style={{ color: `var(--${step.res.tone})`, fontWeight: step.res.strong ? 600 : 400 }}>{step.res.text}</span>
+              <span style={{ color: `var(--${step.res.tone})`, fontWeight: step.res.strong ? 500 : 400 }}>{step.res.text}</span>
             )}
           </span>
         </span>

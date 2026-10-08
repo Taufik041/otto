@@ -37,7 +37,7 @@ export function Markdown({ text, className = 'text-base leading-[1.65]' }: { tex
           case 'p':
             return <p key={i} className="mb-0 mt-3 whitespace-pre-wrap">{inline(b.c)}</p>
           case 'h':
-            return <p key={i} className="mb-0 mt-4 font-semibold">{inline(b.c)}</p>
+            return <p key={i} className="mb-0 mt-4 font-medium">{inline(b.c)}</p>
           case 'ul':
           case 'ol': {
             const List = b.t

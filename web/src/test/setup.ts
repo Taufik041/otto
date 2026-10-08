@@ -6,7 +6,7 @@ afterEach(() => server.resetHandlers())
 afterAll(() => server.close())
 
 // jsdom has no matchMedia; the theme code asks for prefers-color-scheme
-if (!window.matchMedia) {
+if (typeof window !== 'undefined' && !window.matchMedia) { // (tests in the node environment have no window)
   window.matchMedia = (query: string) =>
     ({
       matches: false,

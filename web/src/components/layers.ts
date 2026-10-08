@@ -9,3 +9,6 @@ export const LAYER = {
   menu: 90, // dropdown menus (profile, chat rows, the chat's "⋯")
   dialog: 100, // dialogs and their backdrop
 } as const
+
+/** The chat's top bar and the workspace panel's header: one height, so their hairlines line up. */
+export const HEADER_HEIGHT = 56

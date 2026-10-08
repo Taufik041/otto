@@ -18,13 +18,14 @@ from argon2.exceptions import InvalidHashError, VerificationError
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select, update
 
-from gateway import tokens
+from gateway import limits, tokens
+from gateway.errors import Refused
 from gateway.tokens import check_secret
-from shared import config
+from shared import access, config, email
 from shared.db import get_db
 from shared.models import PasswordReset, User, as_utc, utcnow
 
@@ -182,8 +183,20 @@ def user_by_email(email) -> User | None:
         return s.exec(select(User).where(User.email == email.strip().lower())).first()
 
 
-@router.post("/auth/signup", status_code=201)
+def refusal(code) -> Refused:
+    """The refusal for a signup that signup_refusal turned down."""
+    return (Refused(503, "paused", access.PAUSED) if code == "paused"
+            else Refused(403, "invite_only", access.INVITE_ONLY))
+
+
+@router.post("/auth/signup", status_code=201, dependencies=[Depends(limits.limit("signup"))])
 def signup(body: Signup, request: Request, response: Response):
+    """A new email account, if signups are open to this email (OTTO_SIGNUP_MODE): otherwise 403
+    {"error": "invite_only"}, or 503 {"error": "paused"} while OTTO_ACCEPTING is false."""
+    if user_by_email(body.email) is not None:
+        raise HTTPException(409, "an account with this email already exists")
+    if code := access.signup_refusal(email=body.email):
+        raise refusal(code)
     user = User(id=uuid.uuid4().hex, email=body.email, name=body.name, password_hash=hash_password(body.password))
     try:
         with get_db() as s:
@@ -203,15 +216,56 @@ def _check_password(email, password) -> User:
     return user
 
 
-@router.post("/auth/login")
+@router.post("/auth/login", dependencies=[Depends(limits.limit("login"))])
 def login(body: Login, request: Request, response: Response):
     return signed_in(request, response, _check_password(body.email, body.password))
 
 
-@router.post("/auth/token")
+@router.post("/auth/token", dependencies=[Depends(limits.limit("login"))])
 def token(request: Request, response: Response, form: OAuth2PasswordRequestForm = Depends()):
     """Login as an OAuth2 password form (username = the email): what /docs' Authorize sends."""
     return signed_in(request, response, _check_password(form.username, form.password))
+
+
+class EmailStatus(BaseModel):
+    email: str = Field(max_length=320)
+
+    _email = field_validator("email")(normal_email)
+
+
+@router.post("/auth/email-status", dependencies=[Depends(limits.limit("email_status"))])
+def email_status(body: EmailStatus):
+    """Whether this email has an account, for email-first sign-in: a password next, or a name and
+    a password for a new account. Rate-limited per IP."""
+    return {"exists": user_by_email(body.email) is not None}
+
+
+class AccessRequestIn(BaseModel):
+    """The invite-only form: a GitHub username or an email (the form's one field may hold either),
+    and an optional note."""
+    github_login: str | None = Field(default=None, max_length=320)
+    email: str | None = Field(default=None, max_length=320)
+    note: str = Field(default="", max_length=access.MAX_NOTE)
+
+    @model_validator(mode="after")
+    def someone(self):
+        login = (self.github_login or "").strip()
+        if "@" in login.lstrip("@"):  # an email typed into the GitHub-or-email field
+            self.email, login = self.email or login, ""
+        self.github_login = access.normal_login(login) if login else None
+        self.email = normal_email(self.email) if self.email and self.email.strip() else None
+        if not (self.github_login or self.email):
+            raise ValueError("give a GitHub username or an email")
+        self.note = self.note.strip()
+        return self
+
+
+@router.post("/access-requests", status_code=201, dependencies=[Depends(limits.limit("access_request"))])
+def request_access(body: AccessRequestIn):
+    """Ask for an account while signups are invite-only. Asking again for the same GitHub login or
+    email updates the request; the answer is the same either way."""
+    access.request_access(github_login=body.github_login, email=body.email, note=body.note)
+    return {"ok": True}
 
 
 def _refused(status, detail) -> JSONResponse:
@@ -339,15 +393,22 @@ token_hash = tokens.sha256
 
 @router.post("/auth/forgot")
 def forgot(body: Forgot):
-    """Always 200, so this can't be used to find out who has an account."""
+    """Email a reset link (it lasts RESET_TTL, one hour). Always the same 200, whether or not the
+    email has an account, and even if sending failed, so this can't be used to find out who has
+    one. 503 {"error": "email_unavailable"} when email isn't set up in production (the app then
+    hides "Forgot password?": GET /health's password_reset)."""
+    if not email.available():
+        raise Refused(503, "email_unavailable", "Password reset isn't available right now.")
     user = user_by_email(body.email)
     if user is not None:
         token = secrets.token_urlsafe(32)
         with get_db() as s:
             s.add(PasswordReset(token_hash=token_hash(token), user_id=user.id, expires_at=utcnow() + RESET_TTL))
-        # no email yet: the link goes to the server console
-        print(f"[auth] password reset for {user.email}: {config.FRONTEND_URL}/reset-password?token={token}",
-              flush=True)
+        link = f"{config.FRONTEND_URL}/reset-password?token={token}"
+        try:
+            email.send([user.email], *email.reset_email(link))
+        except email.EmailError as e:
+            print(f"[auth] the reset email to user {user.id} didn't go: {e}", flush=True)
     return {"ok": True}
 
 

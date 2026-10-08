@@ -11,6 +11,7 @@ enqueues on otto.sessions.
 import asyncio, json, re, uuid
 from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
+from importlib import metadata
 
 import anyio
 from aio_pika import DeliveryMode, Message, connect_robust
@@ -22,11 +23,12 @@ from kubernetes.client.exceptions import ApiException
 from pydantic import BaseModel, Field, field_validator
 
 from brain.bus import bus_call, start_consumer, stop_consumer
-from gateway import auth, github_app, live, tokens
+from gateway import auth, errors, github_app, limits, live, tokens, workers
 from orchestrator import sandbox
-from shared import config, health, usage
+from shared import config, email, health, usage
 from shared.accounts import delete_account
-from shared.bus import SESSIONS_QUEUE, actions_queue, chat_job, results_queue, resume_job, retry_job, start_job
+from shared.bus import (SESSIONS_QUEUE, actions_queue, chat_job, connect_with_backoff, results_queue, resume_job,
+                        retry_job, start_job)
 from shared.db import get_engine, init_db
 from shared.events import append_event, load_events, redact
 from shared.models import User, as_utc, utcnow
@@ -44,9 +46,36 @@ NEW_REPO = "Start a new chat for a different repo."
 UNAVAILABLE = "Unavailable right now. Try again later."  # the picker's hint for a model without a key
 
 
+def check_production():
+    """Refuse to start in production with settings that only make sense locally."""
+    if not config.PRODUCTION:
+        return
+    if not config.FRONTEND_URL.startswith("https://"):
+        raise RuntimeError(f"OTTO_ENV=production needs an https:// FRONTEND_URL; got {config.FRONTEND_URL!r}")
+    if bad := [o for o in config.CORS_ORIGINS if not o.startswith("https://")]:
+        raise RuntimeError(f"OTTO_ENV=production needs https:// CORS_ORIGINS; got {', '.join(bad)}")
+
+
+def docs_urls() -> dict:
+    """/docs, /redoc and /openapi.json while OTTO_DOCS is on (by default, everywhere but production)."""
+    if config.DOCS:
+        return {"docs_url": "/docs", "redoc_url": "/redoc", "openapi_url": "/openapi.json"}
+    return {"docs_url": None, "redoc_url": None, "openapi_url": None}
+
+
+def version() -> str:
+    if config.VERSION:
+        return config.VERSION
+    try:
+        return metadata.version("otto")
+    except metadata.PackageNotFoundError:
+        return "dev"
+
+
 @asynccontextmanager
 async def lifespan(app):
     auth.check_secret()
+    check_production()
     init_db()
     health.clear()  # what a worker found unusable counts until the gateway restarts
     if pruned := tokens.prune_refresh():
@@ -54,7 +83,7 @@ async def lifespan(app):
     swept = sweep_stale_sessions()
     if swept:
         print(f"[gateway] marked {len(swept)} stale session(s) interrupted: {', '.join(swept)}", flush=True)
-    conn = await connect_robust(config.BUS_URL)
+    conn = await connect_with_backoff(connect_robust, config.BUS_URL, "gateway")
     listener = None
     try:
         engine = get_engine()
@@ -73,9 +102,10 @@ async def lifespan(app):
         await conn.close()
 
 
-app = FastAPI(title="Otto", lifespan=lifespan)
+app = FastAPI(title="Otto", lifespan=lifespan, **docs_urls())
 app.include_router(auth.router)
 app.include_router(github_app.router)
+app.add_exception_handler(errors.Refused, errors.handle)
 
 
 class DailyLimit(Exception):
@@ -211,6 +241,8 @@ async def _queues(ch, sid):
 
 
 async def _status(sid) -> str:
+    if not await workers.online():  # don't wait on a cluster that doesn't answer
+        return "unknown"
     try:
         return await asyncio.to_thread(sandbox.sandbox_status, sid)
     except Exception as e:  # k8s unreachable: say so rather than fail the request
@@ -262,8 +294,52 @@ def _room_for_an_agent(user):
 
 
 async def _create_sandbox(sid, repo):
-    await asyncio.to_thread(sandbox.create_sandbox, sid, f"https://github.com/{repo['full_name']}",
-                            installation_id=repo["installation_id"])
+    try:
+        await asyncio.to_thread(sandbox.create_sandbox, sid, f"https://github.com/{repo['full_name']}",
+                                installation_id=repo["installation_id"])
+    except Exception:
+        workers.forget()  # the cluster may have gone away since the last check: look again next time
+        raise
+
+
+@app.get("/health")
+async def health_status(request: Request, response: Response):
+    """No sign-in needed: the landing page's status pill and the app's offline states. status:
+    "paused" while OTTO_ACCEPTING is false (no new accounts), else "up"; workers: whether the
+    sandbox cluster is reachable (checked at most every WORKERS_CHECK_SECONDS)."""
+    origin = request.headers.get("origin")
+    if origin and origin in config.LANDING_ORIGINS:  # the app's origins get CORS from the middleware
+        response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Cache-Control"] = "no-store"
+    return {"status": "up" if config.ACCEPTING else "paused",
+            "workers": "online" if await workers.online() else "offline", "version": version(),
+            # whether "Forgot password?" can email a link (a key, or development)
+            "password_reset": email.available()}
+
+
+class WakeRequest(BaseModel):
+    message: str = Field(default="", max_length=1000)
+
+
+@app.post("/wake-requests", status_code=202)
+def wake_request(body: WakeRequest, request: Request, user: User = Depends(auth.current_user)):
+    """Ask Taufik to bring the workers back up: one email to OTTO_NOTIFY_TO (never to the user),
+    with the user's email as reply_to. Once per user per hour (429 rate_limited)."""
+    if not email.available():
+        raise errors.Refused(503, "email_unavailable", "Otto can't send that right now. Email hello@taufi.dev.")
+    limits.hit("wake", f"user:{user.id}")
+    who = user.email or f"@{user.github_login} (GitHub, no email)"
+    reply_to = email.single_address(user.email) if user.email else None
+    to = config.OTTO_NOTIFY_TO or "(OTTO_NOTIFY_TO unset)"
+    try:
+        email.send([to], *email.wake_email(f"{user.name} <{who}>" if user.email else f"{user.name}, {who}",
+                                           body.message.strip(), "the app (workers offline)",
+                                           request.headers.get("user-agent", "")[:300]), reply_to=reply_to)
+    except email.EmailError as e:
+        print(f"[wake] the email for user {user.id} didn't go: {e}", flush=True)
+        limits.refund("wake", f"user:{user.id}")  # it didn't go: they may try again
+        raise errors.Refused(502, "email_failed", "That didn't send. Try again in a minute.") from None
+    return {"ok": True}
 
 
 @app.get("/models")
@@ -288,6 +364,8 @@ async def create(body: NewSession, user: User = Depends(auth.current_user)):
     _within_limit(user)
     model = _model_for(user, body.model)
     _usable(model)
+    if body.repo:
+        await workers.require()  # 503 workers_offline before anything is created
     repo = await _repo_for(user, body.repo) if body.repo else None
     async with app.state.create_lock:  # count + insert as one step within this gateway
         if repo:
@@ -445,6 +523,8 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_
     _within_limit(user)
     if body.repo and row.repo and body.repo.lower() != row.repo.lower():
         raise HTTPException(409, NEW_REPO)
+    if row.repo or body.repo:
+        await workers.require()  # 503 workers_offline, with nothing stored
     repo = await _repo_for(user, row.repo or body.repo) if row.repo or body.repo else None
     async with app.state.create_lock:  # count + claim as one step within this gateway
         if repo and row.status in IDLE:
@@ -550,6 +630,8 @@ async def retry(sid: str, body: Retry | None = None, user: User = Depends(auth.c
     model = body.model if body else None
     _usable(model) if model is not None else _healthy(row.model)  # the model the retry would run on
     _within_limit(user)
+    if row.repo:
+        await workers.require()
     repo = await _repo_for(user, row.repo) if row.repo else None
     async with app.state.create_lock:  # count + claim as one step within this gateway
         if row.status not in RETRYABLE:
@@ -666,7 +748,11 @@ async def usage_summary(user: User = Depends(auth.current_user)):
 
 
 async def _destroy_sandbox(ch, sid):
-    """Shut the session's runner down (best effort), delete its Job and its queues."""
+    """Shut the session's runner down (best effort), delete its Job and its queues. With the
+    workers offline only the queues go: a sandbox on an unreachable cluster ends by itself
+    (SANDBOX_IDLE_MINUTES, SANDBOX_MAX_AGE_SECONDS)."""
+    if not await workers.online():
+        return await _delete_queues(ch, sid)
     if await _status(sid) == "running":
         try:
             await _control(ch, sid, "control.shutdown")  # best effort
@@ -681,5 +767,9 @@ async def _destroy_sandbox(ch, sid):
     except Exception as e:
         append_event(sid, "error", {"stage": "destroy_sandbox", "message": redact(str(e))[:2000]})
         raise HTTPException(502, f"destroy_sandbox failed: {redact(str(e))[:500]}")
+    await _delete_queues(ch, sid)
+
+
+async def _delete_queues(ch, sid):
     for q in await _queues(ch, sid):
         await q.delete(if_unused=False, if_empty=False)

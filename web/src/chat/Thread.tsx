@@ -4,6 +4,7 @@ import { api } from '@/api'
 import { messageOf } from '@/api/errors'
 import { useModels } from '@/api/queries'
 import { Mark } from '@/components/brand'
+import { Button } from '@/components/ui/button'
 import { ModelMenu } from '@/composer/ModelMenu'
 import { SendProblemCard } from '@/composer/SendProblemCard'
 import { shortName } from '@/utils/mention'
@@ -77,37 +78,36 @@ function ErrorCard({
   const [picking, setPicking] = useState(false)
   const chosen = picked ?? model
   const retry = useMutation({ mutationFn: () => api.retry(sessionId, chosen && chosen !== model ? chosen : undefined) })
-  const label = models.data?.models.find((m) => m.id === chosen)?.label ?? chosen
+  const labelOf = (id: string | null) => models.data?.models.find((m) => m.id === id)?.label ?? id
+  const label = labelOf(chosen)
   return (
     <div role="alert" className="rounded-[18px] border border-solid border-line bg-card px-5 py-[18px]">
       <div className="flex items-start gap-3">
         <Glyph d={IC.alert} size={18} width={1.8} className="mt-0.5 shrink-0 text-bad" />
         <div className="min-w-0 flex-1">
-          <div className="text-[15px] font-semibold">{title}</div>
-          <div className="mt-[3px] text-[15px] leading-normal text-muted text-pretty">{message}</div>
-          <div className="mt-3.5 flex flex-wrap items-center gap-2.5">
+          <div className="text-[15.5px] font-medium">{title}</div>
+          <div className="mt-[3px] text-[15px] leading-normal text-muted text-pretty">
+            {message.replace('{model}', labelOf(model) ?? 'This model')}
+          </div>
+          <div className="mt-3.5 flex flex-wrap items-center gap-2">
+            <Button size="none" disabled={retry.isPending} onClick={() => retry.mutate()} className="h-[34px] gap-[7px] px-4 text-[14.5px]">
+              <Glyph d={IC.retry} size={14} width={2} />
+              Retry
+            </Button>
             {switchModel && (
-              <button
-                type="button"
+              <Button
+                variant="outline"
+                size="none"
                 aria-haspopup="listbox"
                 aria-expanded={picking}
                 disabled={!models.data}
                 onClick={() => setPicking(!picking)}
-                className="inline-flex h-9 items-center gap-1.5 rounded-[980px] border border-solid border-line bg-transparent px-3.5 text-[14px] text-text hover:bg-hover"
+                className="h-[34px] gap-1.5 pl-3.5 pr-3 text-[14px]"
               >
                 {label}
                 <Glyph d={IC.chevDown} size={13} width={2} />
-              </button>
+              </Button>
             )}
-            <button
-              type="button"
-              disabled={retry.isPending}
-              onClick={() => retry.mutate()}
-              className="inline-flex h-9 items-center gap-[7px] rounded-[980px] border-0 bg-accent px-4 text-[14.5px] text-white hover:bg-accent-h disabled:opacity-60"
-            >
-              <Glyph d={IC.retry} size={14} width={2} />
-              Retry
-            </button>
           </div>
           {switchModel && picking && models.data && (
             <div className="mt-3 rounded-[14px] border border-solid border-line p-1.5 animate-pop">

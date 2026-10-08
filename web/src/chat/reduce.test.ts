@@ -5,16 +5,29 @@ const v = (events: SessionEvent[]) => view(reduce(emptyState(), events))
 const kinds = (items: Item[]) => items.map((i) => i.kind)
 const work = (items: Item[]) => items.filter((i) => i.kind === 'work').map((i) => (i.kind === 'work' ? i.block : null)!)
 const steps = (items: Item[], n = 0) => work(items)[n]!.rows.filter((r): r is Step => 'icon' in r)
+const SETUP_COPY = "The workspace didn't start, so nothing ran and nothing changed. Retry to start again."
 
 describe('a run on a repo, start to PR', () => {
-  it('shows the message, the intro, the block, the PR card and the reply, in order', () => {
+  it('shows the message, the intro, the block, the reply and the PR card, in order', () => {
     const view_ = v(mainRun().events)
-    expect(kinds(view_.items)).toEqual(['user', 'prose', 'work', 'pr', 'prose'])
+    expect(kinds(view_.items)).toEqual(['user', 'prose', 'work', 'prose', 'pr'])
     const [user, intro] = view_.items
     expect(user).toMatchObject({ kind: 'user', text: 'two tests are failing, find out why and fix the source, not the tests', repo: 'Taufik041/otto_test' })
     expect(intro).toMatchObject({ kind: 'prose', text: "On it. I'll reproduce the failures first.", avatar: true })
     expect(view_.status).toBe('done')
     expect(view_.live).toBe(false)
+  })
+
+  it('the mark sits on the turn\'s first item, and again on the reply after the block', () => {
+    const items = v(mainRun().events).items
+    expect(items.map((i) => ('avatar' in i ? i.avatar : null))).toEqual([null, true, false, true, null])
+  })
+
+  it('a repo turn that ran nothing (a question about the change) is just the reply, no empty block', () => {
+    const l = mainRun().status('provisioning').status('running')
+      .msg('user', 'explain the fix in one sentence').msg('assistant', 'Ten units should qualify.').status('done')
+    expect(kinds(v(l.events).items).slice(-2)).toEqual(['user', 'prose'])
+    expect(v(l.events).items.at(-1)).toMatchObject({ avatar: true })
   })
 
   it('turns actions into the design steps, merging the commit with its push', () => {
@@ -129,8 +142,8 @@ describe('endings', () => {
       modelFailed: true, verb: 'Asked the model for the next step', res: { text: 'No response' }, sub: '6 tries',
     })
     expect(view_.items[2]).toMatchObject({
-      title: "Otto couldn't finish.",
-      message: "The model didn't respond after 6 tries. Nothing was committed. Retry to continue from the last step.",
+      title: 'Something went wrong.',
+      message: 'Otto stopped after 1 step and nothing was committed. Retry to continue from the last step.',
     })
   })
 
@@ -139,7 +152,7 @@ describe('endings', () => {
       .add('error', { stage: 'create_sandbox', message: 'ApiException: k8s said 500' })
       .status('failed')
     const err = v(l.events).items.find((i) => i.kind === 'error')
-    expect(err).toMatchObject({ title: "Otto couldn't set up the workspace.", message: 'Retry to try again.' })
+    expect(err).toMatchObject({ title: "Otto couldn't set up the workspace.", message: SETUP_COPY })
     expect(JSON.stringify(v(l.events))).not.toContain('k8s')
   })
 
@@ -201,7 +214,7 @@ describe('retry and follow-ups', () => {
       .msg('assistant', 'Added a test.').status('done')
     view_ = v(l.events)
     expect(view_.awaitingUser).toBe(false)
-    expect(kinds(view_.items)).toEqual(['user', 'prose', 'work', 'pr', 'prose', 'user', 'work', 'pr', 'prose'])
+    expect(kinds(view_.items)).toEqual(['user', 'prose', 'work', 'prose', 'pr', 'user', 'work', 'prose', 'pr'])
     expect(view_.items[5]).toMatchObject({ text: 'also add a test for exactly 11 units' })
     const second = steps(view_.items, 1)
     expect(second.map((s) => [s.verb, s.code])).toEqual([
@@ -209,7 +222,7 @@ describe('retry and follow-ups', () => {
       ['Ran', 'python -m pytest -q'],
       ['Pushed to pull request', '#3'],
     ])
-    expect(view_.items[7]).toMatchObject({
+    expect(view_.items[8]).toMatchObject({
       pr: { updated: true, number: 3, title: 'Fix bulk discount threshold', additions: 4, deletions: 1, files: 2 },
     })
     expect(view_.files.map((f) => f.path)).toContain('tests/test_pricing.py')
@@ -297,10 +310,13 @@ describe('helpers', () => {
   })
 
   it('errorCopy stays plain', () => {
-    expect(errorCopy({ stage: 'llm', step: null, message: 'boom' }, 'failed', true)).toEqual({
-      title: "Otto couldn't finish.",
-      message: "The model didn't respond. Retry to continue from the last step.",
+    expect(errorCopy({ stage: 'llm', step: null, message: 'boom' }, 'failed', true, 3)).toEqual({
+      title: 'Something went wrong.',
+      message: 'Otto stopped after 3 steps. Retry to continue from the last step.',
       switchModel: false,
+    })
+    expect(errorCopy(null, 'failed', false, 0)).toMatchObject({
+      message: 'Nothing was committed. Retry to continue from the last step.',
     })
   })
 })
@@ -323,17 +339,17 @@ describe('the error card names what failed', () => {
     ['sandbox', "Otto couldn't set up the workspace."],
     ['enqueue', "Otto couldn't set up the workspace."],
   ])('setup stage %s', (stage, title) => {
-    expect(failedWith({ stage, message: 'ApiException: k8s 500' })).toMatchObject({ title, message: 'Retry to try again.' })
+    expect(failedWith({ stage, message: 'ApiException: k8s 500' })).toMatchObject({ title, message: SETUP_COPY })
   })
 
   it.each([
-    ['git.commit', "Otto couldn't commit the changes."],
-    ['git.push', "Otto couldn't push to GitHub."],
-    ['git.open_pr', "Otto couldn't open the pull request."],
-  ])('finish step %s', (step, title) => {
+    ['git.commit', "Otto couldn't commit the changes.", 'Your changes are safe in the workspace. Retry to commit them.'],
+    ['git.push', "Otto couldn't push to GitHub.", 'GitHub rejected the push. Your commit is safe in the workspace. Retry to push again.'],
+    ['git.open_pr', "Otto couldn't open the pull request.", "GitHub didn't open it. Your changes are safe, so try again."],
+  ])('finish step %s', (step, title, message) => {
     const card = failedWith({ stage: 'finish', step, message: `${step}: rejected by GitHub (token ghs_x)` })
-    expect(card).toMatchObject({ title, message: 'Retry to try again.' })
-    expect(JSON.stringify(card)).not.toMatch(/rejected|ghs_/) // never the raw error
+    expect(card).toMatchObject({ title, message })
+    expect(JSON.stringify(card)).not.toMatch(/rejected by|ghs_/) // never the raw error
   })
 
   it.each([
@@ -343,7 +359,10 @@ describe('the error card names what failed', () => {
     ['no error event at all', null],
   ])('anything else: %s', (_, error) => {
     // this turn edited but never committed, which the card says
-    expect(failedWith(error)).toMatchObject({ title: 'Something went wrong.', message: 'Nothing was committed. Retry to continue from the last step.' })
+    expect(failedWith(error)).toMatchObject({
+      title: 'Something went wrong.',
+      message: 'Otto stopped after 1 step and nothing was committed. Retry to continue from the last step.',
+    })
   })
 
   it('every one offers Retry: the card is the error item, which always renders Retry', () => {
@@ -392,7 +411,19 @@ describe('a model that cannot work', () => {
 
   it('out of credit: switch models and retry', () => {
     expect(modelError('quota')).toMatchObject({
-      title: "This model's provider is out of credit.", message: 'Switch models and retry.', switchModel: true,
+      title: "This model's provider is out of credit.",
+      message: "{model} can't take more requests right now. Pick another model and retry.",
+      switchModel: true,
+    })
+  })
+
+  it('the block ends with a red row naming the model that declined', () => {
+    const l = log().created('t').status('running').act('git.status', {})
+      .add('error', { stage: 'model', reason: 'quota', provider: 'openrouter', model: null, message: 'x' })
+      .status('failed')
+    expect(steps(v(l.events).items).at(-1)).toMatchObject({
+      modelFailed: true, model: 'openrouter:openrouter/free', res: { text: 'Out of credit', tone: 'bad' },
+      sub: 'The provider declined the request',
     })
   })
 
@@ -430,9 +461,9 @@ describe('pull requests: Otto proposes, the user decides', () => {
   }
   const card = (items: Item[]) => items.find((i) => i.kind === 'proposal' || i.kind === 'pr')
 
-  it('a proposal is a "Ready for review" card after the block, before the reply', () => {
+  it('a proposal is a "Ready for review" card after the block and the reply', () => {
     const view_ = v(proposedRun().events)
-    expect(kinds(view_.items)).toEqual(['user', 'work', 'proposal', 'prose'])
+    expect(kinds(view_.items)).toEqual(['user', 'work', 'prose', 'proposal'])
     expect(card(view_.items)).toMatchObject({
       kind: 'proposal', state: 'proposed',
       proposal: { ...PROPOSAL, repo: 'Taufik041/otto_test' },
@@ -442,7 +473,7 @@ describe('pull requests: Otto proposes, the user decides', () => {
   it('proposed → opened: the card becomes the PR card', () => {
     const l = proposedRun().add('pr.opened', { number: 3, html_url: PR_URL })
     const view_ = v(l.events)
-    expect(kinds(view_.items)).toEqual(['user', 'work', 'pr', 'prose'])
+    expect(kinds(view_.items)).toEqual(['user', 'work', 'prose', 'pr'])
     expect(card(view_.items)).toMatchObject({
       kind: 'pr',
       pr: { updated: false, number: 3, url: PR_URL, title: 'Fix failing pricing tests', branch: 'otto/s1', base: 'main',
@@ -464,7 +495,7 @@ describe('pull requests: Otto proposes, the user decides', () => {
       .msg('assistant', 'More.').add('pr.proposed', { ...PROPOSAL, body: 'More.', additions: 5, files: 2 }).status('done')
     const items = v(l.events).items
     expect(items.filter((i) => i.kind === 'proposal')).toHaveLength(1)
-    expect(kinds(items)).toEqual(['user', 'work', 'prose', 'user', 'work', 'proposal', 'prose'])
+    expect(kinds(items)).toEqual(['user', 'work', 'prose', 'user', 'work', 'prose', 'proposal'])
     expect(card(items)).toMatchObject({ state: 'proposed', proposal: { additions: 5, files: 2 } })
   })
 

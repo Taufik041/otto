@@ -37,3 +37,17 @@ export function GitHubIcon({ size = 18, className }: { size?: number; className?
     </svg>
   )
 }
+
+/** The small outlined "Beta" beside the wordmark (the landing nav, the sign-in dialog, the sidebar). */
+export function BetaPill({ className }: { className?: string }) {
+  return (
+    <span
+      className={cn(
+        'inline-flex h-5 shrink-0 items-center rounded-full border border-solid border-line px-[7px] text-[11px] font-medium leading-none tracking-[.02em] text-muted',
+        className,
+      )}
+    >
+      Beta
+    </span>
+  )
+}

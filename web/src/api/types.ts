@@ -1,5 +1,15 @@
 // Shapes of the gateway's JSON (gateway/*.py, http://localhost:8000/openapi.json).
 
+/** GET /health (no sign-in): new accounts accepted ("up") or not ("paused"); whether the
+ *  sandbox cluster answers. Offline, plain chats still work and repo tasks don't. */
+export type Health = {
+  status: 'up' | 'paused'
+  workers: 'online' | 'offline'
+  version: string
+  /** whether "Forgot password?" can email a link (false: production without email set up) */
+  password_reset?: boolean
+}
+
 export type Me = {
   id: string
   email: string | null

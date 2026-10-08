@@ -3,6 +3,7 @@ import { createClient } from './client'
 import type {
   Created,
   GitHubStatus,
+  Health,
   Me,
   Models,
   NewSession,
@@ -32,6 +33,13 @@ export const api = {
     client.signIn(await post<TokenBody>('/auth/signup', { name, email, password }, false))
   },
   forgot: (email: string) => post<{ ok: true }>('/auth/forgot', { email }, false),
+  /** the workers are offline: email Taufik to bring them up (once an hour per user) */
+  wakeRequest: (message = '') => post<{ ok: true }>('/wake-requests', { message }),
+  /** email-first sign-in: whether this email has an account (rate-limited per IP) */
+  emailStatus: (email: string) => post<{ exists: boolean }>('/auth/email-status', { email }, false),
+  /** ask for an account while signups are invite-only; `who` is a GitHub username or an email */
+  requestAccess: (who: string, note: string) =>
+    post<{ ok: true }>('/access-requests', { github_login: who, note }, false),
   async reset(token: string, password: string) {
     client.signIn(await post<TokenBody>('/auth/reset', { token, password }, false))
   },
@@ -47,6 +55,7 @@ export const api = {
   },
   deleteMe: () => client.request<{ ok: true }>('/me', { method: 'DELETE' }),
 
+  health: () => client.request<Health>('/health'),
   models: () => client.request<Models>('/models'),
   repos: () => client.request<Repo[]>('/repos'),
   github: () => client.request<GitHubStatus>('/github'),

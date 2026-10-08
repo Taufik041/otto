@@ -6,6 +6,8 @@ export type SendProblem =
   | { kind: 'limit'; limit: DailyLimit }
   | { kind: 'busy'; message: string }
   | { kind: 'model'; message: string }
+  /** 503 workers_offline: a repo task while the sandbox cluster is down */
+  | { kind: 'offline' }
   | { kind: 'other'; message: string; title?: string }
 
 const sentence = (s: string) => {
@@ -16,6 +18,7 @@ const sentence = (s: string) => {
 export function sendProblem(e: unknown): SendProblem {
   if (e instanceof ApiError) {
     if (e.dailyLimit) return { kind: 'limit', limit: e.dailyLimit }
+    if (e.status === 503 && (e.body as { error?: unknown } | null)?.error === 'workers_offline') return { kind: 'offline' }
     // the per-user (MAX_ACTIVE_SESSIONS) and cluster (MAX_ACTIVE_SANDBOXES) caps
     if (e.status === 429) return { kind: 'busy', message: sentence(e.message) }
     // a follow-up while Otto works, or a second repo in one chat

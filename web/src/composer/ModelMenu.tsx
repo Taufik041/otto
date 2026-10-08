@@ -1,10 +1,10 @@
 import { Check } from 'lucide-react'
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { Model } from '@/api/types'
-import { groupModels, providerName } from './models'
+import { groupModels } from './models'
 
 /**
- * The model list, grouped by provider. Each row: the label, a "Default" tag on the server's
+ * The model list: the default first, then "Other models". Each row: the label, a "Default" tag on the server's
  * default model, a one-line description, and a check on the chosen one. An unavailable model is
  * dimmed, can't be picked, and shows its hint.
  */
@@ -25,7 +25,9 @@ export function ModelMenu({
   rowPadding?: string
   autoFocus?: boolean
 }) {
-  const enabled = models.filter((m) => m.available)
+  const groups = groupModels(models, defaultId)
+  // the keyboard moves through the rows in the order they're shown
+  const enabled = groups.flatMap((g) => g.models).filter((m) => m.available)
   const [active, setActive] = useState(() => Math.max(0, enabled.findIndex((m) => m.id === selected)))
   const listRef = useRef<HTMLDivElement>(null)
   const [moved, setMoved] = useState(false) // highlight a row only once the keyboard or mouse moves
@@ -61,11 +63,9 @@ export function ModelMenu({
       onKeyDown={onKey}
       className="outline-none"
     >
-      {groupModels(models).map((g, gi) => (
-        <div role="group" aria-label={providerName(g.provider)} key={g.provider}>
-          <div className="text-xs font-semibold text-muted" style={{ padding: gi ? '12px 12px 4px' : '8px 12px 4px' }}>
-            {providerName(g.provider)}
-          </div>
+      {groups.map((g) => (
+        <div role="group" aria-label={g.label} key={g.label}>
+          {g.heading && <div className="px-3 pb-1 pt-3 text-xs font-medium text-muted">{g.label}</div>}
           {g.models.map((m) => {
             const on = m.id === selected
             const isActive = moved && m.id === activeId

@@ -51,11 +51,11 @@ export function GitHubPage() {
     return (
       <Card className="px-7 py-10 text-center">
         <GitHubIcon size={34} className="mx-auto" />
-        <div className="mt-3.5 text-[19px] font-semibold">GitHub isn't connected.</div>
+        <div className="mt-3.5 text-[19px] font-normal tracking-[-0.03em]">GitHub isn't connected.</div>
         <p className="mx-auto mb-0 mt-1.5 max-w-[360px] text-[15px] text-muted">
           Connect it so Otto can work on your repos. Otto only sees the repos you choose.
         </p>
-        <Button variant="dark" size="none" className="mt-5 h-11 gap-[9px] px-[22px] text-base" disabled={busy} onClick={() => go(() => api.githubUrl('link'))}>
+        <Button variant="primary" size="none" className="mt-5 h-11 gap-[9px] px-[22px] text-base" disabled={busy} onClick={() => go(() => api.githubUrl('link'))}>
           <GitHubIcon size={17} />
           Connect GitHub
         </Button>
@@ -75,7 +75,7 @@ export function GitHubPage() {
           </span>
         )}
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-base font-semibold">{gh.login ? `@${gh.login}` : 'GitHub'}</span>
+          <span className="block truncate text-base font-medium">{gh.login ? `@${gh.login}` : 'GitHub'}</span>
           <span className="flex items-center gap-1.5 text-[13.5px] text-muted">
             <span className="size-1.5 rounded-full" style={{ background: gh.connected ? 'var(--ok)' : 'var(--idle)' }} />
             {gh.connected ? 'Connected' : 'Linked. Otto isn’t installed on any repositories yet.'}

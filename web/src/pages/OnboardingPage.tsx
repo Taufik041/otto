@@ -57,7 +57,7 @@ export function OnboardingPage() {
           ) : (
             <>
               <Mark size={64} className="mx-auto" />
-              <h1 className="mx-0 mb-0 mt-7 text-[30px] font-semibold leading-[1.1] tracking-[-0.025em] text-balance sm:text-[44px]">
+              <h1 className="mx-0 mb-0 mt-7 text-[30px] font-normal leading-[1.1] tracking-[-0.03em] text-balance sm:text-[44px]">
                 {step === 'link' ? 'Connect GitHub so Otto can work on your repos.' : 'Choose the repos Otto can work on.'}
               </h1>
               <p className="mx-auto mb-0 mt-4 max-w-[420px] text-[17px] leading-normal text-muted">
@@ -65,12 +65,12 @@ export function OnboardingPage() {
               </p>
               <div className="mt-9 flex flex-col items-center gap-4">
                 {step === 'link' ? (
-                  <Button variant="dark" size="xl" className="gap-2.5" disabled={busy} onClick={() => go(() => api.githubUrl('link'))}>
+                  <Button variant="primary" size="xl" className="gap-2.5" disabled={busy} onClick={() => go(() => api.githubUrl('link'))}>
                     <GitHubIcon size={19} />
                     Connect GitHub
                   </Button>
                 ) : (
-                  <Button variant="dark" size="xl" className="gap-2.5" disabled={busy} onClick={() => go(api.installUrl)}>
+                  <Button variant="primary" size="xl" className="gap-2.5" disabled={busy} onClick={() => go(api.installUrl)}>
                     <GitHubIcon size={19} />
                     Install on repositories
                   </Button>
@@ -108,7 +108,7 @@ function Connected({ repos, loading, onStart }: { repos?: Repo[]; loading: boole
       <span className="mx-auto flex size-16 items-center justify-center rounded-full bg-ok-bg text-ok">
         <Check size={30} strokeWidth={2.2} />
       </span>
-      <h1 className="mx-0 mb-0 mt-7 text-[30px] font-semibold leading-[1.1] tracking-[-0.025em] sm:text-[44px]">
+      <h1 className="mx-0 mb-0 mt-7 text-[30px] font-normal leading-[1.1] tracking-[-0.03em] sm:text-[44px]">
         {loading ? 'Connected.' : `Connected. ${n} ${n === 1 ? 'repository' : 'repositories'} available.`}
       </h1>
       {n > 0 && (

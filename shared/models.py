@@ -140,3 +140,21 @@ class ProviderHealth(SQLModel, table=True):
     key: str = Field(primary_key=True)  # a provider ("openrouter") or a catalog model id ("openai:gpt-4.1")
     reason: str  # "quota", "auth" or "model"
     updated_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
+
+
+ACCESS_STATUSES = ("pending", "approved")
+
+
+class AccessRequest(SQLModel, table=True):
+    """Someone asking for an account while signups are invite-only (POST /access-requests). An
+    approved one may sign up with that GitHub login or email."""
+    __tablename__ = "access_requests"
+
+    id: int | None = Field(default=None, primary_key=True)
+    github_login: str | None = Field(default=None, unique=True)  # lower-cased, without the @
+    email: str | None = Field(default=None, unique=True)  # lower-cased
+    note: str = ""
+    status: str = Field(default="pending", sa_column_kwargs={"server_default": "pending"})  # ACCESS_STATUSES
+    created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
+    updated_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))  # asked again
+    approved_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))

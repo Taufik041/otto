@@ -9,6 +9,7 @@ lerna-debug.log*
 
 node_modules
 dist
+dist-landing
 dist-ssr
 *.local
 
@@ -25,3 +26,6 @@ dist-ssr
 
 # Playwright output (npm run screenshots)
 screenshots
+
+# Vercel (the CLI, and the Build Output from scripts/vercel-output.mjs)
+.vercel

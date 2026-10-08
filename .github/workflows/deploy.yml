@@ -1,0 +1,81 @@
+# Deploy to the production server after the backend image is built and pushed on main (or by
+# hand, for any commit whose image exists, e.g. to roll back). The server has no inbound ports:
+# the runner joins the tailnet as an ephemeral tag:ci node (through a Tailscale OAuth client, so
+# no auth key to rotate), SSHes in over Tailscale, and runs
+# deploy/aws/deploy.sh, which pulls ghcr.io/taufik041/otto-backend:<sha> and restarts the stack.
+# Then it checks GET /health through the tunnel. Secrets: docs/deploy.md, "Deploys".
+name: deploy
+
+on:
+  workflow_run:
+    workflows: [backend]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "The commit to deploy (its image ghcr.io/taufik041/otto-backend:<sha> must exist)"
+        required: true
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false # never stop a deploy halfway; the next one waits
+
+jobs:
+  deploy:
+    # after a successful backend run for a push to main (its image job pushed the image)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    env:
+      SHA: ${{ inputs.sha || github.event.workflow_run.head_sha }}
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER || 'deploy' }}
+      HEALTH_URL: ${{ vars.HEALTH_URL || 'https://ottoci-api.taufi.dev/health' }}
+    steps:
+      - name: Check the commit
+        run: |
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "not a full commit sha: $SHA" >&2; exit 1; }
+          echo "deploying $SHA"
+
+      - name: Join the tailnet (an ephemeral node, gone when the job ends)
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          hostname: github-deploy-${{ github.run_id }}
+
+      - name: SSH key and the server's host key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_deploy ~/.ssh/known_hosts
+
+      - name: Deploy
+        run: |
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=30 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "cd /opt/otto && git fetch --quiet origin && git checkout --quiet --detach $SHA && bash deploy/aws/deploy.sh $SHA"
+
+      - name: Check /health through the tunnel
+        run: |
+          want="${SHA:0:12}"
+          for _ in $(seq 20); do
+            body=$(curl -fsS --max-time 10 "$HEALTH_URL" || true)
+            echo "$body"
+            if [[ "$body" == *"\"status\":\"up\""* && "$body" == *"\"version\":\"$want\""* ]]; then
+              echo "live: $want"
+              exit 0
+            fi
+            sleep 6
+          done
+          echo "$HEALTH_URL didn't report version $want" >&2
+          exit 1

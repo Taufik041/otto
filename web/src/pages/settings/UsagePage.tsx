@@ -16,7 +16,7 @@ export function UsagePage() {
     <>
       <Today today={u.today} />
       <Card className="p-[22px]">
-        <div className="text-[17px] font-semibold">This month</div>
+        <div className="text-[17px] font-medium">This month</div>
         <div className="mt-4 grid grid-cols-3 gap-3">
           <Stat value={number(u.month.sessions)} label="sessions" />
           <Stat value={compact(u.month.tokens)} label="tokens" />
@@ -52,10 +52,10 @@ function Today({ today }: { today: Usage['today'] }) {
   return (
     <Card className="px-[22px] pb-5 pt-[22px]">
       <div className="flex items-baseline gap-2.5">
-        <span className="flex-1 text-[17px] font-semibold">Today</span>
+        <span className="flex-1 text-[17px] font-medium">Today</span>
         <span className="text-[13px] text-muted">Resets at midnight UTC</span>
       </div>
-      <div className="mt-3.5 text-[28px] font-semibold tracking-[-0.02em]">
+      <div className="mt-3.5 text-[28px] font-normal tracking-[-0.03em]">
         {number(today.tokens)} <span className="text-[17px] font-normal text-muted">of {number(today.limit)} tokens</span>
       </div>
       <div
@@ -76,7 +76,7 @@ function Today({ today }: { today: Usage['today'] }) {
 function Stat({ value, label }: { value: string; label: string }) {
   return (
     <div>
-      <div className="text-2xl font-semibold tracking-[-0.02em]">{value}</div>
+      <div className="text-2xl font-normal tracking-[-0.03em]">{value}</div>
       <div className="text-[13px] text-muted">{label}</div>
     </div>
   )

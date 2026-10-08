@@ -207,6 +207,8 @@ class FakeOrchestrator:
         self.calls = []
         self.status = {}          # sid -> sandbox_status
         self.fail_create = None   # exception to raise from create_sandbox
+        self.online = True        # whether the cluster is reachable
+        self.reach_checks = 0
 
     def create_sandbox(self, sid, repo_url, installation_id=None, token=None):
         self.calls.append(("create", sid, repo_url, installation_id))
@@ -226,6 +228,10 @@ class FakeOrchestrator:
 
     def sandbox_status(self, sid):
         return self.status.get(sid, "missing")
+
+    def reachable(self):
+        self.reach_checks += 1
+        return self.online
 
 
 class FakeRunners:

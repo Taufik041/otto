@@ -35,18 +35,18 @@ export function HomePage() {
   return (
     <>
       <TopBar bordered={false} newChat />
-      <div className="flex min-h-0 flex-col overflow-y-auto pt-[52px]" style={{ flex: mobile ? '1 1 auto' : '1 1 0' }}>
+      <div className="flex min-h-0 flex-col overflow-y-auto pt-14" style={{ flex: mobile ? '1 1 auto' : '1 1 0' }}>
         {mobile && (
           <div className="flex flex-1 flex-col items-center justify-center px-7 py-6 text-center animate-rise">
             <Mark size={40} className="mb-[18px]" />
-            <h1 className="m-0 text-[28px] font-semibold leading-[1.15] tracking-[-0.022em] text-balance">{greeting}</h1>
+            <h1 className="m-0 text-[28px] font-normal leading-[1.15] tracking-[-0.03em] text-balance">{greeting}</h1>
           </div>
         )}
       </div>
       {!mobile && (
         <div className="flex flex-col items-center px-8 pb-7 text-center animate-rise">
           <Mark size={44} className="mb-5" />
-          <h1 className="m-0 text-[40px] font-semibold leading-[1.1] tracking-[-0.025em] text-balance">{greeting}</h1>
+          <h1 className="m-0 text-[40px] font-normal leading-[1.1] tracking-[-0.03em] text-balance">{greeting}</h1>
         </div>
       )}
       {ghError && (

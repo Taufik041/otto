@@ -7,7 +7,7 @@ export function Card({ className, ...props }: ComponentProps<'div'>) {
 }
 
 export function SectionLabel({ children }: { children: ReactNode }) {
-  return <div className="mx-1 mb-2.5 text-[13px] font-semibold text-muted">{children}</div>
+  return <div className="mx-1 mb-2.5 text-[13px] font-medium text-muted">{children}</div>
 }
 
 export function Row({ children, first = false }: { children: ReactNode; first?: boolean }) {

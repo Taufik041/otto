@@ -162,7 +162,7 @@ function Chat({ id }: { id: string }) {
           </div>
         )}
 
-        <div ref={scroller} onScroll={onScroll} className="flex min-h-0 flex-1 flex-col overflow-y-auto pt-[52px]">
+        <div ref={scroller} onScroll={onScroll} className="flex min-h-0 flex-1 flex-col overflow-y-auto pt-14">
           <div
             className="mx-auto flex w-full flex-col"
             style={{ maxWidth: mobile ? '100%' : 760, padding: mobile ? '20px 16px 12px' : '36px 32px 24px' }}

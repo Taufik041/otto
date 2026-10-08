@@ -4,6 +4,7 @@ import { useMe } from '@/auth/auth'
 import { Avatar } from '@/components/Avatar'
 import { RepoIcon } from '@/components/icons'
 import { useIsMobile } from '@/hooks/useMediaQuery'
+import { LegalLinks } from '../legal/LegalLinks'
 import { AccountPage } from './AccountPage'
 import { AppearancePage } from './AppearancePage'
 import { GitHubPage } from './GitHubPage'
@@ -40,7 +41,7 @@ export function SettingsLayout() {
             <ChevronLeft size={14} strokeWidth={2} />
             Back to chats
           </button>
-          <h1 className="mx-3 mb-4 mt-[18px] text-[28px] font-semibold tracking-[-0.02em]">Settings</h1>
+          <h1 className="mx-3 mb-4 mt-[18px] text-[28px] font-normal tracking-[-0.03em]">Settings</h1>
           {PAGES.map(({ id, label, Icon }) => {
             const on = id === section
             return (
@@ -57,12 +58,13 @@ export function SettingsLayout() {
               </button>
             )
           })}
+          <LegalLinks className="mt-auto px-3" />
         </nav>
       )}
 
       <div className="relative flex min-w-0 flex-1 flex-col">
         {mobile && (
-          <div className="flex h-[52px] shrink-0 items-center gap-1.5 border-0 border-b border-solid border-hair bg-nav px-2 backdrop-blur-[20px] backdrop-saturate-[1.8]">
+          <div className="flex h-14 shrink-0 items-center gap-1.5 border-0 border-b border-solid border-hair bg-nav px-2 backdrop-blur-[20px] backdrop-saturate-[1.8]">
             <button
               type="button"
               onClick={() => navigate(page ? '/settings' : '/')}
@@ -71,7 +73,7 @@ export function SettingsLayout() {
               <ChevronLeft size={18} strokeWidth={2} />
               {page ? 'Settings' : 'Chats'}
             </button>
-            <div className="mr-16 flex-1 text-center text-base font-semibold">{page?.label ?? ''}</div>
+            <div className="mr-16 flex-1 text-center text-base font-medium">{page?.label ?? ''}</div>
           </div>
         )}
         <main className="min-h-0 flex-1 overflow-y-auto">
@@ -81,7 +83,7 @@ export function SettingsLayout() {
               className="flex max-w-[720px] flex-col gap-7 animate-rise"
               style={{ padding: mobile ? '20px 16px 48px' : '56px 64px 80px' }}
             >
-              {!mobile && <h2 className="m-0 text-[32px] font-semibold tracking-[-0.022em]">{page.label}</h2>}
+              {!mobile && <h2 className="m-0 text-[32px] font-normal tracking-[-0.03em]">{page.label}</h2>}
               <page.Page />
             </div>
           ) : (
@@ -100,7 +102,7 @@ function MobileRoot({ onPick }: { onPick: (id: string) => void }) {
       <div className="flex items-center gap-3.5 px-1 pt-1">
         <Avatar name={me.name} email={me.email} url={me.avatar_url} size={52} />
         <span className="min-w-0">
-          <span className="block truncate text-[19px] font-semibold">{me.name}</span>
+          <span className="block truncate text-[19px] font-normal tracking-[-0.03em]">{me.name}</span>
           {me.email && <span className="block truncate text-sm text-muted">{me.email}</span>}
         </span>
       </div>
@@ -119,6 +121,7 @@ function MobileRoot({ onPick }: { onPick: (id: string) => void }) {
           </button>
         ))}
       </div>
+      <LegalLinks className="justify-center" />
     </div>
   )
 }

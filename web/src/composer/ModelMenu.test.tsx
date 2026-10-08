@@ -9,10 +9,13 @@ function setup(selected = 'openrouter:openrouter/free') {
   return { onPick }
 }
 
-it('groups models by provider, with descriptions and the Default tag', () => {
+it('the default model comes first, then "Other models"; descriptions and the Default tag', () => {
   setup()
   const groups = screen.getAllByRole('group')
-  expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['OpenRouter', 'OpenAI'])
+  expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['Default model', 'Other models'])
+  expect(screen.getByText('Other models')).toBeInTheDocument()
+  expect(screen.queryByText('OpenRouter')).not.toBeInTheDocument() // no provider headings
+  expect(within(groups[0]!).getAllByRole('option')).toHaveLength(1)
   const free = screen.getByRole('option', { name: /OpenRouter Free/ })
   expect(within(free).getByText('Default')).toBeInTheDocument()
   expect(within(free).getByText('Free, good for small tasks')).toBeInTheDocument()
@@ -32,6 +35,11 @@ it('an unavailable model is disabled, shows its hint, and cannot be picked', asy
   expect(mini).not.toHaveAttribute('aria-disabled')
   await userEvent.click(mini)
   expect(onPick).toHaveBeenCalledWith('openai:gpt-4.1-mini')
+})
+
+it('the default leads even when the catalog lists it later', () => {
+  render(<ModelMenu models={[models[1]!, models[0]!]} selected={null} defaultId="openrouter:openrouter/free" onPick={() => {}} />)
+  expect(screen.getAllByRole('option').map((o) => o.id)).toEqual(['model-openrouter_openrouter_free', 'model-openai_gpt-4_1-mini'])
 })
 
 it('the keyboard skips unavailable models', async () => {

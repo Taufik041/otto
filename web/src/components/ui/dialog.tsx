@@ -31,7 +31,7 @@ export function DialogContent({
 }
 
 export function DialogTitle({ className, ...props }: ComponentProps<typeof D.Title>) {
-  return <D.Title className={cn('m-0 text-[19px] font-semibold tracking-[-0.01em]', className)} {...props} />
+  return <D.Title className={cn('m-0 text-[19px] font-normal tracking-[-0.03em]', className)} {...props} />
 }
 
 export function DialogDescription({ className, ...props }: ComponentProps<typeof D.Description>) {

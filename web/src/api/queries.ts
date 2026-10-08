@@ -4,6 +4,7 @@ import type { SessionSummary } from './types'
 
 export const keys = {
   me: ['me'] as const,
+  health: ['health'] as const,
   models: ['models'] as const,
   repos: ['repos'] as const,
   github: ['github'] as const,
@@ -13,6 +14,9 @@ export const keys = {
 }
 
 
+/** Whether Otto's workers are up: checked every 30s (the gateway caches its own check as long). */
+export const useHealth = () =>
+  useQuery({ queryKey: keys.health, queryFn: api.health, staleTime: 15_000, refetchInterval: 30_000 })
 export const useModels = () => useQuery({ queryKey: keys.models, queryFn: api.models, staleTime: 5 * 60_000 })
 export const useRepos = () => useQuery({ queryKey: keys.repos, queryFn: api.repos, staleTime: 60_000 })
 export const useGitHub = () => useQuery({ queryKey: keys.github, queryFn: api.github })

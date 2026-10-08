@@ -1,8 +1,9 @@
 # Otto web: progress
 
-Parts 1 and 2 are done, and so are the pull-request approval flow and the unread dots below.
-`npm run build`, `npm test` (144 tests) and backend `pytest -q` (617 passed, 5 skipped) pass. How
-to run it is in `README.md`; the chat's event → UI mapping is there too.
+Parts 1 and 2 are done, and so are the pull-request approval flow and the unread dots below. The
+launch's visual system (v4) is tracked in `docs/launch-progress.md`. `npm run build`, `npm test`
+(163 tests) and backend `pytest -q` (688 passed, 5 skipped) pass. How to run it is in `README.md`;
+the chat's event → UI mapping is there too.
 
 ## Done
 
@@ -22,9 +23,8 @@ to run it is in `README.md`; the chat's event → UI mapping is there too.
   imported `cn` from the wrong path and needed a missing `Button`), so I deleted them. The
   components will be written by hand in shadcn's structure.
 - **Logos:** copied exactly from `docs/design/assets` into `src/assets/logo/`.
-- **`public/favicon.svg`:** the design's favicon plus a `<style>` block. The original sets no
-  colours (classes `i` and `a` with no rules), so on its own it neither switches with the colour
-  scheme nor shows the right colours. The style block makes it light/dark aware.
+- **Favicons:** `public/favicon-{light,dark}.svg`, `-32.png` and `-180.png` from the v4 design.
+  The active theme picks them, including the in-app toggle (`src/theme/theme.ts`).
 
 ## Also done
 
