@@ -80,20 +80,31 @@ First, on your machine:
 
   `otto-deploy.pub` goes to the server; the private `otto-deploy` file becomes the
   `DEPLOY_SSH_KEY` secret.
-- **In Tailscale's admin console**, under **Access controls**, add the tags and the rules (merge
-  them into your policy):
-
+- **In Tailscale's admin console**, under **Access controls**, replace the whole policy with this:
   ```jsonc
-  "tagOwners": { "tag:otto": ["autogroup:admin"], "tag:ci": ["autogroup:admin"], "tag:sandbox": ["autogroup:admin"] },
+{
+  "tagOwners": {
+    "tag:otto":    ["autogroup:admin"],
+    "tag:ci":      ["autogroup:admin"],
+    "tag:sandbox": ["autogroup:admin"]
+  },
   "acls": [
-    // GitHub Actions deploys over ssh; the sandbox node's runners reach RabbitMQ; the gateway
-    // reaches the sandbox node's Kubernetes API
-    { "action": "accept", "src": ["tag:ci"], "dst": ["tag:otto:22"] },
+    // GitHub Actions deploys over ssh
+    { "action": "accept", "src": ["tag:ci"],      "dst": ["tag:otto:22"] },
+    // sandbox runners reach RabbitMQ only
     { "action": "accept", "src": ["tag:sandbox"], "dst": ["tag:otto:5672"] },
-    { "action": "accept", "src": ["tag:otto"], "dst": ["tag:sandbox:6443"] },
-    // you, to everything (keep your existing rules)
-    { "action": "accept", "src": ["autogroup:admin"], "dst": ["*:*"] },
+    // the gateway reaches the sandbox node's Kubernetes API
+    { "action": "accept", "src": ["tag:otto"],    "dst": ["tag:sandbox:6443"] },
+    // you, to everything
+    { "action": "accept", "src": ["autogroup:admin"], "dst": ["*:*"] }
   ],
+  "ssh": [
+    // you can open a shell on the server and the sandbox node through Tailscale
+    { "action": "accept", "src": ["autogroup:admin"], "dst": ["tag:otto", "tag:sandbox"], "users": ["ubuntu", "root"] },
+    // Tailscale's default: your own untagged devices
+    { "action": "check",  "src": ["autogroup:member"], "dst": ["autogroup:self"], "users": ["autogroup:nonroot", "root"] }
+  ]
+}
   ```
 
   `tag:ci` must exist here before the OAuth client below can use it.
