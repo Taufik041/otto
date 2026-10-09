@@ -1,0 +1,48 @@
+# The gateway's access (docs/deploy.md, "RBAC for the gateway"): create, read, list and delete
+# Jobs, and read Pods, in this namespace only. No Secrets, nothing cluster-wide.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otto-gateway
+  namespace: ${SANDBOX_NAMESPACE}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: otto-gateway
+  namespace: ${SANDBOX_NAMESPACE}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"] # only for `python -m orchestrator.cli create`, which waits on the logs
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: otto-gateway
+  namespace: ${SANDBOX_NAMESPACE}
+subjects:
+  - kind: ServiceAccount
+    name: otto-gateway
+    namespace: ${SANDBOX_NAMESPACE}
+roleRef:
+  kind: Role
+  name: otto-gateway
+  apiGroup: rbac.authorization.k8s.io
+---
+# The gateway's long-lived token (scripts/sandbox_kubeconfig.sh builds its kubeconfig). To rotate
+# it, delete this Secret, run setup.sh again, and rebuild the kubeconfig.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: otto-gateway-token
+  namespace: ${SANDBOX_NAMESPACE}
+  annotations:
+    kubernetes.io/service-account.name: otto-gateway
+type: kubernetes.io/service-account-token

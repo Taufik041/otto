@@ -1,0 +1,17 @@
+# The sandbox namespace. Sandboxes run as non-root with no privileges: the cluster enforces it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${SANDBOX_NAMESPACE}
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+# Sandbox Jobs run as the namespace's default service account: no Kubernetes token in the pod
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: default
+  namespace: ${SANDBOX_NAMESPACE}
+automountServiceAccountToken: false

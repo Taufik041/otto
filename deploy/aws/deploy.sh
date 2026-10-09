@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Deploy one commit on the server (run as the deploy user, in the repo): check the commit out,
 # pin its image (ghcr.io/taufik041/otto-backend:<sha>) in .env, so a reboot or a later `up` keeps
-# it, pull, bring the stack up, and wait until the gateway says /health.
+# it, pull, bring the stack up, wait until the gateway says /health, and make sure RabbitMQ's
+# runner user is as .env says (runner_user.sh).
 #
 #   bash deploy/aws/deploy.sh <commit sha>
 #
@@ -42,6 +43,8 @@ PORT=$(grep -oP '^GATEWAY_PORT=\K.+' .env || echo 8000)
 for i in $(seq 40); do
     if body=$(curl -fsS "http://127.0.0.1:$PORT/health" 2>/dev/null); then
         log "healthy after ${i} check(s): $body"
+        # the sandbox runners' RabbitMQ user, as .env's RABBITMQ_RUNNER_PASSWORD says
+        bash runner_user.sh | sed 's/^/[deploy] /'
         "${COMPOSE[@]}" ps --format 'table {{.Service}}\t{{.Image}}\t{{.Status}}'
         docker image prune -f >/dev/null # old images: the disk is small
         exit 0

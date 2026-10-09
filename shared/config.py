@@ -139,7 +139,9 @@ MODEL_WAIT_BUDGET_SECONDS = float(os.environ.get("MODEL_WAIT_BUDGET_SECONDS", "1
 LLM_TIMEOUT = float(os.environ.get("OTTO_LLM_TIMEOUT", "120"))  # seconds per request: long chats are slow
 SANDBOX_MAX_AGE_SECONDS = int(os.environ.get("SANDBOX_MAX_AGE_SECONDS", "3000"))  # < the 1h GitHub token
 SANDBOX_IDLE_MINUTES = float(os.environ.get("SANDBOX_IDLE_MINUTES", "30"))  # runner exits after this long without actions
-SANDBOX_IMAGE = os.environ.get("SANDBOX_IMAGE") or "taufik041/otto-sandbox:dev"
+# production: the image CI pushes on main (.github/workflows/backend.yml); development: kind's local build
+SANDBOX_IMAGE = os.environ.get("SANDBOX_IMAGE") or ("ghcr.io/taufik041/otto-sandbox:main" if PRODUCTION
+                                                   else "taufik041/otto-sandbox:dev")
 # the sandbox cluster: a kubeconfig file and the namespace sandbox Jobs run in. Unset kubeconfig:
 # workers are offline in production; in development the default kubeconfig (kind) is used
 SANDBOX_KUBECONFIG = os.environ.get("OTTO_SANDBOX_KUBECONFIG", "").strip()
