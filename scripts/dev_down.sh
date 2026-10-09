@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit
 pkill -f "uvicorn gateway.app" || true
 pkill -f "brain.worker" || true
 pkill -f "node.*vite" || true

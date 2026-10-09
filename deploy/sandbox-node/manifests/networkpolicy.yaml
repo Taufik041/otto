@@ -1,0 +1,43 @@
+# Every pod in the namespace: nothing may connect in, and it may connect out only to
+#   - DNS (the cluster's CoreDNS)
+#   - the server's RabbitMQ, over Tailscale
+#   - the internet on 80 and 443 (git, package registries), never a private, carrier-grade NAT
+#     (the tailnet) or link-local (cloud metadata) address
+# k3s's built-in policy controller enforces it; scripts/check_isolation.sh shows it does.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: otto-sandbox-isolation
+  namespace: ${SANDBOX_NAMESPACE}
+spec:
+  podSelector: {}
+  # Ingress with no ingress rules: nothing may connect in
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - ipBlock:
+            cidr: ${SERVER_TS_IP}/32
+      ports:
+        - { protocol: TCP, port: 5672 }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+      ports:
+        - { protocol: TCP, port: 80 }
+        - { protocol: TCP, port: 443 }

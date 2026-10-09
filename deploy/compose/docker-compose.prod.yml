@@ -33,6 +33,9 @@ x-backend: &backend
     # the files in ./secrets (read-only): the sandbox cluster's kubeconfig, the GitHub App's key
     OTTO_SANDBOX_KUBECONFIG: /run/otto/sandbox.kubeconfig
     GITHUB_APP_KEY_PATH: /run/otto/github-app.pem
+    # how long "the workers are online" is trusted: with the 5s reach timeout, a sandbox node that
+    # goes down shows as offline within 25s
+    OTTO_WORKERS_CHECK_SECONDS: ${OTTO_WORKERS_CHECK_SECONDS:-20}
   volumes:
     - ./secrets:/run/otto:ro
 

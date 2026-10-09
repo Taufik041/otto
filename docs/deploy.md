@@ -13,6 +13,7 @@ cluster with only the access it needs. For local development, see `docs/dev.md`.
 - **Postgres** and **RabbitMQ**, reachable from the gateway and the workers.
 - **The sandbox cluster**: a Kubernetes cluster (or just a namespace in one) where each agent
   chat gets a Job. The gateway reaches it with a kubeconfig. The runners in it reach RabbitMQ.
+  In production it's the **sandbox node**, one k3s machine on the tailnet ("Sandbox node").
 - **The GitHub App**: sign-in, installs, tokens for the sandboxes, and the pull requests.
 - **Resend**, for email: password-reset links (from the gateway), and "bring it back up"
   requests (from the gateway, and from the landing page's `/api/wake` function). See "Email
@@ -33,7 +34,8 @@ step links to its details below. You need:
 - Vercel
 - the GitHub App
 - a Resend account with `taufi.dev` verified, and its two keys ("Email (Resend)")
-- your sandbox cluster's kubeconfig ("The sandbox cluster")
+- a sandbox node: a second Ubuntu 24.04 machine for the sandboxes ("Sandbox node"), set up during
+  step 3
 
 ### 1. An AWS budget alert
 
@@ -84,9 +86,11 @@ First, on your machine:
   ```jsonc
   "tagOwners": { "tag:otto": ["autogroup:admin"], "tag:ci": ["autogroup:admin"], "tag:sandbox": ["autogroup:admin"] },
   "acls": [
-    // GitHub Actions deploys over ssh; the sandbox cluster's runners reach RabbitMQ
+    // GitHub Actions deploys over ssh; the sandbox node's runners reach RabbitMQ; the gateway
+    // reaches the sandbox node's Kubernetes API
     { "action": "accept", "src": ["tag:ci"], "dst": ["tag:otto:22"] },
     { "action": "accept", "src": ["tag:sandbox"], "dst": ["tag:otto:5672"] },
+    { "action": "accept", "src": ["tag:otto"], "dst": ["tag:sandbox:6443"] },
     // you, to everything (keep your existing rules)
     { "action": "accept", "src": ["autogroup:admin"], "dst": ["*:*"] },
   ],
@@ -111,21 +115,27 @@ Then, on the server:
             bash bootstrap.sh
    ```
 
-   It installs everything, and stops before the stack: `.env` is still empty. It prints the
-   server's Tailscale address and its host key line. Keep both for step 7.
+   It installs everything, joins the tailnet as `tag:otto`, and stops before the stack: `.env`
+   is still empty. It prints the server's Tailscale address and its host key line. Keep both
+   (step 7, and the sandbox node).
 3. Fill in the stack's settings ("One server with compose", `.env.prod.example` explains each):
 
    ```sh
    sudo -u deploy nano /opt/otto/deploy/compose/.env
    ```
 
-   - `RABBITMQ_BIND` is the server's Tailscale address (`tailscale ip -4`).
+   - `RABBITMQ_BIND` is already set: the bootstrap put the server's Tailscale address there.
+   - `RABBITMQ_RUNNER_PASSWORD`: `openssl rand -hex 24`. The sandbox node's runners log in with it.
+   - `OTTO_SANDBOX_NAMESPACE=otto-sandboxes`, `OTTO_RUNNER_AMQP_SECRET=otto-runner-amqp`, and
+     `MAX_ACTIVE_SANDBOXES=1` (a 2 GB sandbox node runs one sandbox at a time).
    - `CLOUDFLARE_TUNNEL_TOKEN` comes from step 4.
    - `OTTO_GITHUB_CALLBACK_URL=https://ottoci-api.taufi.dev/auth/github/callback`
-4. Put the two secret files in `/opt/otto/deploy/compose/secrets/`: `sandbox.kubeconfig` and
+4. Set up the sandbox node ("Sandbox node", "The EC2 test node"). It needs the server's
+   Tailscale address and `RABBITMQ_RUNNER_PASSWORD`, and gives you `sandbox.kubeconfig`.
+5. Put the two secret files in `/opt/otto/deploy/compose/secrets/`: `sandbox.kubeconfig` and
    `github-app.pem`. Paste each with `sudo tee`.
-5. Run the bootstrap again. It fixes the files' owners, starts the stack, and waits for
-   `/health`:
+6. Run the bootstrap again. It fixes the files' owners, starts the stack, waits for `/health`,
+   and creates RabbitMQ's `otto-runner` user:
 
    ```sh
    sudo bash bootstrap.sh
@@ -241,7 +251,8 @@ To roll back, open **Actions** → **deploy** → **Run workflow**, and enter an
 - **Stopping only the stack**, with the server kept up: `sudo systemctl stop otto`, then
   `sudo systemctl start otto`.
 - **Reboots:** unattended upgrades may reboot the server at 04:30 UTC for a security update. The
-  stack comes back the same way.
+  stack comes back the same way. `otto.service` waits up to two minutes for the Tailscale address
+  (RabbitMQ binds to it), and tries again every 30 seconds if it never comes.
 
 ## The web app and the landing page (Vercel)
 
@@ -382,8 +393,13 @@ curl -sI https://otto.taufi.dev/nope | head -1                                  
 - Nothing listens publicly:
   - Postgres has no port.
   - The gateway listens on the server's loopback only (`GATEWAY_PORT`, 8000), for checks.
-  - RabbitMQ listens on `RABBITMQ_BIND` (loopback by default). Set that to the private (VPN)
-    address the sandbox cluster's runners reach it on, and never to a public one.
+  - RabbitMQ listens on `RABBITMQ_BIND` (loopback by default). The bootstrap sets it to the
+    server's Tailscale address, which the sandbox node's runners reach it on. Never set it to a
+    public one.
+  - The runners log in as their own RabbitMQ user, `otto-runner` (`RABBITMQ_RUNNER_PASSWORD`).
+    It may use only the sessions' queues (`otto.<session>.actions` and `.results`), not
+    `otto.sessions` or anything else. `deploy/compose/runner_user.sh` creates it, or updates its
+    password; the bootstrap and every deploy run it.
 
 ### The image
 
@@ -398,6 +414,13 @@ CI (`.github/workflows/backend.yml`) runs `pytest` on every push and pull reques
 builds and pushes `ghcr.io/taufik041/otto-backend:<commit sha>` and `:main`. The compose file
 runs `:main` unless `OTTO_IMAGE` pins a commit's tag. If the package is private, log the server in
 once: `docker login ghcr.io` with a token that can read packages.
+
+The same workflow builds the **sandbox image** (`infra/sandbox.Dockerfile`, target `runner`) and
+pushes `ghcr.io/taufik041/otto-sandbox:<commit sha>` and `:main`. In production, `SANDBOX_IMAGE`
+defaults to `:main`. Make that package **public** once, after the first push: on GitHub, open
+your profile → **Packages** → `otto-sandbox` → **Package settings** → **Change visibility** →
+**Public**. The sandbox node then pulls it with no credentials. (If it stays private, give the
+node's `setup.sh` `GHCR_USER` and `GHCR_TOKEN`.)
 
 ### Setting up the server
 
@@ -483,7 +506,9 @@ The gateway's environment (the workers need `DATABASE_URL`, `BUS_URL`, the provi
 | `OTTO_SANDBOX_KUBECONFIG` | `/etc/otto/sandbox.kubeconfig` | See "The sandbox cluster". |
 | `OTTO_SANDBOX_NAMESPACE` | `otto-sandboxes` | |
 | `OTTO_RUNNER_AMQP_SECRET` | `otto-runner-amqp` | A Secret in that namespace holding the runners' RabbitMQ URL. |
-| `SANDBOX_IMAGE` | `taufik041/otto-sandbox:<tag>` | Built from `infra/sandbox.Dockerfile`. |
+| `SANDBOX_IMAGE` | `ghcr.io/taufik041/otto-sandbox:main` | The default in production; CI builds it from `infra/sandbox.Dockerfile`. A commit's tag pins it. |
+| `MAX_ACTIVE_SANDBOXES` | `1` | At most the sandbox node's `SANDBOX_SLOTS`. |
+| `OTTO_WORKERS_CHECK_SECONDS` | `20` | The compose file's default (the code's is 30): a sandbox node that goes down shows as offline within 25 seconds. |
 
 ### The GitHub App
 
@@ -539,7 +564,8 @@ anyone could then pick their own IP.
     {"status": "up" | "paused", "workers": "online" | "offline", "version": "..."}
 
 `workers` reports whether the sandbox cluster answers. It's checked at most every
-`OTTO_WORKERS_CHECK_SECONDS` (30), and again right after a sandbox couldn't be created. While the
+`OTTO_WORKERS_CHECK_SECONDS` (30; 20 in the compose file), and again right after a sandbox
+couldn't be created. Each check gives up after 5 seconds. While the
 workers are offline, plain chats still work. A new agent chat, a follow-up in a repo chat
 (or one that attaches a repo), and a retry of a repo chat get
 `503 {"error": "workers_offline"}` at once, and nothing is created or stored.
@@ -588,57 +614,34 @@ The gateway is the only part of Otto that touches Kubernetes. It needs to create
 and delete Jobs, and to read and list Pods, in **one namespace**. The brain workers need no
 cluster access.
 
+On the sandbox node, `deploy/sandbox-node/setup.sh` does everything in this section ("Sandbox
+node"). On another cluster, the same files apply.
+
 ### The namespace
 
-    kubectl create namespace otto-sandboxes
-    # sandboxes run as non-root with no privileges; have the cluster enforce it
-    kubectl label namespace otto-sandboxes pod-security.kubernetes.io/enforce=restricted
+`deploy/sandbox-node/manifests/namespace.yaml` makes `otto-sandboxes` with Pod Security
+`restricted` enforced (sandboxes run as non-root with no privileges; the cluster enforces it), and
+turns off the default service account's token.
 
 Each sandbox Job runs the image's `otto` user (uid 1000, `OTTO_SANDBOX_UID`), with
 `runAsNonRoot`, no privilege escalation, every capability dropped, the `RuntimeDefault` seccomp
 profile, and no service-account token. Its CPU, memory and disk requests and limits come from
 `OTTO_SANDBOX_*_REQUEST` / `_LIMIT`. A `ResourceQuota` on the namespace caps the total size of
-all sandboxes (`MAX_ACTIVE_SANDBOXES` caps how many are at work).
+all sandboxes (`MAX_ACTIVE_SANDBOXES` caps how many are at work), and a `LimitRange` refuses a
+container bigger than one sandbox (`manifests/limits.yaml`). A `NetworkPolicy` closes every pod
+to incoming connections and lets it out only to DNS, the server's RabbitMQ and the internet on
+80/443 (`manifests/networkpolicy.yaml`; "Sandbox node", "Isolation").
 
 ### RBAC for the gateway
 
-```yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: otto-gateway
-  namespace: otto-sandboxes
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: otto-gateway
-  namespace: otto-sandboxes
-rules:
-- apiGroups: ["batch"]
-  resources: ["jobs"]
-  verbs: ["create", "get", "list", "delete"]
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get", "list"]
-- apiGroups: [""]
-  resources: ["pods/log"]         # only for `python -m orchestrator.cli create`, which waits on the logs
-  verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: otto-gateway
-  namespace: otto-sandboxes
-subjects:
-- kind: ServiceAccount
-  name: otto-gateway
-  namespace: otto-sandboxes
-roleRef:
-  kind: Role
-  name: otto-gateway
-  apiGroup: rbac.authorization.k8s.io
-```
+`deploy/sandbox-node/manifests/rbac.yaml`: a service account `otto-gateway`, and a Role bound to
+it that may create, get, list and delete Jobs, get and list Pods, and get `pods/log` (only for
+`python -m orchestrator.cli create`, which waits on the logs), in the namespace. On a cluster
+other than the sandbox node:
+
+    for f in namespace rbac; do
+        sed 's/${SANDBOX_NAMESPACE}/otto-sandboxes/g' "deploy/sandbox-node/manifests/$f.yaml" | kubectl apply -f -
+    done
 
 It's a Role, not a ClusterRole: the gateway can't see or touch anything outside the namespace,
 and it can't read Secrets. The runners' Jobs reference the RabbitMQ Secret, and the kubelet
@@ -646,59 +649,285 @@ resolves it, not the gateway.
 
 ### Minting the gateway's kubeconfig
 
-Give the service account a long-lived token Secret, and build a kubeconfig around it:
+`rbac.yaml` also gives the service account a long-lived token (the Secret `otto-gateway-token`).
+`scripts/sandbox_kubeconfig.sh` prints a kubeconfig around it. Before printing, it checks that
+the kubeconfig may create Jobs but may not read Secrets or look outside the namespace:
 
 ```sh
-NS=otto-sandboxes
-kubectl apply -n $NS -f - <<'EOF'
-apiVersion: v1
-kind: Secret
-metadata:
-  name: otto-gateway-token
-  annotations:
-    kubernetes.io/service-account.name: otto-gateway
-type: kubernetes.io/service-account-token
-EOF
-
-SERVER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
-kubectl get secret -n $NS otto-gateway-token -o jsonpath='{.data.ca\.crt}' | base64 -d > ca.crt
-TOKEN=$(kubectl get secret -n $NS otto-gateway-token -o jsonpath='{.data.token}' | base64 -d)
-
-KUBECONFIG=sandbox.kubeconfig kubectl config set-cluster sandbox --server="$SERVER" \
-    --certificate-authority=ca.crt --embed-certs=true
-KUBECONFIG=sandbox.kubeconfig kubectl config set-credentials otto-gateway --token="$TOKEN"
-KUBECONFIG=sandbox.kubeconfig kubectl config set-context sandbox --cluster=sandbox \
-    --user=otto-gateway --namespace=$NS
-KUBECONFIG=sandbox.kubeconfig kubectl config use-context sandbox
-rm ca.crt
-
-# check: allowed, then refused
-KUBECONFIG=sandbox.kubeconfig kubectl auth can-i create jobs -n $NS
-KUBECONFIG=sandbox.kubeconfig kubectl auth can-i get secrets -n $NS
+sudo bash scripts/sandbox_kubeconfig.sh > sandbox.kubeconfig                 # on the sandbox node
+SANDBOX_API_SERVER=https://<api>:6443 bash scripts/sandbox_kubeconfig.sh > sandbox.kubeconfig   # elsewhere
 ```
 
-Copy `sandbox.kubeconfig` to the gateway's host (readable only by the gateway's user), and set
-`OTTO_SANDBOX_KUBECONFIG` to its path and `OTTO_SANDBOX_NAMESPACE=otto-sandboxes`. To rotate the
-token, delete and re-create the `otto-gateway-token` Secret, then rebuild the file.
-(`kubectl create token otto-gateway -n $NS --duration=…` gives an expiring token instead,
-if you'd rather renew it on a schedule.)
+Copy `sandbox.kubeconfig` to the gateway's host, readable only by the gateway's user. With the
+compose file that's `deploy/compose/secrets/sandbox.kubeconfig`, and the compose file sets
+`OTTO_SANDBOX_KUBECONFIG` to it. Elsewhere, set `OTTO_SANDBOX_KUBECONFIG` to its path. Either
+way, set `OTTO_SANDBOX_NAMESPACE=otto-sandboxes`. To rotate the token, delete the
+`otto-gateway-token` Secret, run `setup.sh` again (or re-apply `rbac.yaml`), then rebuild the
+file.
 
 The kubeconfig's server must be reachable from the gateway. Unset, unreadable or unreachable,
 the workers show as offline and the gateway keeps serving plain chats.
 
 ### The runners' RabbitMQ URL
 
-Runners reach RabbitMQ from inside the cluster, often by a different address (and ideally a
-different, narrower RabbitMQ user) than the gateway's `BUS_URL`. Put it in a Secret in the
-sandbox namespace:
+Runners reach RabbitMQ from inside the cluster, by a different address than the gateway's
+`BUS_URL`, and as their own RabbitMQ user, `otto-runner` ("One server with compose"). The URL
+goes in a Secret in the sandbox namespace. On the sandbox node, `setup.sh` makes it from
+`RUNNER_AMQP_PASSWORD` and `SERVER_TS_IP`; elsewhere:
 
-    kubectl create secret generic otto-runner-amqp -n otto-sandboxes \
-        --from-literal=url='amqp://runner:…@100.x.y.z:5672/'
+    printf 'amqp://otto-runner:%s@100.x.y.z:5672/' "$RABBITMQ_RUNNER_PASSWORD" \
+        | kubectl create secret generic otto-runner-amqp -n otto-sandboxes --from-file=url=/dev/stdin
 
-and set `OTTO_RUNNER_AMQP_SECRET=otto-runner-amqp` (and `OTTO_RUNNER_AMQP_SECRET_KEY` if the key
+Set `OTTO_RUNNER_AMQP_SECRET=otto-runner-amqp` (and `OTTO_RUNNER_AMQP_SECRET_KEY` if the key
 isn't `url`). Each Job's `BUS_URL` then comes from the Secret (`secretKeyRef`), and the URL never
 appears in a Job spec. Without a Secret, `OTTO_RUNNER_AMQP_URL` is put in the Job as a plain
 value, which is fine for kind.
+
+## Sandbox node
+
+`deploy/sandbox-node/` turns one Ubuntu 24.04 x86 machine into the sandbox cluster: a
+single-node k3s, reachable only over Tailscale. The same scripts set up a cloud instance (first,
+a temporary EC2 `t3.small`) and a laptop or desktop (later). Nothing in them assumes which.
+
+`setup.sh` checks before it changes anything, so running it again is safe. It:
+
+- adds a 2 GB swap file, if the machine has no swap
+- checks that the machine is on the tailnet with `tag:sandbox`, and takes its Tailscale address
+- installs k3s (`k3s-config.yaml`):
+  - traefik, servicelb and metrics-server off
+  - the API, the kubelet and the node's address on the Tailscale address only (in `tls-san` too)
+  - host-gw networking, so there's no VXLAN port
+  - swap allowed for the system (pods get none)
+  - k3s waits for the Tailscale address at every boot (`sandbox-node wait-address`)
+- applies `manifests/`: the namespace (Pod Security `restricted`), the quota and the limits, the
+  NetworkPolicy, and the gateway's RBAC with its token
+- makes the runners' RabbitMQ Secret (`otto-runner-amqp`), from `RUNNER_AMQP_PASSWORD`
+- pulls the sandbox image, so the first session doesn't wait for it
+- installs `sandbox-node` (`up`, `down`, `status`) and writes `/etc/otto/sandbox-node.env`
+
+| Setting | Default | |
+|---|---|---|
+| `SERVER_TS_IP` | (required) | The server's Tailscale address (`tailscale ip -4` there; the bootstrap prints it). |
+| `RUNNER_AMQP_PASSWORD` | | The server's `RABBITMQ_RUNNER_PASSWORD`. Needed on the first run, and when it changes. |
+| `NODE_NAME` | the hostname | The Kubernetes node's name. |
+| `SANDBOX_SLOTS` | `1` | Sandboxes at once. The quota is this many sandboxes; the server's `MAX_ACTIVE_SANDBOXES` must not be more. |
+| `OTTO_SANDBOX_CPU_REQUEST` / `_LIMIT` | `200m` / `1` | One sandbox's size, as the gateway's variables of the same names. Keep the two in step: the namespace refuses a sandbox bigger than this. |
+| `OTTO_SANDBOX_MEMORY_REQUEST` / `_LIMIT` | `300Mi` / `1Gi` | |
+| `OTTO_SANDBOX_STORAGE_REQUEST` / `_LIMIT` | `1Gi` / `4Gi` | |
+| `SANDBOX_IMAGE` | `ghcr.io/taufik041/otto-sandbox:main` | The image to pull ahead. |
+| `SANDBOX_NAMESPACE`, `RUNNER_AMQP_SECRET` | `otto-sandboxes`, `otto-runner-amqp` | The server's `OTTO_SANDBOX_NAMESPACE` and `OTTO_RUNNER_AMQP_SECRET`. |
+| `GHCR_USER`, `GHCR_TOKEN` | | Only if the sandbox image is private: k3s's pull credentials (`/etc/rancher/k3s/registries.yaml`). |
+| `K3S_VERSION` | the stable channel | Pins k3s, or upgrades it on a later run (e.g. `v1.36.5+k3s1`). |
+
+`sudo bash deploy/sandbox-node/setup.sh render` prints the k3s settings and the manifests without
+changing anything.
+
+### The tailnet policy
+
+Add one rule to the policy from "Launch day" step 3. It's already in that snippet:
+
+```jsonc
+// the gateway, on the server, reaches the sandbox node's Kubernetes API
+{ "action": "accept", "src": ["tag:otto"], "dst": ["tag:sandbox:6443"] },
+```
+
+`tag:sandbox` → `tag:otto:5672` (the runners to RabbitMQ) is already there. Nothing else: the
+node can't reach the server's ssh or any other port, the server reaches only the node's API, and
+`tag:ci` reaches only the server's ssh. Your own devices (`autogroup:admin`) reach both, to ssh in.
+
+### Isolation
+
+Every pod in `otto-sandboxes` gets `manifests/networkpolicy.yaml`:
+
+- **in:** nothing.
+- **out:**
+  - DNS, to the cluster's CoreDNS only (not 8.8.8.8:53)
+  - `SERVER_TS_IP:5672` (RabbitMQ)
+  - the internet on TCP 80 and 443, except 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
+    100.64.0.0/10 (the tailnet) and 169.254.0.0/16 (cloud metadata)
+
+So a sandbox can't reach the instance metadata, the node's own addresses (on its LAN, its Docker
+bridge, its Tailscale address), the k3s API (directly or as the `kubernetes` Service), other pods,
+or the server's other ports. k3s's built-in policy controller enforces it (it's on unless k3s
+runs with `--disable-network-policy`, which `setup.sh` never sets).
+
+`scripts/check_isolation.sh` shows it:
+
+- It starts throwaway pods: a probe and a listening "neighbour" in the namespace, and a control
+  pod in a namespace without the policy.
+- It listens on 443 on every address of the node.
+- It probes from both the probe and the control pod, so each "blocked" is shown to be the
+  policy's doing (the control pod reaches it) or noted as "not there either".
+- Last, from the node itself, it checks the tailnet policy: the server's 5672 open; 22, 443 and
+  8000 closed.
+
+```sh
+sudo bash scripts/check_isolation.sh     # ends "isolation: every check passed", exit status 0
+```
+
+### The EC2 test node
+
+A temporary `t3.small` (2 GB, one sandbox at a time), until the laptop takes over.
+
+1. **A Tailscale key**, in the admin console, under **Settings** → **Keys** → **Generate auth
+   key**:
+   - not reusable (single-use), **ephemeral**, pre-approved
+   - **Tags:** `tag:sandbox`
+
+   Ephemeral means that Tailscale removes the node by itself once it's been offline for a while
+   (after you terminate it).
+2. **Launch it** in **EC2** → **Launch instance**:
+   1. **Name:** `otto-sandbox`.
+   2. **Application and OS Images:** Ubuntu Server 24.04 LTS, 64-bit (x86).
+   3. **Instance type:** `t3.small`.
+   4. **Key pair:** "Proceed without a key pair". The user data below adds your ssh key, and you
+      connect over Tailscale.
+   5. **Network settings:** the `otto-no-inbound` security group (no inbound rules at all).
+   6. **Configure storage:** 20 GiB, gp3.
+   7. **Advanced details:**
+      - **IAM instance profile:** none. Nothing on the node needs AWS, and that leaves nothing for
+        a sandbox to steal.
+      - **Credit specification:** **Standard**.
+      - **Metadata accessible:** Enabled. **Metadata version:** V2 only (token required).
+        **Metadata response hop limit:** 1, so nothing in a container (one network hop away) can
+        get a token, even without the NetworkPolicy.
+      - **User data** (the key, the address, your public key):
+
+        ```sh
+        #!/bin/bash
+        # runs once, as root, at the first boot
+        set -euo pipefail
+        curl -fsSL https://tailscale.com/install.sh | sh
+        tailscale up --auth-key='tskey-auth-...' --hostname=otto-sandbox --advertise-tags=tag:sandbox
+        install -d -m 700 -o ubuntu -g ubuntu /home/ubuntu/.ssh
+        echo 'ssh-ed25519 AAAA... you@your-machine' >> /home/ubuntu/.ssh/authorized_keys
+        chown ubuntu:ubuntu /home/ubuntu/.ssh/authorized_keys
+        chmod 600 /home/ubuntu/.ssh/authorized_keys
+        ```
+
+        Anything on the instance can read its user data from the metadata service. The key in it
+        is single-use, and spent by the time anything else runs.
+   8. Click **Launch instance**. In a minute or two, `otto-sandbox` shows up under **Machines**
+      in Tailscale, tagged `tag:sandbox`.
+3. **Copy the scripts over**, from your checkout:
+
+   ```sh
+   tar c deploy/sandbox-node scripts/sandbox_kubeconfig.sh scripts/check_isolation.sh \
+     | ssh ubuntu@otto-sandbox 'mkdir -p otto && tar x -C otto'
+   ```
+
+4. **Set it up.** Read `RABBITMQ_RUNNER_PASSWORD` on the server (Session Manager: `sudo grep
+   RABBITMQ_RUNNER_PASSWORD /opt/otto/deploy/compose/.env`), then on the node:
+
+   ```sh
+   ssh ubuntu@otto-sandbox
+   cd otto
+   read -rsp 'RABBITMQ_RUNNER_PASSWORD: ' P; echo
+   sudo env SERVER_TS_IP=100.x.y.z RUNNER_AMQP_PASSWORD="$P" bash deploy/sandbox-node/setup.sh
+   ```
+
+   It takes a few minutes, most of it the image. A warning that nothing answers at
+   `SERVER_TS_IP:5672` is expected while the server's stack isn't up yet.
+5. **The gateway's kubeconfig.** On the node, `sudo bash scripts/sandbox_kubeconfig.sh` prints it
+   (after checking its access: `create jobs: yes; get secrets: no; pods in kube-system: no`). On
+   the server (Session Manager), paste it in:
+
+   ```sh
+   sudo tee /opt/otto/deploy/compose/secrets/sandbox.kubeconfig >/dev/null   # paste, then Ctrl-D
+   sudo chown 10001:10001 /opt/otto/deploy/compose/secrets/sandbox.kubeconfig
+   sudo chmod 400 /opt/otto/deploy/compose/secrets/sandbox.kubeconfig
+   ```
+
+   The compose file already points `OTTO_SANDBOX_KUBECONFIG` at it (`/run/otto/sandbox.kubeconfig`
+   in the containers); don't set it in `.env`. Check that `.env` has `OTTO_SANDBOX_NAMESPACE`,
+   `OTTO_RUNNER_AMQP_SECRET` and `MAX_ACTIVE_SANDBOXES` ("Launch day" step 3). Then restart the
+   gateway and the worker, so that they read both:
+
+   ```sh
+   cd /opt/otto/deploy/compose
+   sudo -u deploy docker compose -f docker-compose.prod.yml up -d --force-recreate gateway worker
+   ```
+
+   On launch day, the bootstrap's second run (step 3.6) does this.
+6. **Check it:**
+   - on the server, `curl -s 127.0.0.1:8000/health` says `"workers":"online"`
+   - on the node, `sudo bash scripts/check_isolation.sh` passes, and `sudo sandbox-node status`
+     shows the node Ready
+   - a repo chat runs in a sandbox ("Launch day" step 8)
+   - `sudo sandbox-node down`, and within 30 seconds `/health` says `"workers":"offline"` and the
+     landing page says "Chat only". `sudo sandbox-node up` brings it back.
+7. **Tear it down** when the laptop has taken over (or to stop paying for it):
+   1. In **EC2**, select `otto-sandbox` → **Instance state** → **Terminate instance**. Its disk
+      goes with it.
+   2. Tailscale removes the ephemeral node by itself; or remove it now under **Machines**. The key
+      was single-use: there's nothing to revoke.
+   3. Until another node's kubeconfig is in place, the workers show as offline and plain chats
+      keep working.
+
+   Terminate it; don't stop it. Once Tailscale has removed a stopped ephemeral node, it can't
+   rejoin: its key is spent.
+
+### Moving to the laptop
+
+The same steps, on Ubuntu Desktop 24.04 (x86), with these differences:
+
+- **Tailscale:** install it (`curl -fsSL https://tailscale.com/install.sh | sh`), and join with a
+  key that's single-use, pre-approved and tagged `tag:sandbox`, but **not ephemeral**. A laptop
+  sleeps and moves between networks, and should stay on the tailnet when it does:
+
+  ```sh
+  sudo tailscale up --auth-key='tskey-auth-...' --hostname=otto-laptop --advertise-tags=tag:sandbox
+  ```
+
+  A tagged machine belongs to the tag, not to you. On the tailnet, this laptop can then reach only
+  what `tag:sandbox` may (the server's 5672). Use a laptop that does nothing else.
+- **Bigger limits:** give `setup.sh` more slots and bigger sandboxes, and the server the same
+  numbers. On a 16 GB laptop, for example:
+
+  ```sh
+  sudo env SERVER_TS_IP=100.x.y.z RUNNER_AMQP_PASSWORD="$P" SANDBOX_SLOTS=3 \
+       OTTO_SANDBOX_CPU_LIMIT=2 OTTO_SANDBOX_MEMORY_LIMIT=2Gi OTTO_SANDBOX_STORAGE_LIMIT=8Gi \
+       bash deploy/sandbox-node/setup.sh
+  ```
+
+  Then, in the server's `.env`, set `MAX_ACTIVE_SANDBOXES=3`, `OTTO_SANDBOX_CPU_LIMIT=2`,
+  `OTTO_SANDBOX_MEMORY_LIMIT=2Gi` and `OTTO_SANDBOX_STORAGE_LIMIT=8Gi`.
+- **The kubeconfig** is new (a new cluster, address and token): step 5 again, then tear down the
+  EC2 node.
+- The tailnet policy doesn't change: the rules name tags, not machines.
+- Ubuntu Desktop already has swap (`/swap.img`); `setup.sh` leaves it. Docker on the laptop is
+  fine alongside k3s.
+- Nothing listens on the laptop's Wi-Fi or LAN address: the API and the kubelet bind to the
+  Tailscale address, kube-proxy's health port to loopback, and host-gw has no port.
+- **Sleep:** `setup.sh` leaves power settings alone. To keep the node up with the lid closed, set
+  `HandleLidSwitch=ignore` and `HandleLidSwitchExternalPower=ignore` in
+  `/etc/systemd/logind.conf`, and turn off automatic suspend in Settings → Power. To rule out sleep
+  entirely: `sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target`.
+
+### When the node sleeps or is down
+
+- **The gateway** can't reach the API. Within 25 seconds (a cached answer lasts 20, a check gives
+  up after 5), `/health` says `"workers":"offline"`:
+  - the landing page says "Chat only"
+  - plain chats keep working
+  - a new agent chat, a follow-up in a repo chat, or a retry gets `503 workers_offline`, and
+    the app offers "Ask Taufik to bring it up"
+- **Sandboxes that were running:**
+  - asleep, they're frozen, and carry on when the machine wakes
+  - their Job's deadline (`SANDBOX_MAX_AGE_SECONDS`) and the 1-hour GitHub token keep counting
+    while it sleeps, and the brain may have given up on the session meanwhile. After a long
+    sleep, retry the chat.
+  - `sandbox-node down` stops them at once
+- **When it's back:**
+  - Tailscale reconnects
+  - k3s waits for the Tailscale address before it starts
+  - the gateway sees the workers online at its next check (within 20 seconds)
+- **`sandbox-node down` lasts:** it stops k3s at boot too, until `sandbox-node up`.
+- **A different Wi-Fi network changes nothing:** k3s uses only the Tailscale address, which stays
+  the same.
+- **New image:** a node keeps its copy of `:main`. `sandbox-node up` refreshes it, or run
+  `sudo k3s crictl pull ghcr.io/taufik041/otto-sandbox:main` after a runner change. You can also
+  pin `SANDBOX_IMAGE` on the server to a commit's tag.
 
 ## Connections
 
@@ -711,8 +940,11 @@ a minute without a broker, and its Job ends.
 
 1. Postgres and RabbitMQ up; `DATABASE_URL` and `BUS_URL` set for the gateway and the workers (the
    compose file does both; see "One server with compose").
-2. The sandbox namespace, its RBAC, the gateway's kubeconfig, and the runners' AMQP Secret.
-3. The sandbox image pushed, and `SANDBOX_IMAGE` set to it.
+2. The sandbox node set up ("Sandbox node"): `setup.sh` (the namespace, its RBAC, the runners' AMQP
+   Secret), the gateway's kubeconfig in `secrets/`, the tailnet rule `tag:otto` →
+   `tag:sandbox:6443`, and `scripts/check_isolation.sh` passing.
+3. The `otto-sandbox` package on GHCR made public (or the node given pull credentials), and
+   `MAX_ACTIVE_SANDBOXES` at most the node's `SANDBOX_SLOTS`.
 4. The GitHub App's callback URL set to the gateway's, and `OTTO_GITHUB_CALLBACK_URL`.
 5. `OTTO_ENV=production`, `FRONTEND_URL`, `AUTH_SECRET`, the signup settings.
 6. `curl https://ottoci-api.taufi.dev/health` says `"workers": "online"` and

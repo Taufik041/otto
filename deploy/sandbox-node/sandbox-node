@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Start, stop and look at the sandbox node (setup.sh installs it as /usr/local/bin/sandbox-node).
+#
+#   sudo sandbox-node up       start k3s (and at every boot), wait until it's Ready, refresh the image
+#   sudo sandbox-node down     stop k3s and every sandbox on it, and keep it stopped across reboots
+#   sudo sandbox-node status   Tailscale, k3s, the API, the sandboxes and the quota
+#
+# While it's down, the gateway's GET /health says "workers": "offline" within 30 seconds, and
+# plain chats keep working. Settings come from /etc/otto/sandbox-node.env (setup.sh writes it).
+set -euo pipefail
+
+ENV_FILE=/etc/otto/sandbox-node.env
+# shellcheck source=/dev/null
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+need() { [ -n "${!1:-}" ] || die "$1 isn't set: run deploy/sandbox-node/setup.sh first"; }
+kc() { k3s kubectl "$@"; }
+api_ready() { kc get --raw /readyz >/dev/null 2>&1; }
+
+wait_address() {  # k3s's ExecStartPre: the API and the kubelet bind to the Tailscale address
+    need NODE_TS_IP
+    local i
+    for i in $(seq 60); do
+        ip -4 -o addr show | grep -q " inet $NODE_TS_IP/" && return 0
+        [ "$i" -eq 1 ] && echo "waiting for the Tailscale address $NODE_TS_IP" >&2
+        sleep 2
+    done
+    die "no interface has $NODE_TS_IP after 2 minutes: is Tailscale up? (tailscale status)"
+}
+
+up() {
+    need NODE_NAME
+    systemctl enable k3s >/dev/null 2>&1
+    systemctl start k3s
+    local _
+    for _ in $(seq 90); do api_ready && break; sleep 2; done
+    api_ready || die "the k3s API didn't come up: journalctl -u k3s"
+    kc wait --for=condition=Ready "node/$NODE_NAME" --timeout=180s >/dev/null
+    echo "up: node $NODE_NAME is Ready, the API is at https://$NODE_TS_IP:6443"
+    # a newer image under the same tag (main): pods use the copy on the node
+    if [ -n "${SANDBOX_IMAGE:-}" ]; then
+        if k3s crictl pull "$SANDBOX_IMAGE" >/dev/null 2>&1; then
+            echo "image: $SANDBOX_IMAGE is current"
+        else
+            echo "image: couldn't refresh $SANDBOX_IMAGE (the copy on the node stays)" >&2
+        fi
+    fi
+}
+
+down() {
+    systemctl disable k3s >/dev/null 2>&1 || true
+    if [ -x /usr/local/bin/k3s-killall.sh ]; then
+        # stopping the service alone leaves the pods running: this stops k3s and every container
+        /usr/local/bin/k3s-killall.sh >/dev/null 2>&1
+    else
+        systemctl stop k3s
+    fi
+    echo "down: k3s and its sandboxes are stopped, and stay stopped after a reboot (sandbox-node up)"
+}
+
+status() {
+    local ts api
+    if command -v tailscale >/dev/null && tailscale status >/dev/null 2>&1; then
+        ts="connected, $(tailscale ip -4 2>/dev/null | head -1)"
+    else
+        ts="NOT connected"
+    fi
+    echo "tailscale: $ts"
+    echo "k3s:       $(systemctl is-active k3s 2>/dev/null || true), $(systemctl is-enabled k3s 2>/dev/null || true) at boot"
+    if [ -n "${NODE_TS_IP:-}" ] && timeout 5 bash -c "exec 3<>/dev/tcp/$NODE_TS_IP/6443" 2>/dev/null; then
+        api="listening on https://$NODE_TS_IP:6443"
+    else
+        api="not listening on ${NODE_TS_IP:-?}:6443 (the gateway sees the workers as offline)"
+    fi
+    echo "api:       $api"
+    api_ready || return 0
+    echo
+    kc get node -o wide --no-headers | awk '{ print "node:      " $1 " " $2 ", " $5 }'
+    if [ -n "${SANDBOX_NAMESPACE:-}" ]; then
+        echo "sandboxes: $(kc get jobs -n "$SANDBOX_NAMESPACE" --no-headers 2>/dev/null | grep -c . || true) job(s)"
+        kc get pods -n "$SANDBOX_NAMESPACE" --no-headers 2>/dev/null | sed 's/^/           /'
+        echo
+        kc describe resourcequota -n "$SANDBOX_NAMESPACE" 2>/dev/null | sed -n '/^Resource/,$p'
+    fi
+}
+
+case "${1:-}" in
+    up | down) [ "$(id -u)" -eq 0 ] || die "run it as root: sudo sandbox-node $1"; "$1" ;;
+    status) [ "$(id -u)" -eq 0 ] || die "run it as root: sudo sandbox-node status"; status ;;
+    wait-address) wait_address ;;
+    *) echo "usage: sandbox-node up|down|status" >&2; exit 2 ;;
+esac

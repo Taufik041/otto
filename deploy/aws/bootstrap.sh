@@ -13,6 +13,7 @@
 # Settings (environment):
 #   TAILSCALE_AUTH_KEY      joins the tailnet (only needed until it has joined)
 #   TAILSCALE_HOSTNAME      its name on the tailnet [otto-prod]
+#   TAILSCALE_TAG           its tag, as in the tailnet policy (docs/deploy.md) [tag:otto]
 #   DEPLOY_USER             the user deploys log in as [deploy]
 #   DEPLOY_SSH_PUBLIC_KEY   a public key allowed to log in as it (GitHub Actions'), added once
 #   OTTO_REPO               the repo to check out [https://github.com/Taufik041/otto.git]
@@ -22,6 +23,7 @@
 set -euo pipefail
 
 TAILSCALE_HOSTNAME="${TAILSCALE_HOSTNAME:-otto-prod}"
+TAILSCALE_TAG="${TAILSCALE_TAG:-tag:otto}"
 DEPLOY_USER="${DEPLOY_USER:-deploy}"
 OTTO_REPO="${OTTO_REPO:-https://github.com/Taufik041/otto.git}"
 OTTO_DIR="${OTTO_DIR:-/opt/otto}"
@@ -93,13 +95,23 @@ if ! command -v tailscale >/dev/null; then
         || { cat /var/log/tailscale-install.log >&2; exit 1; }
 fi
 systemctl enable --now tailscaled >/dev/null
+ts_self() { tailscale status --json | python3 -c 'import json,sys; me=json.load(sys.stdin)["Self"]; print(me["HostName"], *(me.get("Tags") or []))'; }
 if tailscale status >/dev/null 2>&1; then
-    note "joined as $(tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["HostName"])'), $(tailscale ip -4)"
+    note "joined as $(ts_self | cut -d' ' -f1), $(tailscale ip -4)"
 elif [ -n "${TAILSCALE_AUTH_KEY:-}" ]; then
-    tailscale up --auth-key="$TAILSCALE_AUTH_KEY" --hostname="$TAILSCALE_HOSTNAME"
+    # the tag the tailnet policy's rules name (deploys and the sandbox node reach tag:otto)
+    tailscale up --auth-key="$TAILSCALE_AUTH_KEY" --hostname="$TAILSCALE_HOSTNAME" --advertise-tags="$TAILSCALE_TAG"
     note "joined as $TAILSCALE_HOSTNAME, $(tailscale ip -4)"
 else
-    note "NOT JOINED: run again with TAILSCALE_AUTH_KEY (deploys and the sandbox cluster reach the server over Tailscale)"
+    note "NOT JOINED: run again with TAILSCALE_AUTH_KEY (deploys and the sandbox node reach the server over Tailscale)"
+fi
+if tailscale status >/dev/null 2>&1; then
+    if [[ " $(ts_self) " == *" $TAILSCALE_TAG "* ]]; then
+        note "tagged $TAILSCALE_TAG"
+    else
+        note "WARNING: not tagged $TAILSCALE_TAG, so the tailnet policy's rules don't reach it:"
+        note "  sudo tailscale up --hostname=$TAILSCALE_HOSTNAME --advertise-tags=$TAILSCALE_TAG"
+    fi
 fi
 
 step "deploy user ($DEPLOY_USER)"
@@ -136,6 +148,23 @@ if [ ! -f .env ]; then
     install -m 600 -o "$DEPLOY_USER" -g "$DEPLOY_USER" .env.prod.example .env
     note "created $COMPOSE_DIR/.env from the example: fill it in"
 fi
+# RabbitMQ listens on the Tailscale address, for the sandbox node's runners (and nowhere public)
+TS_IP=$(tailscale ip -4 2>/dev/null | head -1 || true)
+bind=$(grep -oP '^RABBITMQ_BIND=\K.*' .env || true)
+if [ -z "$TS_IP" ]; then
+    note "RABBITMQ_BIND: not set yet (no Tailscale address)"
+elif [ -z "$bind" ]; then
+    if grep -q '^RABBITMQ_BIND=' .env; then
+        sed -i "s|^RABBITMQ_BIND=.*|RABBITMQ_BIND=$TS_IP|" .env
+    else
+        printf '\n# set by deploy/aws/bootstrap.sh: the Tailscale address, for the sandbox node\nRABBITMQ_BIND=%s\n' "$TS_IP" >> .env
+    fi
+    note "RABBITMQ_BIND=$TS_IP (the Tailscale address)"
+elif [ "$bind" != "$TS_IP" ]; then
+    note "WARNING: RABBITMQ_BIND=$bind in .env, but the Tailscale address is $TS_IP"
+else
+    note "RABBITMQ_BIND=$TS_IP"
+fi
 # the backend runs as uid 10001 and reads these (read-only); nobody else may
 install -d -m 700 -o 10001 -g 10001 secrets
 find secrets -type f -exec chown 10001:10001 {} + -exec chmod 400 {} +
@@ -154,9 +183,12 @@ RemainAfterExit=yes
 User=$DEPLOY_USER
 Group=docker
 WorkingDirectory=$COMPOSE_DIR
-# RabbitMQ may bind to the Tailscale address (RABBITMQ_BIND): wait for it, up to a minute
-ExecStartPre=/bin/sh -c 'for i in \$(seq 30); do tailscale ip -4 >/dev/null 2>&1 && exit 0; sleep 2; done; echo "no Tailscale address yet" >&2'
+# RabbitMQ binds to the Tailscale address (RABBITMQ_BIND): wait until tailscaled has it, and try
+# again later if it never comes
+ExecStartPre=/bin/bash $COMPOSE_DIR/wait_for_bind.sh
 ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml up -d --remove-orphans
+Restart=on-failure
+RestartSec=30
 ExecStop=/usr/bin/docker compose -f docker-compose.prod.yml stop
 TimeoutStartSec=600
 
@@ -185,6 +217,7 @@ else
         sleep 5
     done
     sudo -u "$DEPLOY_USER" "${COMPOSE[@]}" ps --format 'table {{.Service}}\t{{.Status}}'
+    note "$(sudo -u "$DEPLOY_USER" bash runner_user.sh)"
 fi
 
 step "for GitHub Actions (docs/deploy.md, \"Deploys\")"
@@ -196,4 +229,6 @@ NAMES="$TAILSCALE_HOSTNAME"
 TS_IP=$(tailscale ip -4 2>/dev/null || true)
 [ -n "$TS_IP" ] && NAMES="$NAMES,$TS_IP"
 [ -f "$HOST_KEY" ] && echo "$NAMES $(cut -d' ' -f1,2 "$HOST_KEY")"
-note "RABBITMQ_BIND for the sandbox cluster's runners: $(tailscale ip -4 2>/dev/null || echo 'its Tailscale address')"
+note "for the sandbox node's setup.sh (docs/deploy.md, \"Sandbox node\"):"
+note "  SERVER_TS_IP=$(tailscale ip -4 2>/dev/null | head -1 || echo '<its Tailscale address>')"
+note "  RUNNER_AMQP_PASSWORD: RABBITMQ_RUNNER_PASSWORD in $COMPOSE_DIR/.env"

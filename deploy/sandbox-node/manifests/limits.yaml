@@ -1,0 +1,43 @@
+# What the namespace may use: SANDBOX_SLOTS sandboxes at their limits, plus room for one small
+# pod (scripts/check_isolation.sh's), never for another sandbox. Keep the gateway's
+# MAX_ACTIVE_SANDBOXES at SANDBOX_SLOTS (${SANDBOX_SLOTS}).
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: otto-sandboxes
+  namespace: ${SANDBOX_NAMESPACE}
+spec:
+  hard:
+    pods: "${QUOTA_PODS}"
+    requests.cpu: ${QUOTA_CPU_REQUESTS}
+    limits.cpu: ${QUOTA_CPU_LIMITS}
+    requests.memory: ${QUOTA_MEMORY_REQUESTS}
+    limits.memory: ${QUOTA_MEMORY_LIMITS}
+    requests.ephemeral-storage: ${QUOTA_STORAGE_REQUESTS}
+    limits.ephemeral-storage: ${QUOTA_STORAGE_LIMITS}
+    # nothing in the namespace listens or stores
+    services: "0"
+    persistentvolumeclaims: "0"
+---
+# A container that names no resources gets a sandbox's (the gateway's OTTO_SANDBOX_* defaults);
+# none may ask for more than a sandbox's limits.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: otto-sandboxes
+  namespace: ${SANDBOX_NAMESPACE}
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "${CPU_LIMIT}"
+        memory: ${MEMORY_LIMIT}
+        ephemeral-storage: ${STORAGE_LIMIT}
+      defaultRequest:
+        cpu: ${CPU_REQUEST}
+        memory: ${MEMORY_REQUEST}
+        ephemeral-storage: ${STORAGE_REQUEST}
+      max:
+        cpu: "${CPU_LIMIT}"
+        memory: ${MEMORY_LIMIT}
+        ephemeral-storage: ${STORAGE_LIMIT}

@@ -1,0 +1,26 @@
+# k3s's settings (/etc/rancher/k3s/config.yaml), rendered by setup.sh, which fills in the placeholders.
+# One node, reachable only over Tailscale: the API, the kubelet and the node's address are the
+# node's Tailscale address, which stays the same on any network (a laptop's Wi-Fi address doesn't).
+node-name: ${NODE_NAME}
+node-ip: ${NODE_TS_IP}
+advertise-address: ${NODE_TS_IP}
+bind-address: ${NODE_TS_IP}
+tls-san:
+  - ${NODE_TS_IP}
+# nothing here serves traffic from outside or needs metrics; sandboxes are plain Jobs
+disable:
+  - traefik
+  - servicelb
+  - metrics-server
+# one node: routes, not a VXLAN port on every interface
+flannel-backend: host-gw
+write-kubeconfig-mode: "0600"
+secrets-encryption: true
+kubelet-arg:
+  - address=${NODE_TS_IP}
+  # the node has swap (a 2 GB machine needs it); pods still get none
+  - fail-swap-on=false
+kube-proxy-arg:
+  - healthz-bind-address=127.0.0.1:10256
+# The NetworkPolicy controller stays on (no disable-network-policy): it enforces
+# manifests/networkpolicy.yaml.
