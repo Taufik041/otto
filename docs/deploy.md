@@ -80,20 +80,32 @@ First, on your machine:
 
   `otto-deploy.pub` goes to the server; the private `otto-deploy` file becomes the
   `DEPLOY_SSH_KEY` secret.
-- **In Tailscale's admin console**, under **Access controls**, add the tags and the rules (merge
-  them into your policy):
+- **In Tailscale's admin console**, under **Access controls**, replace the whole policy (**JSON editor**) with this:
 
   ```jsonc
-  "tagOwners": { "tag:otto": ["autogroup:admin"], "tag:ci": ["autogroup:admin"], "tag:sandbox": ["autogroup:admin"] },
-  "acls": [
-    // GitHub Actions deploys over ssh; the sandbox node's runners reach RabbitMQ; the gateway
-    // reaches the sandbox node's Kubernetes API
-    { "action": "accept", "src": ["tag:ci"], "dst": ["tag:otto:22"] },
-    { "action": "accept", "src": ["tag:sandbox"], "dst": ["tag:otto:5672"] },
-    { "action": "accept", "src": ["tag:otto"], "dst": ["tag:sandbox:6443"] },
-    // you, to everything (keep your existing rules)
-    { "action": "accept", "src": ["autogroup:admin"], "dst": ["*:*"] },
-  ],
+  {
+    "tagOwners": {
+      "tag:otto":    ["autogroup:admin"],
+      "tag:ci":      ["autogroup:admin"],
+      "tag:sandbox": ["autogroup:admin"]
+    },
+    "acls": [
+      // GitHub Actions deploys over ssh
+      { "action": "accept", "src": ["tag:ci"],      "dst": ["tag:otto:22"] },
+      // sandbox runners reach RabbitMQ only
+      { "action": "accept", "src": ["tag:sandbox"], "dst": ["tag:otto:5672"] },
+      // the gateway reaches the sandbox node's Kubernetes API
+      { "action": "accept", "src": ["tag:otto"],    "dst": ["tag:sandbox:6443"] },
+      // you, to everything
+      { "action": "accept", "src": ["autogroup:admin"], "dst": ["*:*"] }
+    ],
+    "ssh": [
+      // you can open a shell on the server and the sandbox node through Tailscale
+      { "action": "accept", "src": ["autogroup:admin"], "dst": ["tag:otto", "tag:sandbox"], "users": ["ubuntu", "root", "deploy"] },
+      // Tailscale's default: your own untagged devices
+      { "action": "check",  "src": ["autogroup:member"], "dst": ["autogroup:self"], "users": ["autogroup:nonroot", "root"] }
+    ]
+  }
   ```
 
   `tag:ci` must exist here before the OAuth client below can use it.
@@ -148,21 +160,21 @@ From now on, `ssh deploy@otto-prod` works from any device on your tailnet.
 
 ### 4. The Cloudflare Tunnel (`ottoci-api.taufi.dev`)
 
-1. In the Cloudflare dashboard, open **Zero Trust** → **Networks** → **Tunnels**, then
-   **Create a tunnel**.
-2. Choose **Cloudflared**, name it `otto-api`, and click **Save tunnel**.
-3. Under **Install and run a connector**, choose **Docker**. The command shown ends in
-   `--token eyJ...`: copy that long token (only the token).
-4. On the server, put it in `.env` as `CLOUDFLARE_TUNNEL_TOKEN=eyJ...`, then restart the stack:
-   `sudo systemctl restart otto`. Back in Cloudflare, the connector shows **Connected**; click
-   **Next**.
-5. **Route traffic** → **Public hostname**:
-   - **Subdomain:** `ottoci-api`, **Domain:** `taufi.dev`, **Path:** empty.
-   - **Service:** type **HTTP**, URL `gateway:8000`.
-6. Click **Save tunnel**. Cloudflare creates the `ottoci-api` DNS record itself. It is proxied
-   (orange), and it must stay that way.
-7. Check from anywhere: `curl https://ottoci-api.taufi.dev/health` answers
-   `{"status":"up",...}`.
+Created from the command line, so no Zero Trust plan or card is needed. On your laptop:
+
+    curl -L -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+    sudo dpkg -i /tmp/cloudflared.deb
+    cloudflared tunnel login                               # pick taufi.dev in the browser
+    cloudflared tunnel create otto
+    cloudflared tunnel route dns otto ottoci-api.taufi.dev # proxied CNAME to the tunnel
+    cloudflared tunnel token otto                          # -> CLOUDFLARE_TUNNEL_TOKEN in .env
+
+The compose service runs the tunnel with `--url http://gateway:8000`, so every request to
+ottoci-api.taufi.dev reaches the gateway. `~/.cloudflared/cert.pem` and the tunnel's `.json`
+file can manage the tunnel: keep them private, never commit them.
+The tunnel shows as down in Cloudflare until the server's stack is running.
+Check, once the server's stack is running: `curl https://ottoci-api.taufi.dev/health` answers
+`{"status":"up",...}`.
 
 ### 5. The GitHub App's callback URL
 
