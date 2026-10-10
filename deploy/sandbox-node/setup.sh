@@ -15,7 +15,10 @@
 #   NODE_NAME               the Kubernetes node's name [the hostname]
 #   SANDBOX_TAG             the Tailscale tag this machine must have [tag:sandbox]
 #   SANDBOX_NAMESPACE       where sandboxes run, the gateway's OTTO_SANDBOX_NAMESPACE [otto-sandboxes]
-#   SANDBOX_IMAGE           pulled ahead of the first session [ghcr.io/taufik041/otto-sandbox:main]
+#   SANDBOX_IMAGE           pulled ahead of the first session [ghcr.io/taufik041/otto-sandbox:main].
+#                           The gateway runs the deployed commit's tag (:<sha>, deploy.sh pins it),
+#                           which shares all but its last layers with :main, so pulling :main
+#                           makes that first pull small. Pass the deployed :<sha> to pull it all.
 #   SANDBOX_SLOTS           sandboxes at once, the gateway's MAX_ACTIVE_SANDBOXES [1: a 2 GB node]
 #   OTTO_SANDBOX_CPU_REQUEST, _CPU_LIMIT, _MEMORY_REQUEST, _MEMORY_LIMIT, _STORAGE_REQUEST,
 #   _STORAGE_LIMIT          one sandbox's size, as the gateway's variables of the same names

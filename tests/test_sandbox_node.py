@@ -131,10 +131,14 @@ def test_the_runner_user_may_use_only_the_sessions_queues():
     assert not re.search(perms["read"], "amq.default")
 
 
-def test_ci_builds_the_sandbox_image_on_main():
+def test_ci_builds_the_sandbox_image_for_every_commit_on_main():
     wf = yaml.safe_load((ROOT / ".github/workflows/backend.yml").read_text())
-    paths = wf[True]["push"]["paths"]  # yaml reads the `on:` key as True
-    assert {"infra/sandbox.Dockerfile", "infra/entrypoint.sh"} <= set(paths)
+    on = wf[True]  # yaml reads the `on:` key as True
+    # every push to main, whatever it changes, so each deployable commit has its :<sha> images
+    assert on["push"] == {"branches": ["main"]}
+    assert {"infra/sandbox.Dockerfile", "infra/entrypoint.sh"} <= set(on["pull_request"]["paths"])
+    # and a newer push never cancels main's run halfway, leaving a commit without them
+    assert wf["concurrency"]["cancel-in-progress"] == "${{ github.ref != 'refs/heads/main' }}"
     job = wf["jobs"]["sandbox-image"]
     assert job["needs"] == "test" and "refs/heads/main" in job["if"]
     (build,) = [s for s in job["steps"] if str(s.get("uses", "")).startswith("docker/build-push-action")]
@@ -211,3 +215,55 @@ def test_render_refuses_bad_settings():
                              env={"PATH": os.environ["PATH"], "SERVER_TS_IP": "100.90.80.70",
                                   "NODE_TS_IP": "100.101.102.103", "NODE_NAME": "n", **env})
         assert run.returncode != 0 and "error:" in run.stderr, env
+
+
+SHA_A, SHA_B = "a" * 40, "0123456789abcdef" * 2 + "01234567"
+
+
+def pin(env_file: Path, sha: str):
+    import os, subprocess
+    return subprocess.run(["bash", str(ROOT / "deploy/aws/pin_images.sh"), str(env_file), sha],
+                          capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
+
+
+def pinned(env_file: Path) -> dict[str, list[str]]:
+    lines = env_file.read_text().splitlines()
+    return {k: [l.split("=", 1)[1] for l in lines if l.startswith(k + "=")]
+            for k in ("OTTO_IMAGE", "SANDBOX_IMAGE", "OTTO_VERSION")}
+
+
+def test_a_deploy_pins_the_commits_backend_and_sandbox_images(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("POSTGRES_PASSWORD=x\n# SANDBOX_IMAGE=\nOTTO_SANDBOX_NAMESPACE=otto-sandboxes")  # no last newline
+    assert pin(env, SHA_A).returncode == 0
+    assert pinned(env) == {"OTTO_IMAGE": [f"ghcr.io/taufik041/otto-backend:{SHA_A}"],
+                           "SANDBOX_IMAGE": [f"ghcr.io/taufik041/otto-sandbox:{SHA_A}"],
+                           "OTTO_VERSION": [SHA_A[:12]]}
+    text = env.read_text()
+    assert "POSTGRES_PASSWORD=x\n# SANDBOX_IMAGE=\nOTTO_SANDBOX_NAMESPACE=otto-sandboxes\n" in text  # the rest as it was
+
+
+def test_a_rollback_puts_back_both_images(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("POSTGRES_PASSWORD=x\nSANDBOX_IMAGE=ghcr.io/taufik041/otto-sandbox:main\n")
+    for sha in (SHA_A, SHA_B, SHA_A):  # deploy A, deploy B, roll back to A
+        assert pin(env, sha).returncode == 0
+    assert pinned(env) == {"OTTO_IMAGE": [f"ghcr.io/taufik041/otto-backend:{SHA_A}"],
+                           "SANDBOX_IMAGE": [f"ghcr.io/taufik041/otto-sandbox:{SHA_A}"],
+                           "OTTO_VERSION": [SHA_A[:12]]}
+    assert env.read_text().count("pinned by") == 2  # added once each (OTTO_IMAGE, OTTO_VERSION), then replaced
+
+
+def test_pinning_refuses_anything_but_a_full_commit_sha(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("POSTGRES_PASSWORD=x\n")
+    for bad in ("main", SHA_A[:12], SHA_A + "; rm -rf /", SHA_A.upper()):
+        assert pin(env, bad).returncode != 0, bad
+    assert env.read_text() == "POSTGRES_PASSWORD=x\n"
+
+
+def test_deploy_pins_through_pin_images_and_checks_the_sandbox_tag_first():
+    deploy = (ROOT / "deploy/aws/deploy.sh").read_text()
+    check = deploy.index('docker manifest inspect "$SANDBOX"')
+    assert check < deploy.index("pin_images.sh .env") < deploy.index("up -d")
+    assert "sed -i" not in deploy  # the pins live in one place

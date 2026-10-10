@@ -215,14 +215,17 @@ expires after 90 days. The secret is shown once; put it straight into `TS_OAUTH_
 You can also add **variables**: `DEPLOY_USER` (default `deploy`) and `HEALTH_URL` (default
 `https://ottoci-api.taufi.dev/health`).
 
-From then on, every push to `main` that changes the backend goes through two workflows:
+From then on, every push to `main` goes through two workflows:
 
-1. `backend` tests the code and pushes the image.
-2. `deploy` joins the tailnet, SSHes in, runs `deploy/aws/deploy.sh <sha>` (it pulls that
-   commit's image, pins it in `.env` and restarts the stack), and checks that `/health` reports
-   the new version through the tunnel.
+1. `backend` tests the code and pushes the two images, `otto-backend:<sha>` and
+   `otto-sandbox:<sha>`.
+2. `deploy` joins the tailnet, SSHes in, and runs `deploy/aws/deploy.sh <sha>`. That pins both
+   of the commit's images in `.env`, pulls the backend and restarts the stack; the sandbox node
+   pulls the new sandbox image at its next session. Then the workflow checks that `/health`
+   reports the new version through the tunnel.
 
-To roll back, open **Actions** → **deploy** → **Run workflow**, and enter an earlier commit.
+To roll back, open **Actions** → **deploy** → **Run workflow**, and enter an earlier commit. Both
+images go back to that commit's.
 
 ### 8. Smoke test
 
@@ -428,8 +431,23 @@ runs `:main` unless `OTTO_IMAGE` pins a commit's tag. If the package is private,
 once: `docker login ghcr.io` with a token that can read packages.
 
 The same workflow builds the **sandbox image** (`infra/sandbox.Dockerfile`, target `runner`) and
-pushes `ghcr.io/taufik041/otto-sandbox:<commit sha>` and `:main`. In production, `SANDBOX_IMAGE`
-defaults to `:main`. Make that package **public** once, after the first push: on GitHub, open
+pushes `ghcr.io/taufik041/otto-sandbox:<commit sha>` and `:main`. Both images are built on
+**every** push to `main`, whatever it changes, and a newer push never cancels `main`'s run, so
+every commit on `main` has both tags.
+
+Each deploy pins the commit's two images in `.env` (`deploy/aws/pin_images.sh`):
+`OTTO_IMAGE=…/otto-backend:<sha>` and `SANDBOX_IMAGE=…/otto-sandbox:<sha>`. The gateway then
+creates sandbox Jobs with that exact tag. That matters, because Kubernetes never pulls a tag it
+already has again: with `:main`, the sandbox node would keep running whatever runner it pulled
+first. With a new tag for each commit, the node pulls the new runner at the first session after
+a deploy. Only the last layers (the runner's code) differ between commits, so that pull is
+small. Before pinning, `deploy.sh` checks that the sandbox tag exists, and refuses to deploy
+without it. A rollback (`deploy.sh` with an earlier commit) pins that commit's backend and
+sandbox images, both. Commits from before the sandbox image was built for every commit have no
+such tag, so you can't roll back to them. Without a deploy (`SANDBOX_IMAGE` unset), production
+uses `:main`.
+
+ Make that package **public** once, after the first push: on GitHub, open
 your profile → **Packages** → `otto-sandbox` → **Package settings** → **Change visibility** →
 **Public**. The sandbox node then pulls it with no credentials. (If it stays private, give the
 node's `setup.sh` `GHCR_USER` and `GHCR_TOKEN`.)
@@ -518,7 +536,7 @@ The gateway's environment (the workers need `DATABASE_URL`, `BUS_URL`, the provi
 | `OTTO_SANDBOX_KUBECONFIG` | `/etc/otto/sandbox.kubeconfig` | See "The sandbox cluster". |
 | `OTTO_SANDBOX_NAMESPACE` | `otto-sandboxes` | |
 | `OTTO_RUNNER_AMQP_SECRET` | `otto-runner-amqp` | A Secret in that namespace holding the runners' RabbitMQ URL. |
-| `SANDBOX_IMAGE` | `ghcr.io/taufik041/otto-sandbox:main` | The default in production; CI builds it from `infra/sandbox.Dockerfile`. A commit's tag pins it. |
+| `SANDBOX_IMAGE` | `ghcr.io/taufik041/otto-sandbox:<sha>` | `deploy.sh` pins it to the deployed commit's tag, next to `OTTO_IMAGE` ("The image"). Unset, production uses `:main`. |
 | `MAX_ACTIVE_SANDBOXES` | `1` | At most the sandbox node's `SANDBOX_SLOTS`. |
 | `OTTO_WORKERS_CHECK_SECONDS` | `20` | The compose file's default (the code's is 30): a sandbox node that goes down shows as offline within 25 seconds. |
 
@@ -726,7 +744,7 @@ a temporary EC2 `t3.small`) and a laptop or desktop (later). Nothing in them ass
 | `OTTO_SANDBOX_CPU_REQUEST` / `_LIMIT` | `200m` / `1` | One sandbox's size, as the gateway's variables of the same names. Keep the two in step: the namespace refuses a sandbox bigger than this. |
 | `OTTO_SANDBOX_MEMORY_REQUEST` / `_LIMIT` | `300Mi` / `1Gi` | |
 | `OTTO_SANDBOX_STORAGE_REQUEST` / `_LIMIT` | `1Gi` / `4Gi` | |
-| `SANDBOX_IMAGE` | `ghcr.io/taufik041/otto-sandbox:main` | The image to pull ahead. |
+| `SANDBOX_IMAGE` | `ghcr.io/taufik041/otto-sandbox:main` | The image to pull ahead. Sessions run the deployed commit's `:<sha>`, which shares all but its last layers with `:main`, so this makes their first pull small. Pass the deployed `:<sha>` to pull all of it ahead. |
 | `SANDBOX_NAMESPACE`, `RUNNER_AMQP_SECRET` | `otto-sandboxes`, `otto-runner-amqp` | The server's `OTTO_SANDBOX_NAMESPACE` and `OTTO_RUNNER_AMQP_SECRET`. |
 | `GHCR_USER`, `GHCR_TOKEN` | | Only if the sandbox image is private: k3s's pull credentials (`/etc/rancher/k3s/registries.yaml`). |
 | `K3S_VERSION` | the stable channel | Pins k3s, or upgrades it on a later run (e.g. `v1.36.5+k3s1`). |
@@ -937,9 +955,9 @@ The same steps, on Ubuntu Desktop 24.04 (x86), with these differences:
 - **`sandbox-node down` lasts:** it stops k3s at boot too, until `sandbox-node up`.
 - **A different Wi-Fi network changes nothing:** k3s uses only the Tailscale address, which stays
   the same.
-- **New image:** a node keeps its copy of `:main`. `sandbox-node up` refreshes it, or run
-  `sudo k3s crictl pull ghcr.io/taufik041/otto-sandbox:main` after a runner change. You can also
-  pin `SANDBOX_IMAGE` on the server to a commit's tag.
+- **New image:** every deploy pins the commit's `otto-sandbox:<sha>`, so the node pulls a new
+  runner by itself, at the first session after the deploy. `sandbox-node up` also refreshes
+  `:main`, which keeps most of the next commit's layers on the node.
 
 ## Connections
 

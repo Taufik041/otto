@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 # Deploy one commit on the server (run as the deploy user, in the repo): check the commit out,
-# pin its image (ghcr.io/taufik041/otto-backend:<sha>) in .env, so a reboot or a later `up` keeps
-# it, pull, bring the stack up, wait until the gateway says /health, and make sure RabbitMQ's
+# pin its images in .env (pin_images.sh: ghcr.io/taufik041/otto-backend:<sha> for the stack,
+# ghcr.io/taufik041/otto-sandbox:<sha> for the sandboxes), so a reboot or a later `up` keeps
+# them, pull, bring the stack up, wait until the gateway says /health, and make sure RabbitMQ's
 # runner user is as .env says (runner_user.sh).
 #
 #   bash deploy/aws/deploy.sh <commit sha>
 #
 # .github/workflows/deploy.yml runs it over SSH after each image build on main. To roll back, run
-# it with an earlier commit (or the workflow's "Run workflow" with that sha).
+# it with an earlier commit (or the workflow's "Run workflow" with that sha): both images go back
+# to that commit's.
 set -euo pipefail
 
 SHA="${1:?usage: deploy.sh <commit sha>}"
 OTTO_DIR="${OTTO_DIR:-/opt/otto}"
 IMAGE_REPO="${IMAGE_REPO:-ghcr.io/taufik041/otto-backend}"
 IMAGE="$IMAGE_REPO:$SHA"
+SANDBOX_IMAGE_REPO="${SANDBOX_IMAGE_REPO:-ghcr.io/taufik041/otto-sandbox}"
+SANDBOX="$SANDBOX_IMAGE_REPO:$SHA"
 COMPOSE=(docker compose -f docker-compose.prod.yml)
 log() { echo "[deploy] $*"; }
 
@@ -24,13 +28,12 @@ git checkout --quiet --detach "$SHA"
 
 cd deploy/compose
 [ -f .env ] || { echo ".env is missing in $PWD: run deploy/aws/bootstrap.sh first" >&2; exit 1; }
-if grep -q '^OTTO_IMAGE=' .env; then
-    sed -i "s|^OTTO_IMAGE=.*|OTTO_IMAGE=$IMAGE|" .env
-else
-    printf '\n# pinned by deploy/aws/deploy.sh\nOTTO_IMAGE=%s\n' "$IMAGE" >> .env
-fi
-sed -i "s|^OTTO_VERSION=.*|OTTO_VERSION=${SHA:0:12}|" .env
-grep -q '^OTTO_VERSION=' .env || echo "OTTO_VERSION=${SHA:0:12}" >> .env
+# the sandbox node pulls this tag at the first session: it must exist before the gateway asks
+# for it (commits from before CI pushed a sandbox image for each one have none)
+docker manifest inspect "$SANDBOX" >/dev/null 2>&1 \
+    || { echo "no $SANDBOX on the registry: not deploying $SHA" >&2; exit 1; }
+IMAGE_REPO="$IMAGE_REPO" SANDBOX_IMAGE_REPO="$SANDBOX_IMAGE_REPO" bash ../aws/pin_images.sh .env "$SHA"
+log "pinned $IMAGE and $SANDBOX"
 
 log "pulling $IMAGE"
 "${COMPOSE[@]}" pull --quiet gateway worker
