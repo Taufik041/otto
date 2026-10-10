@@ -39,7 +39,8 @@ up() {
     api_ready || die "the k3s API didn't come up: journalctl -u k3s"
     kc wait --for=condition=Ready "node/$NODE_NAME" --timeout=180s >/dev/null
     echo "up: node $NODE_NAME is Ready, the API is at https://$NODE_TS_IP:6443"
-    # a newer image under the same tag (main): pods use the copy on the node
+    # :main again, so the next deployed commit's :<sha> (pulled at its first session) finds
+    # most of its layers here already
     if [ -n "${SANDBOX_IMAGE:-}" ]; then
         if k3s crictl pull "$SANDBOX_IMAGE" >/dev/null 2>&1; then
             echo "image: $SANDBOX_IMAGE is current"

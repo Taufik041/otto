@@ -1,25 +1,14 @@
-# The backend: tests on every push and pull request; on main, two images are built and pushed to
-# GHCR, tagged with the commit and `main`: otto-backend (deploy/backend.Dockerfile) and
-# otto-sandbox (infra/sandbox.Dockerfile, the runner the sandbox node pulls; a public package).
+# The backend: tests on every push and pull request; on every push to main, two images are built
+# and pushed to GHCR, tagged with the commit and `main`: otto-backend (deploy/backend.Dockerfile)
+# and otto-sandbox (infra/sandbox.Dockerfile, the runner the sandbox node pulls; a public
+# package). Every commit on main has both, so deploy.sh can pin any of them (and roll back to it).
 name: backend
 
 on:
+  # every push to main, whatever it changes: each commit gets its images, and the deploy that
+  # follows pins them
   push:
     branches: [main]
-    paths:
-      - "brain/**"
-      - "gateway/**"
-      - "orchestrator/**"
-      - "runner/**"
-      - "shared/**"
-      - "scripts/access_requests.py"
-      - "tests/**"
-      - "deploy/**"
-      - "infra/sandbox.Dockerfile"
-      - "infra/entrypoint.sh"
-      - "pyproject.toml"
-      - ".dockerignore"
-      - ".github/workflows/backend.yml"
   pull_request:
     paths:
       - "brain/**"
@@ -39,7 +28,8 @@ on:
 
 concurrency:
   group: backend-${{ github.ref }}
-  cancel-in-progress: true
+  # never on main: a cancelled run would leave its commit without images
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
