@@ -25,8 +25,9 @@ INST = 555
 def test_email_status_says_whether_an_account_exists(client):
     signup(client, email="taufik@example.com")
     sign_out(client)
-    assert client.post("/auth/email-status", json={"email": " Taufik@Example.com"}).json() == {"exists": True}
-    assert client.post("/auth/email-status", json={"email": "new@example.com"}).json() == {"exists": False}
+    assert client.post("/auth/email-status", json={"email": " Taufik@Example.com"}).json() == {"exists": True,
+                                                                                         "password": True}
+    assert client.post("/auth/email-status", json={"email": "new@example.com"}).json() == {"exists": False, "password": False}
 
 
 def test_email_status_wants_an_email(client):

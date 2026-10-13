@@ -1,8 +1,6 @@
-import { X } from 'lucide-react'
 import { useMemo } from 'react'
-import { useSearchParams } from 'react-router'
 import { useRepos } from '@/api/queries'
-import { githubErrorMessage, useMe } from '@/auth/auth'
+import { useMe } from '@/auth/auth'
 import { Mark } from '@/components/brand'
 import { Composer, type Suggestion } from '@/composer/Composer'
 import { useShell } from '@/shell/AppShell'
@@ -14,8 +12,6 @@ export function HomePage() {
   const me = useMe()
   const { mobile } = useShell()
   const repos = useRepos()
-  const [params, setParams] = useSearchParams()
-  const ghError = githubErrorMessage(params.get('github_error'))
 
   const suggestions = useMemo<Suggestion[]>(() => {
     const repo = repos.data?.[0] ?? null
@@ -47,19 +43,6 @@ export function HomePage() {
         <div className="flex flex-col items-center px-8 pb-7 text-center animate-rise">
           <Mark size={44} className="mb-5" />
           <h1 className="m-0 text-[40px] font-normal leading-[1.1] tracking-[-0.03em] text-balance">{greeting}</h1>
-        </div>
-      )}
-      {ghError && (
-        <div className="mx-auto mb-3 flex w-[calc(100%-24px)] max-w-[720px] items-center gap-3 rounded-[14px] border border-solid border-line px-4 py-2.5 text-sm">
-          <span className="flex-1 text-muted">{ghError.replace('or use your email', 'from Settings')}</span>
-          <button
-            type="button"
-            aria-label="Dismiss"
-            onClick={() => setParams({}, { replace: true })}
-            className="flex size-7 items-center justify-center rounded-lg border-0 bg-transparent text-muted hover:bg-hover"
-          >
-            <X size={14} />
-          </button>
         </div>
       )}
       <Composer mobile={mobile} hero suggestions={suggestions} />

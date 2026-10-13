@@ -1,7 +1,8 @@
 import json, asyncio, re
 from shared import config, health, usage
 from brain.providers import LLMError, ProviderUnusable, Stopped, complete
-from brain.tools import CHAT_SYSTEM, SYSTEM, TOOLS, KIND, missing_args
+from brain.prompts import SYSTEM, chat_system
+from brain.tools import TOOLS, KIND, missing_args
 from brain.bus import bus_call, start_consumer, stop_consumer
 from brain.resume import rebuild_messages
 from shared.events import append_event, load_events
@@ -134,25 +135,33 @@ async def resume_session(ch, results, sid, text):
     return await run_loop(ch, results, sid, messages)
 
 
-async def retry_chat(sid):
+def _chat_system(sid, facts) -> str:
+    """A plain chat's prompt for this turn: Otto, and the live facts (facts: from the job)."""
+    entry = config.catalog_entry(get_session(sid).model)
+    return chat_system(facts, entry["label"] if entry else None)
+
+
+async def retry_chat(sid, facts=None):
     """A plain chat's failed turn, again: the model answers the stored conversation as it is."""
     if not has_conversation(sid):
-        return await chat_session(sid)
+        return await chat_session(sid, facts=facts)
     messages = replay(sid)
-    use_system(sid, messages, CHAT_SYSTEM)
+    use_system(sid, messages, _chat_system(sid, facts))
     return await _turn(sid, messages, lambda record: _chat_step(sid, messages, record))
 
 
-async def chat_session(sid, text=None):
+async def chat_session(sid, text=None, facts=None):
     """One plain-chat turn: the model answers with no tools and no sandbox. text: a follow-up;
-    None for the first turn, which answers the session's task."""
+    None for the first turn, which answers the session's task. facts: the live facts the gateway
+    sent with the job (workers, repos), told to the model with this turn's prompt."""
+    system = _chat_system(sid, facts)
     if text is None:
         messages = []
-        add_message(sid, messages, {"role": "system", "content": CHAT_SYSTEM})
+        add_message(sid, messages, {"role": "system", "content": system})
         add_message(sid, messages, {"role": "user", "content": get_session(sid).task})
     else:
         messages = replay(sid)
-        use_system(sid, messages, CHAT_SYSTEM)
+        use_system(sid, messages, system)
         if not _stored_already(messages, text):
             add_message(sid, messages, {"role": "user", "content": text})
     return await _turn(sid, messages, lambda record: _chat_step(sid, messages, record))

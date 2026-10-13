@@ -15,7 +15,8 @@
     "vercel:landing": "npm run build:landing && node scripts/vercel-output.mjs landing",
     "test": "vitest run",
     "test:watch": "vitest",
-    "screenshots": "node scripts/screenshots.mjs"
+    "screenshots": "node scripts/screenshots.mjs",
+    "e2e:message-once": "node scripts/e2e-message-once.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.104.0",

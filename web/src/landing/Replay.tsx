@@ -171,7 +171,6 @@ function Inner({
               live={v.live}
               repo={REPO}
               branch={BRANCH}
-              sent={null}
               selectedStep={null}
               onOpenStep={noop}
               onOpenWorkspace={noop}

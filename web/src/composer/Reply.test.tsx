@@ -8,11 +8,14 @@ import { API, server } from '@/test/server'
 
 function setup(reply: Partial<Reply> = {}, follow?: () => Response) {
   const calls: { path: string; body: unknown }[] = []
+  const ids: unknown[] = [] // each post's client_message_id
   server.use(
     http.get(`${API}/models`, () => HttpResponse.json({ default_model: 'openrouter:openrouter/free', models })),
     http.get(`${API}/repos`, () => HttpResponse.json(repos)),
     http.post(`${API}/sessions/s1/messages`, async ({ request }) => {
-      calls.push({ path: 'messages', body: await request.json() })
+      const { client_message_id, ...body } = (await request.json()) as Record<string, unknown>
+      ids.push(client_message_id)
+      calls.push({ path: 'messages', body })
       return follow?.() ?? HttpResponse.json({ id: 's1', status: 'queued', repo: null }, { status: 202 })
     }),
     http.post(`${API}/sessions/s1/stop`, () => {
@@ -20,15 +23,16 @@ function setup(reply: Partial<Reply> = {}, follow?: () => Response) {
       return HttpResponse.json({ id: 's1', status: 'stopped' })
     }),
   )
-  const onSent = vi.fn()
+  const onSending = vi.fn()
+  const onSendFailed = vi.fn()
   renderSignedIn(
     <Composer
       mobile={false}
       hero={false}
-      reply={{ sessionId: 's1', live: false, model: 'openai:gpt-4.1-mini', repo: 'Taufik041/otto_test', onSent, ...reply }}
+      reply={{ sessionId: 's1', live: false, model: 'openai:gpt-4.1-mini', repo: 'Taufik041/otto_test', onSending, onSendFailed, ...reply }}
     />,
   )
-  return { calls, onSent }
+  return { calls, ids, onSending, onSendFailed }
 }
 
 const box = () => screen.getByRole('textbox', { name: 'Message Otto' })
@@ -45,12 +49,14 @@ it('while Otto works: Stop instead of Send, and Enter sends nothing', async () =
 })
 
 it('between turns: a follow-up posts the text and clears the box', async () => {
-  const { calls, onSent } = setup()
+  const { calls, ids, onSending } = setup()
   expect(box()).toHaveAttribute('placeholder', 'Reply to Otto…')
   expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument()
   await userEvent.type(box(), 'also add a test for exactly 11 units{Enter}')
   await waitFor(() => expect(calls).toEqual([{ path: 'messages', body: { text: 'also add a test for exactly 11 units' } }]))
-  expect(onSent).toHaveBeenCalledWith('also add a test for exactly 11 units', null)
+  // shown at once, under the id the gateway gets with it
+  expect(onSending).toHaveBeenCalledWith({ id: ids[0], text: 'also add a test for exactly 11 units', repo: null })
+  expect(ids[0]).toMatch(/^[\w-]{8,64}$/)
   expect(box()).toHaveValue('')
 })
 
@@ -132,4 +138,21 @@ it('workers offline: a plain chat still takes a follow-up', async () => {
   await screen.findByText("Otto's workers are offline right now. Plain chat still works.")
   await userEvent.type(box(), 'and in Python?{Enter}')
   await waitFor(() => expect(calls.map((c) => c.path)).toEqual(['messages']))
+})
+
+it('a follow-up that fails is taken back out of the chat, and the next try gets a new id', async () => {
+  let fail = true
+  const { calls, ids, onSending, onSendFailed } = setup({}, () =>
+    fail
+      ? HttpResponse.json({ detail: 'session s1 is running; wait until it finishes' }, { status: 409 })
+      : HttpResponse.json({ id: 's1', status: 'queued', repo: null }, { status: 202 }),
+  )
+  await userEvent.type(box(), 'more{Enter}')
+  await waitFor(() => expect(onSendFailed).toHaveBeenCalledWith(ids[0]))
+  expect(box()).toHaveValue('more') // kept, to send again
+  fail = false
+  await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(calls).toHaveLength(2))
+  expect(ids[1]).not.toBe(ids[0])
+  expect(onSending).toHaveBeenCalledTimes(2)
 })

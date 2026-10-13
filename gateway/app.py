@@ -26,11 +26,11 @@ from brain.bus import bus_call, start_consumer, stop_consumer
 from gateway import auth, errors, github_app, limits, live, tokens, workers
 from orchestrator import sandbox
 from shared import config, email, health, usage
-from shared.accounts import delete_account
+from shared.accounts import delete_account, prune_unconfirmed
 from shared.bus import (SESSIONS_QUEUE, actions_queue, chat_job, connect_with_backoff, results_queue, resume_job,
                         retry_job, start_job)
 from shared.db import get_engine, init_db
-from shared.events import append_event, load_events, redact
+from shared.events import append_event, client_message_seq, load_events, redact
 from shared.models import User, as_utc, utcnow
 from shared.sessions import (ACTIVE, attach_repo, attention, end_seqs, mark_seen, count_active_agents, create_session, delete_session, get_session,
                              list_sessions, record_pr, repo_sessions_since, set_model, set_status, set_title,
@@ -44,6 +44,7 @@ RETRYABLE = ("failed", "interrupted")  # a turn that ended in an error, which PO
 REPO_NAME = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
 NEW_REPO = "Start a new chat for a different repo."
 UNAVAILABLE = "Unavailable right now. Try again later."  # the picker's hint for a model without a key
+DAY = 24 * 3600  # seconds between sweeps of unconfirmed sign-ups
 
 
 def check_production():
@@ -72,6 +73,21 @@ def version() -> str:
         return "dev"
 
 
+def _prune_unconfirmed():
+    if pruned := prune_unconfirmed():
+        print(f"[gateway] deleted {len(pruned)} email sign-up(s) left unconfirmed for a week", flush=True)
+
+
+async def daily(fn):
+    """fn (blocking) once a day, until cancelled; an error is logged and the next day tries again."""
+    while True:
+        await asyncio.sleep(DAY)
+        try:
+            await asyncio.to_thread(fn)
+        except Exception as e:
+            print(f"[gateway] daily {fn.__name__} failed: {e}", flush=True)
+
+
 @asynccontextmanager
 async def lifespan(app):
     auth.check_secret()
@@ -80,11 +96,13 @@ async def lifespan(app):
     health.clear()  # what a worker found unusable counts until the gateway restarts
     if pruned := tokens.prune_refresh():
         print(f"[gateway] deleted {pruned} refresh token(s) that expired over a week ago", flush=True)
+    _prune_unconfirmed()
     swept = sweep_stale_sessions()
     if swept:
         print(f"[gateway] marked {len(swept)} stale session(s) interrupted: {', '.join(swept)}", flush=True)
     conn = await connect_with_backoff(connect_robust, config.BUS_URL, "gateway")
     listener = None
+    sweeper = asyncio.create_task(daily(_prune_unconfirmed))
     try:
         engine = get_engine()
         if engine.dialect.name == "postgresql":
@@ -97,6 +115,7 @@ async def lifespan(app):
         app.state.create_lock = asyncio.Lock()
         yield
     finally:
+        sweeper.cancel()
         if listener:
             await live.stop(listener)
         await conn.close()
@@ -175,6 +194,8 @@ class FollowUp(BaseModel):
     text: str = Field(min_length=1)
     repo: str | None = None  # attaches a repo to a plain chat; the chat's own repo is fine too
     model: str | None = None  # a catalog id: the chat continues on it from this message on
+    # the client's id for this message: posting it again (a retry, a double click) stores nothing
+    client_message_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{8,64}$")
 
     _repo = field_validator("repo")(repo_name)
 
@@ -214,7 +235,21 @@ def _fail(sid, stage, e):
     raise HTTPException(502, f"{stage} failed: {msg}")
 
 
+async def _facts(row) -> dict:
+    """What a plain chat's model is told is true right now: whether the workers are up (as /health
+    says) and the names of the user's repos (left out if GitHub can't say)."""
+    facts = {"workers": "online" if await workers.online() else "offline"}
+    try:
+        facts["repos"] = [r["full_name"] for r in await asyncio.to_thread(github_app.user_repos, row.user_id)]
+    except github_app.GitHubError as e:
+        print(f"[gateway] no repo names for chat {row.id}'s prompt: {e}", flush=True)
+    return facts
+
+
 async def _enqueue(ch, sid, job):
+    row = get_session(sid)
+    if row is not None and row.repo is None:  # a plain chat: the brain can't ask the cluster or GitHub
+        job = {**job, "facts": await _facts(row)}
     # queued BEFORE publishing, so a fast worker never sees a stale status
     transition(sid, "queued", {"provisioning"})
     try:
@@ -359,7 +394,7 @@ def models():
 
 
 @app.post("/sessions", status_code=201)
-async def create(body: NewSession, user: User = Depends(auth.current_user)):
+async def create(body: NewSession, user: User = Depends(auth.verified_user)):
     """A new chat. With a repo, Otto works on it in a sandbox; without one, it just answers."""
     _within_limit(user)
     model = _model_for(user, body.model)
@@ -384,7 +419,7 @@ async def create(body: NewSession, user: User = Depends(auth.current_user)):
 
 
 @app.get("/sessions")
-def sessions(user: User = Depends(auth.current_user)):
+def sessions(user: User = Depends(auth.verified_user)):
     """The user's chats for the sidebar, most recently active first, each with its `attention`."""
     rows = list_sessions(user.id)
     ends = end_seqs([r.id for r in rows])
@@ -396,7 +431,7 @@ class Seen(BaseModel):
 
 
 @app.post("/sessions/{sid}/seen")
-def seen(sid: str, body: Seen, user: User = Depends(auth.current_user)):
+def seen(sid: str, body: Seen, user: User = Depends(auth.verified_user)):
     """The user saw the chat up to event `seq` (never backwards): its finished turn stops wanting
     attention in the sidebar."""
     _row(sid, user)
@@ -404,7 +439,7 @@ def seen(sid: str, body: Seen, user: User = Depends(auth.current_user)):
 
 
 @app.get("/sessions/{sid}")
-async def session(sid: str, user: User = Depends(auth.current_user)):
+async def session(sid: str, user: User = Depends(auth.verified_user)):
     row = _row(sid, user)
     branch = row.work_branch or (work_branch(sid) if row.repo else None)
     return {**_summary(row), "task": row.task, "repo_url": row.repo_url, "work_branch": branch,
@@ -412,14 +447,14 @@ async def session(sid: str, user: User = Depends(auth.current_user)):
 
 
 @app.patch("/sessions/{sid}")
-def rename(sid: str, body: Rename, user: User = Depends(auth.current_user)):
+def rename(sid: str, body: Rename, user: User = Depends(auth.verified_user)):
     _row(sid, user)
     set_title(sid, body.title)
     return _summary(get_session(sid))
 
 
 @app.get("/sessions/{sid}/events")
-def events(sid: str, after_seq: int = Query(0, ge=0), user: User = Depends(auth.current_user)):
+def events(sid: str, after_seq: int = Query(0, ge=0), user: User = Depends(auth.verified_user)):
     _row(sid, user)
     return [{"seq": e.seq, "ts": e.ts, "type": e.type, "payload": e.payload}
             for e in load_events(sid, after_seq=after_seq)]
@@ -462,7 +497,7 @@ async def _read_until_closed(websocket):
 
 
 @app.post("/sessions/{sid}/ws-ticket")
-def ws_ticket(sid: str, user: User = Depends(auth.current_user)):
+def ws_ticket(sid: str, user: User = Depends(auth.verified_user)):
     """A single-use ticket, good for TICKET_TTL seconds, to open this session's WebSocket."""
     _row(sid, user)
     return {"ticket": tokens.issue_ticket(user.id, sid)}
@@ -513,11 +548,14 @@ async def watch(websocket: WebSocket, sid: str, ticket: str | None = None, after
 
 
 @app.post("/sessions/{sid}/messages", status_code=202)
-async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_user)):
+async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.verified_user)):
     """The next message. A repo given to a plain chat attaches it: the chat gets a sandbox and
-    the agent takes over. A chat keeps its first repo: another one is 409."""
+    the agent takes over. A chat keeps its first repo: another one is 409. A client_message_id
+    stored already is this message posted again: 202 with the chat as it is, and nothing else."""
     ch = app.state.ch
     row = _row(sid, user)
+    if _posted_already(sid, body):
+        return {"id": sid, "status": row.status, "repo": row.repo}
     # the model this message would run on: one asked for, else the chat's own
     _usable(body.model) if body.model is not None else _healthy(row.model)
     _within_limit(user)
@@ -531,10 +569,13 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_
             _room_for_an_agent(user)
         # claim the session atomically; a busy one (or a concurrent follow-up) gets 409
         if not transition(sid, "provisioning", IDLE):
-            raise HTTPException(409, f"session {sid} is {_row(sid, user).status}; wait until it finishes")
+            now = _row(sid, user)
+            if _posted_already(sid, body):  # the same message, posted while its first post was at work
+                return {"id": sid, "status": now.status, "repo": now.repo}
+            raise HTTPException(409, f"session {sid} is {now.status}; wait until it finishes")
     if repo is None:
         _switch_model(sid, body.model)
-        _store_follow_up(sid, body.text)
+        _store_follow_up(sid, body)
         await _enqueue(ch, sid, chat_job(sid, body.text))
         return {"id": sid, "status": "queued", "repo": None}
     attaching = row.repo is None
@@ -544,7 +585,7 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.current_
             transition(sid, row.status, {"provisioning"})
             raise HTTPException(409, NEW_REPO)
     _switch_model(sid, body.model)
-    _store_follow_up(sid, body.text)  # after repo.attached, so the message belongs to the agent's turn
+    _store_follow_up(sid, body)  # after repo.attached, so the message belongs to the agent's turn
     try:
         if attaching:
             await _create_sandbox(sid, repo)
@@ -584,7 +625,7 @@ def _pr_json(sid, row, title, created) -> dict:
 
 @app.post("/sessions/{sid}/pr", status_code=201)
 async def open_pull_request(sid: str, response: Response, body: OpenPr | None = None,
-                            user: User = Depends(auth.current_user)):
+                            user: User = Depends(auth.verified_user)):
     """Open the chat's proposed pull request on GitHub, as the user decided (Otto never opens one
     itself). Idempotent: a PR already open for otto/<id> is returned (200), not duplicated. 409
     while Otto works or with nothing proposed; 502 if GitHub refuses."""
@@ -612,7 +653,7 @@ async def open_pull_request(sid: str, response: Response, body: OpenPr | None = 
 
 
 @app.post("/sessions/{sid}/pr/decline")
-def decline_pull_request(sid: str, user: User = Depends(auth.current_user)):
+def decline_pull_request(sid: str, user: User = Depends(auth.verified_user)):
     """Not now: the chat notes it (pr.declined). The proposal stays: POST .../pr still opens it."""
     row = _row(sid, user)
     if _proposal(sid) is None or row.pr_url:
@@ -622,7 +663,7 @@ def decline_pull_request(sid: str, user: User = Depends(auth.current_user)):
 
 
 @app.post("/sessions/{sid}/retry", status_code=202)
-async def retry(sid: str, body: Retry | None = None, user: User = Depends(auth.current_user)):
+async def retry(sid: str, body: Retry | None = None, user: User = Depends(auth.verified_user)):
     """Run a failed (or interrupted) turn again from where it stopped, with no new message: the
     error card's Retry, optionally on another model. Other statuses are 409."""
     ch = app.state.ch
@@ -659,10 +700,17 @@ def _switch_model(sid, model):
         set_model(sid, model)
 
 
-def _store_follow_up(sid, text):
+def _posted_already(sid, body: FollowUp) -> bool:
+    return body.client_message_id is not None and client_message_seq(sid, body.client_message_id) is not None
+
+
+def _store_follow_up(sid, body: FollowUp):
     """Store the follow-up as the conversation's next user message now, so every client sees it at
-    once (live, via NOTIFY); the worker continues from it without adding it again."""
-    append_event(sid, "llm.message", {"message": {"role": "user", "content": text}})
+    once (live, via NOTIFY); the worker continues from it without adding it again. Its
+    client_message_id goes with the event, so the client that sent it can tell it's that one."""
+    cid = body.client_message_id
+    append_event(sid, "llm.message", {"message": {"role": "user", "content": body.text},
+                                      **({"client_message_id": cid} if cid else {})}, client_message_id=cid)
 
 
 async def _wake_sandbox(ch, sid, repo):
@@ -682,7 +730,7 @@ async def _wake_sandbox(ch, sid, repo):
 
 
 @app.post("/sessions/{sid}/stop")
-async def stop(sid: str, user: User = Depends(auth.current_user)):
+async def stop(sid: str, user: User = Depends(auth.verified_user)):
     """Stop the session and its sandbox; it stays in the list, and a follow-up starts it again."""
     row = _row(sid, user)
     # stopped first: a worker still running this session ends after its current step
@@ -693,7 +741,7 @@ async def stop(sid: str, user: User = Depends(auth.current_user)):
 
 
 @app.delete("/sessions/{sid}")
-async def delete_chat(sid: str, user: User = Depends(auth.current_user)):
+async def delete_chat(sid: str, user: User = Depends(auth.verified_user)):
     """Delete the chat: stop its sandbox (and its queues), then delete its events and the session.
     Its token usage stays on the user's account."""
     row = _row(sid, user)
@@ -706,7 +754,7 @@ async def delete_chat(sid: str, user: User = Depends(auth.current_user)):
 
 
 @app.post("/sessions/{sid}/sandbox/stop")
-async def stop_sandbox(sid: str, user: User = Depends(auth.current_user)):
+async def stop_sandbox(sid: str, user: User = Depends(auth.verified_user)):
     """Stop just the sandbox. A session between turns keeps its status (a follow-up starts a new
     sandbox); one that is working can't go on without it, so it is stopped too."""
     row = _row(sid, user)

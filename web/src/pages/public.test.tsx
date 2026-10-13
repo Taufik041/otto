@@ -125,7 +125,11 @@ describe('/auth/callback', () => {
   ])('a GitHub sign-up refused as %s opens the dialog in that state', async (error, title) => {
     app(`/auth/callback?error=${error}`)
     expect(await screen.findByRole('dialog', { name: title })).toBeInTheDocument()
-    expect(screen.getByTestId('where')).toHaveTextContent(`/login?error=${error}`)
+  })
+
+  it('any other error goes to the dialog, which says why', async () => {
+    app('/auth/callback?error=github_already_linked&login=octo')
+    expect(await screen.findByText(/This GitHub account \(@octo\) is already linked/)).toBeInTheDocument()
   })
 })
 

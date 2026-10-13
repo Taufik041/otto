@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router'
 import { api, goToGitHub } from '@/api'
 import { ApiError, capitalize, messageOf } from '@/api/errors'
 import { useHealth } from '@/api/queries'
-import { githubErrorMessage, safeNext } from '@/auth/auth'
+import { githubErrorMessage, safeNext, useCallbackError } from '@/auth/auth'
 import { BetaPill, GitHubIcon, Mark } from '@/components/brand'
 import { Glyph, IC } from '@/chat/icons'
 import { useIsMobile } from '@/hooks/useMediaQuery'
@@ -12,14 +12,17 @@ import { GOOGLE_AUTH, LANDING_URL } from '@/utils/links'
 import { MIN_PASSWORD } from '@/utils/password'
 import { StrengthMeter } from './StrengthMeter'
 
-/** The steps of "Log in or sign up". Email first: an account means a password next, none means
- *  a name and a password. Invite-only and paused signups have their own steps. */
-export type Step = 'email' | 'password' | 'new' | 'inbox' | 'invite' | 'inviteDone' | 'offline'
+/** The steps of "Log in or sign up". Email first: an account means a password next (or GitHub,
+ *  for an account made with GitHub that has none), none means a name and a password, then a link
+ *  to confirm the email (confirm). Invite-only and paused signups have their own steps. */
+export type Step = 'email' | 'password' | 'github' | 'new' | 'confirm' | 'inbox' | 'invite' | 'inviteDone' | 'offline'
 
 const TITLE: Record<Step, string> = {
   email: 'Log in or sign up',
   password: 'Welcome back',
+  github: 'Welcome back',
   new: 'Create your account',
+  confirm: 'Check your inbox',
   inbox: 'Check your inbox',
   invite: 'Otto is invite-only right now.',
   inviteDone: 'Request sent',
@@ -47,7 +50,9 @@ export function SignIn({ page = false, initial }: { page?: boolean; initial?: St
   const [params] = useSearchParams()
   const navigate = useNavigate()
   const mobile = useIsMobile()
-  const fromCallback = params.get('error')
+  // a GitHub sign-in that failed comes back with ?error=<code>; invite_only and paused have their own steps
+  const failure = useCallbackError()
+  const fromCallback = failure.code
   const [step, setStep] = useState<Step>(
     initial ?? (fromCallback === 'invite_only' ? 'invite' : fromCallback === 'paused' ? 'offline' : 'email'),
   )
@@ -57,9 +62,14 @@ export function SignIn({ page = false, initial }: { page?: boolean; initial?: St
   const [who, setWho] = useState('')
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
+  const [resent, setResent] = useState(false)
   const [error, setError] = useState<{ field: 'email' | 'name' | 'password' | 'who' | 'form'; message: string } | null>(null)
-  const [banner, setBanner] = useState<string | null>(
-    githubErrorMessage(params.get('github_error')) ?? (fromCallback === 'callback' ? "Sign-in didn't finish. Try again." : null),
+  const [banner, setBanner] = useState<string | null>(() =>
+    fromCallback === 'invite_only' || fromCallback === 'paused'
+      ? null
+      : fromCallback === 'callback'
+        ? "Sign-in didn't finish. Try again."
+        : githubErrorMessage(fromCallback, failure.login, 'signin'),
   )
   const titleId = useId()
   // "Forgot password?" emails a link: hidden where email isn't set up (GET /health)
@@ -95,9 +105,9 @@ export function SignIn({ page = false, initial }: { page?: boolean; initial?: St
     const value = email.trim()
     if (!EMAIL.test(value)) return fail('email', 'Enter a valid email.')
     return run('email', async () => {
-      const { exists } = await api.emailStatus(value)
+      const { exists, password: hasPassword } = await api.emailStatus(value)
       setEmail(value)
-      go(exists ? 'password' : 'new')
+      go(!exists ? 'new' : hasPassword === false ? 'github' : 'password')
     })
   }
 
@@ -130,8 +140,24 @@ export function SignIn({ page = false, initial }: { page?: boolean; initial?: St
         }
         throw err
       }
-      navigate('/welcome', { replace: true })
+      setPassword('')
+      go('confirm')
     })
+  }
+
+  function resend() {
+    return run('form', async () => {
+      await api.resendVerification(email)
+      setResent(true)
+      setBusy(false)
+    })
+  }
+
+  function differentEmail() {
+    setEmail('')
+    setName('')
+    setResent(false)
+    go('email')
   }
 
   function forgot() {
@@ -164,7 +190,9 @@ export function SignIn({ page = false, initial }: { page?: boolean; initial?: St
   const sub: Record<Step, string> = {
     email: 'Describe a change. Otto opens the pull request.',
     password: 'Enter your password to continue.',
+    github: 'This account uses GitHub. Continue with GitHub, or set a password from Settings after signing in.',
     new: 'Add your name and choose a password.',
+    confirm: `We sent a link to ${email}. Open it to confirm your email and log in. It expires in 24 hours.`,
     inbox: `We sent a reset link to ${email}. It expires in 1 hour.`,
     invite: "Tell us who you are and we'll email you when a spot opens.",
     inviteDone: "Thanks. We'll email you when a spot opens, usually within a few days.",
@@ -246,6 +274,21 @@ export function SignIn({ page = false, initial }: { page?: boolean; initial?: St
         </form>
       )}
 
+      {step === 'github' && (
+        <div className="mt-6 flex flex-col gap-3 text-left">
+          <div className="flex h-12 items-center rounded-full bg-tag pl-5 pr-2 text-base">
+            <span className="min-w-0 flex-1 truncate">{email}</span>
+            <button type="button" onClick={() => go('email')} className="h-[34px] border-0 bg-transparent px-3 text-sm text-accent">
+              Edit
+            </button>
+          </div>
+          <Outline disabled={busy} onClick={github}>
+            <GitHubIcon size={18} />
+            Continue with GitHub
+          </Outline>
+        </div>
+      )}
+
       {(step === 'password' || step === 'new') && (
         <form noValidate onSubmit={step === 'password' ? submitPassword : submitNew} className="mt-6 flex flex-col gap-3 text-left">
           <div className="flex h-12 items-center rounded-full bg-tag pl-5 pr-2 text-base">
@@ -290,6 +333,22 @@ export function SignIn({ page = false, initial }: { page?: boolean; initial?: St
           )}
           <Solid disabled={busy}>{step === 'new' ? 'Create account' : 'Continue'}</Solid>
         </form>
+      )}
+
+      {step === 'confirm' && (
+        <div className="mt-6 flex flex-col gap-3">
+          <Outline disabled={busy} onClick={resend}>
+            Resend
+          </Outline>
+          {resent && !error && (
+            <p role="status" className="m-0 text-sm text-muted">
+              Sent. Check your inbox, and your spam folder too.
+            </p>
+          )}
+          <button type="button" onClick={differentEmail} className="border-0 bg-transparent p-0 text-sm text-accent">
+            Use a different email
+          </button>
+        </div>
       )}
 
       {step === 'invite' && (
@@ -424,7 +483,7 @@ export function Solid({ children, disabled }: { children: ReactNode; disabled?: 
   )
 }
 
-function Outline({ children, className, ...props }: ComponentProps<'button'>) {
+export function Outline({ children, className, ...props }: ComponentProps<'button'>) {
   return (
     <button
       type="button"

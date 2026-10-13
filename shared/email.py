@@ -1,9 +1,9 @@
 """Email through Resend's HTTP API (https://resend.com/docs/api-reference/emails/send-email).
 
-Two kinds go out: password-reset links (to the account's own email) and "bring it back up"
-requests (only ever to OTTO_NOTIFY_TO, with the asker as reply_to). Without RESEND_API_KEY,
-development prints each email instead of sending it, and production refuses (EmailUnavailable),
-so the caller can say so.
+Three kinds go out: password-reset and "Confirm your email" links (to the account's own email),
+and "bring it back up" requests (only ever to OTTO_NOTIFY_TO, with the asker as reply_to).
+Without RESEND_API_KEY, development prints each email instead of sending it, and production
+refuses (EmailUnavailable), so the caller can say so.
 """
 import html as html_lib
 import re
@@ -85,6 +85,39 @@ def reset_email(link: str) -> tuple[str, str, str]:
         "If you didn't ask, ignore this email: your password stays the same.",
     ])
     return "Reset your Otto password", text, html
+
+
+VERIFY_SUBJECT = "Confirm your email for Otto"
+
+
+def verify_email(link: str) -> tuple[str, str, str]:
+    """(subject, text, html) for the link that confirms an email sign-up's address."""
+    text = (f"Someone (hopefully you) made an Otto account with this email.\n\n"
+            f"Confirm it here (the link expires in 24 hours and works once):\n{link}\n\n"
+            f"If it wasn't you, ignore this email: the account goes away in a week.\n")
+    e = html_lib.escape
+    html = _html([
+        "Someone (hopefully you) made an Otto account with this email.",
+        f'<a href="{e(link, quote=True)}">Confirm your email</a>. The link expires in 24 hours and works once.',
+        "If it wasn't you, ignore this email: the account goes away in a week.",
+    ])
+    return VERIFY_SUBJECT, text, html
+
+
+def set_password_email(link: str, address: str) -> tuple[str, str, str]:
+    """(subject, text, html) for a link that sets a first password, on an account made with GitHub."""
+    text = (f"Someone (hopefully you) asked to set a password on your Otto account, so you can also log in\n"
+            f"with {address} and a password.\n\n"
+            f"Choose one here (the link expires in 1 hour and works once):\n{link}\n\n"
+            f"If you didn't ask, ignore this email: you keep signing in with GitHub.\n")
+    e = html_lib.escape
+    html = _html([
+        f"Someone (hopefully you) asked to set a password on your Otto account, so you can also log in "
+        f"with {e(address)} and a password.",
+        f'<a href="{e(link, quote=True)}">Choose a password</a>. The link expires in 1 hour and works once.',
+        "If you didn't ask, ignore this email: you keep signing in with GitHub.",
+    ])
+    return "Set your Otto password", text, html
 
 
 def wake_email(who: str, message: str, page: str, user_agent: str, when: datetime | None = None) -> tuple[str, str, str]:

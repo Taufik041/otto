@@ -16,6 +16,7 @@ export const APP_ROUTES = [
   '/signup',
   '/forgot-password',
   '/reset-password',
+  '/verify-email',
   '/request-access',
   '/auth/callback',
   '/welcome',

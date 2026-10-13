@@ -33,7 +33,7 @@ const browser = await chromium.launch()
 let state = null
 async function context(viewport, theme) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1, ...(state ? { storageState: state } : {}) })
-  await ctx.addInitScript((t) => localStorage.setItem('otto.theme', t), theme)
+  await ctx.addInitScript((t) => localStorage.setItem('otto.theme.v2', t), theme)
   return ctx
 }
 

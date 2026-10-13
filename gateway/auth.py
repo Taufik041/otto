@@ -8,6 +8,10 @@ API routes need no CSRF guard; the two cookie routes also check the Origin.
 
 The access token carries the user's token_version: logout-all, or changing or resetting the
 password, bumps it and revokes every refresh token, which signs out every device.
+
+An email sign-up isn't signed in: it gets a "Confirm your email" link (VERIFY_TTL, once), which
+signs it in. Until then it can log in but not chat (403 {"error": "email_unverified"}), and its
+address is anyone's to take (shared.accounts.unconfirmed).
 """
 import re, secrets, uuid
 from datetime import timedelta
@@ -26,12 +30,14 @@ from gateway import limits, tokens
 from gateway.errors import Refused
 from gateway.tokens import check_secret
 from shared import access, config, email
+from shared.accounts import take_unconfirmed, unconfirmed
 from shared.db import get_db
-from shared.models import PasswordReset, User, as_utc, utcnow
+from shared.models import EmailVerification, PasswordReset, User, as_utc, utcnow
 
 REFRESH_COOKIE = "otto_refresh"
 REFRESH_PATH = "/auth"  # the refresh cookie reaches /auth/* only
 RESET_TTL = timedelta(hours=1)
+VERIFY_TTL = timedelta(hours=24)
 MIN_PASSWORD = 8
 EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
@@ -122,8 +128,16 @@ def current_user(user: User | None = Depends(optional_user)) -> User:
     return user
 
 
+def verified_user(user: User = Depends(current_user)) -> User:
+    """The current user, if their email is confirmed (or they signed up with GitHub): chats need it."""
+    if unconfirmed(user):
+        raise Refused(403, "email_unverified", f"Confirm your email first: open the link we sent to {user.email}.")
+    return user
+
+
 def me_json(user: User) -> dict:
-    return {"id": user.id, "email": user.email, "name": user.name, "github_login": user.github_login,
+    return {"id": user.id, "email": user.email, "email_verified": user.email_verified, "name": user.name,
+            "github_login": user.github_login,
             "avatar_url": user.avatar_url, "default_model": user.default_model,
             "daily_token_limit": user.daily_token_limit, "has_password": user.password_hash is not None,
             "created_at": as_utc(user.created_at)}
@@ -190,20 +204,27 @@ def refusal(code) -> Refused:
 
 
 @router.post("/auth/signup", status_code=201, dependencies=[Depends(limits.limit("signup"))])
-def signup(body: Signup, request: Request, response: Response):
+def signup(body: Signup):
     """A new email account, if signups are open to this email (OTTO_SIGNUP_MODE): otherwise 403
-    {"error": "invite_only"}, or 503 {"error": "paused"} while OTTO_ACCEPTING is false."""
-    if user_by_email(body.email) is not None:
+    {"error": "invite_only"}, or 503 {"error": "paused"} while OTTO_ACCEPTING is false. It isn't
+    signed in: it gets a "Confirm your email" link, which signs it in. An unconfirmed account with
+    this email is replaced. 503 {"error": "email_unavailable"} when email isn't set up."""
+    held = user_by_email(body.email)
+    if held is not None and not unconfirmed(held):
         raise HTTPException(409, "an account with this email already exists")
     if code := access.signup_refusal(email=body.email):
         raise refusal(code)
+    if not email.available():
+        raise Refused(503, "email_unavailable", "Sign-up by email isn't available right now. Continue with GitHub.")
     user = User(id=uuid.uuid4().hex, email=body.email, name=body.name, password_hash=hash_password(body.password))
     try:
         with get_db() as s:
+            take_unconfirmed(s, body.email)
             s.add(user)
     except IntegrityError:
         raise HTTPException(409, "an account with this email already exists") from None
-    return signed_in(request, response, user)
+    _email_verify_link(user)  # if it didn't go, "Resend" sends another
+    return {"ok": True, "email": user.email}
 
 
 def _check_password(email, password) -> User:
@@ -236,8 +257,10 @@ class EmailStatus(BaseModel):
 @router.post("/auth/email-status", dependencies=[Depends(limits.limit("email_status"))])
 def email_status(body: EmailStatus):
     """Whether this email has an account, for email-first sign-in: a password next, or a name and
-    a password for a new account. Rate-limited per IP."""
-    return {"exists": user_by_email(body.email) is not None}
+    a password for a new account. password: false for an account made with GitHub that has none
+    yet (sign in with GitHub instead). Rate-limited per IP."""
+    user = user_by_email(body.email)
+    return {"exists": user is not None, "password": user is not None and user.password_hash is not None}
 
 
 class AccessRequestIn(BaseModel):
@@ -401,19 +424,46 @@ def forgot(body: Forgot):
         raise Refused(503, "email_unavailable", "Password reset isn't available right now.")
     user = user_by_email(body.email)
     if user is not None:
-        token = secrets.token_urlsafe(32)
-        with get_db() as s:
-            s.add(PasswordReset(token_hash=token_hash(token), user_id=user.id, expires_at=utcnow() + RESET_TTL))
-        link = f"{config.FRONTEND_URL}/reset-password?token={token}"
-        try:
-            email.send([user.email], *email.reset_email(link))
-        except email.EmailError as e:
-            print(f"[auth] the reset email to user {user.id} didn't go: {e}", flush=True)
+        _email_password_link(user)
     return {"ok": True}
+
+
+def _email_password_link(user: User) -> bool:
+    """Email the user a link that sets their password (RESET_TTL, once): a reset, or for an account
+    made with GitHub, its first one. Whether it went."""
+    token = secrets.token_urlsafe(32)
+    with get_db() as s:
+        s.add(PasswordReset(token_hash=token_hash(token), user_id=user.id, expires_at=utcnow() + RESET_TTL))
+    link = f"{config.FRONTEND_URL}/reset-password?token={token}"
+    message = email.reset_email(link) if user.password_hash else email.set_password_email(link, user.email)
+    try:
+        email.send([user.email], *message)
+        return True
+    except email.EmailError as e:
+        print(f"[auth] the password email to user {user.id} didn't go: {e}", flush=True)
+        return False
+
+
+@router.post("/me/password/setup")
+def set_up_password(user: User = Depends(current_user)):
+    """An account made with GitHub has no password: email it a link that sets one (the reset flow:
+    an hour, once), so it can log in with its email and a password too. 5 an hour per user."""
+    if user.password_hash is not None:
+        raise HTTPException(400, "this account has a password already; change it instead")
+    if not user.email:
+        raise HTTPException(400, "this account has no email to send the link to")
+    if not email.available():
+        raise Refused(503, "email_unavailable", "Otto can't send that right now. Try again later.")
+    limits.hit("password_setup", f"user:{user.id}")
+    if not _email_password_link(user):
+        limits.refund("password_setup", f"user:{user.id}")  # it didn't go: they may try again
+        raise Refused(502, "email_failed", "That didn't send. Try again in a minute.")
+    return {"ok": True, "email": user.email}
 
 
 @router.post("/auth/reset")
 def reset(body: Reset, request: Request, response: Response):
+    """Set the password from an emailed link; it also confirms the email (the link proves it's theirs)."""
     now = utcnow()
     with get_db() as s:
         row = s.get(PasswordReset, token_hash(body.token))
@@ -422,5 +472,128 @@ def reset(body: Reset, request: Request, response: Response):
         # single use, and it uses up the user's other outstanding links too
         s.exec(update(PasswordReset).where(PasswordReset.user_id == row.user_id, PasswordReset.used_at.is_(None))
                .values(used_at=now))
+        s.exec(update(User).where(User.id == row.user_id).values(email_verified=True))
         user = _new_password(s, row.user_id, body.password)
     return signed_in(request, response, user)  # and every other device is signed out
+
+
+# --- confirming the email -----------------------------------------------------------------
+
+def _email_verify_link(user: User) -> bool:
+    """Email the user a link that confirms their address (VERIFY_TTL, once). Whether it went."""
+    token = secrets.token_urlsafe(32)
+    with get_db() as s:
+        s.add(EmailVerification(token_hash=token_hash(token), user_id=user.id, email=user.email,
+                                expires_at=utcnow() + VERIFY_TTL))
+    try:
+        email.send([user.email], *email.verify_email(f"{config.FRONTEND_URL}/verify-email?token={token}"))
+        return True
+    except email.EmailError as e:
+        print(f"[auth] the confirmation email to user {user.id} didn't go: {e}", flush=True)
+        return False
+
+
+def _resend(user: User) -> bool:
+    """Another confirmation link, at most 3 an hour per address (limits.LIMITS); whether it went."""
+    if not email.available():
+        raise Refused(503, "email_unavailable", "Otto can't send that right now. Try again later.")
+    key = f"email:{user.email}"
+    limits.hit("verify_email", key)
+    if not _email_verify_link(user):
+        limits.refund("verify_email", key)  # it didn't go: they may try again
+        return False
+    return True
+
+
+class Verify(BaseModel):
+    token: str = Field(max_length=200)
+
+
+@router.post("/auth/verify")
+def verify_email(body: Verify, request: Request, response: Response):
+    """Confirm the email from the emailed link, and sign in. The link works once, for the address
+    it was sent to."""
+    now = utcnow()
+    with get_db() as s:
+        row = s.get(EmailVerification, token_hash(body.token))
+        user = s.get(User, row.user_id) if row is not None else None
+        if (row is None or row.used_at is not None or as_utc(row.expires_at) <= now or user is None
+                or user.email != row.email):
+            raise HTTPException(400, "this confirmation link is invalid or has expired; ask for a new one")
+        s.exec(update(EmailVerification)
+               .where(EmailVerification.user_id == user.id, EmailVerification.used_at.is_(None)).values(used_at=now))
+        user.email_verified = True
+        s.add(user)
+        s.flush()
+        s.refresh(user)
+    return signed_in(request, response, user)
+
+
+class Resend(BaseModel):
+    email: str = Field(max_length=320)
+
+    _email = field_validator("email")(normal_email)
+
+
+@router.post("/auth/verify/resend")
+def resend_verification(body: Resend):
+    """The sign-in dialog's "Resend": another link for an unconfirmed account with this email.
+    Always the same 200 (an unknown or confirmed email gets nothing), so it doesn't tell who has an
+    account. 3 an hour per address."""
+    user = user_by_email(body.email)
+    if unconfirmed(user):
+        _resend(user)
+    else:
+        if not email.available():
+            raise Refused(503, "email_unavailable", "Otto can't send that right now. Try again later.")
+        limits.hit("verify_email", f"email:{body.email}")
+    return {"ok": True}
+
+
+@router.post("/me/email/verify")
+def resend_mine(user: User = Depends(current_user)):
+    """The "Confirm your email" screen's "Resend". 3 an hour per address."""
+    if not unconfirmed(user):
+        raise HTTPException(400, "this email is confirmed already")
+    if not _resend(user):
+        raise Refused(502, "email_failed", "That didn't send. Try again in a minute.")
+    return {"ok": True, "email": user.email}
+
+
+class EmailChange(BaseModel):
+    email: str = Field(max_length=320)
+
+    _email = field_validator("email")(normal_email)
+
+
+@router.post("/me/email")
+def change_email(body: EmailChange, user: User = Depends(current_user)):
+    """Change an unconfirmed account's email (a typo at sign-up) and send a link to the new one;
+    links to the old one stop working. A confirmed email can't be changed here. 5 an hour per user."""
+    if not unconfirmed(user):
+        raise HTTPException(400, "this email is confirmed already")
+    held = user_by_email(body.email)
+    if held is not None and held.id != user.id and not unconfirmed(held):
+        raise HTTPException(409, "an account with this email already exists")
+    if code := access.signup_refusal(email=body.email):
+        raise refusal(code)
+    if not email.available():
+        raise Refused(503, "email_unavailable", "Otto can't send that right now. Try again later.")
+    limits.hit("email_change", f"user:{user.id}")
+    now = utcnow()
+    try:
+        with get_db() as s:
+            if body.email != user.email:
+                take_unconfirmed(s, body.email)
+            row = s.get(User, user.id)
+            row.email = body.email
+            s.add(row)
+            # links sent to the old address prove nothing about the new one
+            for model in (EmailVerification, PasswordReset):
+                s.exec(update(model).where(model.user_id == user.id, model.used_at.is_(None)).values(used_at=now))
+            s.flush()
+            s.refresh(row)
+    except IntegrityError:
+        raise HTTPException(409, "an account with this email already exists") from None
+    _email_verify_link(row)
+    return me_json(row)

@@ -1,4 +1,4 @@
-import { emptyState, errorCopy, reduce, testSummary, view, type Item, type SessionEvent, type Step } from './reduce'
+import { emptyState, errorCopy, reduce, sending, testSummary, unsend, view, type Item, type SessionEvent, type Step } from './reduce'
 import { call, DIFF, log, mainRun, PYTEST_FAIL, PYTEST_OK } from '@/test/events'
 
 const v = (events: SessionEvent[]) => view(reduce(emptyState(), events))
@@ -226,6 +226,65 @@ describe('retry and follow-ups', () => {
       pr: { updated: true, number: 3, title: 'Fix bulk discount threshold', additions: 4, deletions: 1, files: 2 },
     })
     expect(view_.files.map((f) => f.path)).toContain('tests/test_pricing.py')
+  })
+})
+
+describe('a message just sent (optimistic) and its server copy', () => {
+  const doneChat = () => log().created('what is a closure?', null).status('running')
+    .msg('user', 'what is a closure?').msg('assistant', 'A function.').status('done')
+  const echo = (l: ReturnType<typeof log>, id: string | null, text = 'and in Python?') =>
+    l.add('llm.message', { message: { role: 'user', content: text }, ...(id ? { client_message_id: id } : {}) })
+  const users = (items: Item[]) => items.filter((i) => i.kind === 'user').map((i) => (i.kind === 'user' ? i.text : null))
+
+  it('shows at once, last', () => {
+    const s = sending(reduce(emptyState(), doneChat().events), { id: 'm-1', text: 'and in Python?', repo: null })
+    expect(users(view(s).items)).toEqual(['what is a closure?', 'and in Python?'])
+    expect(view(s).items.at(-1)).toMatchObject({ kind: 'user', text: 'and in Python?' })
+  })
+
+  it('becomes the pending turn\'s message while the follow-up is set up', () => {
+    const l = doneChat()
+    let s = sending(reduce(emptyState(), l.events), { id: 'm-1', text: 'and in Python?', repo: null })
+    s = reduce(s, l.status('provisioning').events)
+    expect(users(view(s).items)).toEqual(['what is a closure?', 'and in Python?'])
+  })
+
+  it('optimistic, then the server event, then a replay of everything: one message', () => {
+    const l = doneChat()
+    let s = sending(reduce(emptyState(), l.events), { id: 'm-1', text: 'and in Python?', repo: null })
+    echo(l.status('provisioning').status('queued').status('running'), 'm-1').msg('assistant', 'Python has them too.').status('done')
+    s = reduce(s, l.events)
+    expect(users(view(s).items)).toEqual(['what is a closure?', 'and in Python?'])
+    s = reduce(s, l.events) // a reconnect replays what it had: deduped by seq
+    expect(users(view(s).items)).toEqual(['what is a closure?', 'and in Python?'])
+    expect(kinds(view(s).items)).toEqual(['user', 'prose', 'user', 'prose', 'nudge'])
+  })
+
+  it('the server copy arriving before the optimistic one is added: never added at all', () => {
+    const l = echo(doneChat().status('provisioning'), 'm-1')
+    const s = sending(reduce(emptyState(), l.events), { id: 'm-1', text: 'and in Python?', repo: null })
+    expect(users(view(s).items)).toEqual(['what is a closure?', 'and in Python?'])
+  })
+
+  it('a gap filled late replays from scratch and still knows the message is in', () => {
+    const l = doneChat()
+    let s = sending(reduce(emptyState(), l.events), { id: 'm-1', text: 'and in Python?', repo: null })
+    echo(l.status('provisioning'), 'm-1').msg('assistant', 'Yes.')
+    const [late, ...rest] = l.events.slice(-3)
+    s = reduce(s, rest)
+    s = reduce(s, [late!])
+    expect(users(view(s).items)).toEqual(['what is a closure?', 'and in Python?'])
+  })
+
+  it('another message with the same text is another message', () => {
+    const l = echo(doneChat(), 'm-0', 'again').msg('assistant', 'ok').status('done')
+    const s = reduce(sending(reduce(emptyState(), l.events), { id: 'm-1', text: 'again', repo: null }), echo(l, 'm-1', 'again').events)
+    expect(users(view(s).items)).toEqual(['what is a closure?', 'again', 'again'])
+  })
+
+  it('a send that failed takes it away', () => {
+    const s = unsend(sending(reduce(emptyState(), doneChat().events), { id: 'm-1', text: 'and in Python?', repo: null }), 'm-1')
+    expect(users(view(s).items)).toEqual(['what is a closure?'])
   })
 })
 

@@ -11,7 +11,8 @@ from brain.main import connect_db
 
 def parse_job(body) -> dict | None:
     """{"type": "start"|"resume"|"chat"|"retry", "session_id": ..., "text": ... (resume; chat
-    follow-ups)}, or None if malformed."""
+    follow-ups), "facts": {...} (plain chats: the live facts for the prompt)}, or None if malformed.
+    Facts that aren't an object are dropped."""
     try:
         job = json.loads(body)
     except ValueError:
@@ -19,6 +20,8 @@ def parse_job(body) -> dict | None:
     if not isinstance(job, dict) or not isinstance(job.get("session_id"), str):
         return None
     kind, text = job.get("type"), job.get("text")
+    if not isinstance(job.get("facts", {}), dict):
+        job.pop("facts")
     if kind in ("start", "retry") or (kind == "resume" and isinstance(text, str)) \
             or (kind == "chat" and (text is None or isinstance(text, str))):
         return job
@@ -32,9 +35,9 @@ async def run_job(conn, job):
     if job["type"] == "chat" or (job["type"] == "retry" and row is not None and row.repo is None):
         # a plain chat: no sandbox, so no bus
         if job["type"] == "chat":
-            await chat_session(sid, job.get("text"))
+            await chat_session(sid, job.get("text"), facts=job.get("facts"))
         else:
-            await retry_chat(sid)
+            await retry_chat(sid, facts=job.get("facts"))
         return
     ch = await conn.channel()
     try:

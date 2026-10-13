@@ -195,7 +195,7 @@ const browser = await chromium.launch()
 
 async function shot(name, { width, theme, path, setup, api, before }) {
   const page = await browser.newPage({ viewport: { width, height: width > 500 ? 900 : 844 }, deviceScaleFactor: 1 })
-  await page.addInitScript((t) => localStorage.setItem('otto.theme', t), theme)
+  await page.addInitScript((t) => localStorage.setItem('otto.theme.v2', t), theme)
   if (before) await page.addInitScript(before)
   await mockApi(page, api)
   await page.goto(APP + path)

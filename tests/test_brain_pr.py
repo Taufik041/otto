@@ -7,7 +7,8 @@ from shared.bus import make_result, results_queue
 from shared.events import load_events
 from shared.sessions import get_session
 from brain import loop, main as brain_main
-from brain.tools import KIND, SYSTEM, TOOLS
+from brain.prompts import SYSTEM
+from brain.tools import KIND, TOOLS
 from tests.fakes import FakeChannel, llm_tool_calls, llm_final
 from tests.test_brain_loop import fake_client
 
@@ -82,7 +83,7 @@ def test_tools_and_prompt():
     assert "git_push" in names and "git_commit" in names
     assert "git_open_pr" not in names and "git_open_pr" not in KIND  # the user opens PRs, not the model
     assert KIND["git_push"] == "git.push"
-    assert SYSTEM.startswith("You are Otto, an autonomous coding agent")
+    assert SYSTEM.startswith("You are Otto") and "autonomous coding agent" in SYSTEM
     assert "git_commit with a short message" in SYSTEM  # the existing text is kept
     assert "git_push" in SYSTEM and "git_open_pr" not in SYSTEM
     assert "the user decides whether to open a pull request" in SYSTEM

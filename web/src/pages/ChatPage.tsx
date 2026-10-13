@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ArrowDown, Ellipsis, Pencil, Square, Trash2 } from 'lucide-react'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import { useParams } from 'react-router'
 import { api } from '@/api'
 import { messageOf } from '@/api/errors'
@@ -37,7 +37,7 @@ function Chat({ id }: { id: string }) {
   const { mobile } = useShell()
   const session = useSession(id)
   const models = useModels()
-  const { view, connection } = useSessionView(id)
+  const { view, connection, send, unsend } = useSessionView(id)
   const composer = useRef<ComposerHandle>(null)
   const [deleting, setDeleting] = useState(false)
   const [renaming, setRenaming] = useState(false)
@@ -50,13 +50,6 @@ function Chat({ id }: { id: string }) {
   })
   const [panelPct, setPanelPct] = useState(45)
   const row = useRef<HTMLDivElement>(null)
-
-  // the follow-up just sent shows until its own message arrives
-  const userCount = view.items.filter((i) => i.kind === 'user' && i.text !== null).length
-  const [sent, setSent] = useState<{ text: string; repo: string | null; after: number } | null>(null)
-  useEffect(() => {
-    if (sent && userCount > sent.after) setSent(null)
-  }, [sent, userCount])
 
   const s = session.data
   const repo = view.repo ?? s?.repo ?? null
@@ -76,7 +69,7 @@ function Chat({ id }: { id: string }) {
   useLayoutEffect(() => {
     if (stuck) toBottom(false)
     else setUnseen(true)
-  }, [view.items, sent, stuck, toBottom])
+  }, [view.items, stuck, toBottom])
   const onScroll = () => {
     const el = scroller.current!
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < STICK
@@ -175,7 +168,6 @@ function Chat({ id }: { id: string }) {
               live={view.live}
               repo={repo}
               branch={branch}
-              sent={sent}
               selectedStep={panelOpen ? ws.step : null}
               onOpenStep={openStep}
               onOpenWorkspace={() => setWs((w) => ({ ...w, open: true }))}
@@ -207,10 +199,11 @@ function Chat({ id }: { id: string }) {
             live: view.live,
             model,
             repo,
-            onSent: (text, r) => {
-              setSent({ text, repo: r, after: userCount })
+            onSending: (m) => {
+              send(m)
               setStuck(true)
             },
+            onSendFailed: unsend,
           }}
         />
       </div>

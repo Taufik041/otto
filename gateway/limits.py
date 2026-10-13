@@ -19,6 +19,9 @@ LIMITS = {  # name -> (requests, per seconds), per IP
     "email_status": (30, 600),
     "access_request": (5, 3600),
     "wake": (1, 3600),            # POST /wake-requests, per user (not per IP)
+    "password_setup": (5, 3600),  # POST /me/password/setup, per user (not per IP)
+    "verify_email": (3, 3600),    # "Confirm your email" resends, per address (not per IP)
+    "email_change": (5, 3600),    # POST /me/email, per user (not per IP)
 }
 MAX_KEYS = 10_000  # past this many (limit, IP) pairs, idle ones are dropped
 TOO_MANY = "Too many attempts. Wait a minute and try again."

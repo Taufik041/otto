@@ -1,10 +1,10 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { api, WS_URL } from '@/api'
 import { keys } from '@/api/queries'
 import type { SessionDetail, SessionSummary } from '@/api/types'
 import { followSession, type LiveState } from './live'
-import { emptyState, reduce, view, type SessionEvent, type View } from './reduce'
+import { emptyState, reduce, sending, unsend, view, type SessionEvent, type State, type View } from './reduce'
 
 const SEEN_DEBOUNCE = 400 // ms: a burst of events posts /seen once
 const ACTIVE = new Set(['provisioning', 'queued', 'running'])
@@ -18,12 +18,25 @@ const visible = () => document.visibilityState === 'visible'
  * row there is cleared at once, and the list is refetched only after the seen post, so it never
  * shows "done" meanwhile. In a hidden tab the list refreshes as usual; seen waits for visibility.
  */
-export function useSessionView(id: string): { view: View; connection: LiveState } {
-  const [state, dispatch] = useReducer(
-    (s: ReturnType<typeof emptyState>, events: SessionEvent[] | 'reset') => (events === 'reset' ? emptyState() : reduce(s, events)),
-    undefined,
-    emptyState,
-  )
+export type Sent = { id: string; text: string; repo: string | null }
+
+type Change = SessionEvent[] | 'reset' | { send: Sent } | { unsend: string }
+
+function change(s: State, c: Change): State {
+  if (c === 'reset') return emptyState()
+  if (Array.isArray(c)) return reduce(s, c)
+  return 'send' in c ? sending(s, c.send) : unsend(s, c.unsend)
+}
+
+export function useSessionView(id: string): {
+  view: View
+  connection: LiveState
+  /** a message this client is sending: shown at once, until its own event (same id) replaces it */
+  send: (m: Sent) => void
+  /** its send failed: take it away */
+  unsend: (id: string) => void
+} {
+  const [state, dispatch] = useReducer(change, undefined, emptyState)
   const [connection, setConnection] = useState<LiveState>('connecting')
   const lastSeq = useRef(0)
   const qc = useQueryClient()
@@ -97,5 +110,7 @@ export function useSessionView(id: string): { view: View; connection: LiveState 
   }, [id, qc])
 
   const v = useMemo(() => view(state), [state])
-  return { view: v, connection }
+  const send = useCallback((m: Sent) => dispatch({ send: m }), [])
+  const unsendIt = useCallback((mid: string) => dispatch({ unsend: mid }), [])
+  return { view: v, connection, send, unsend: unsendIt }
 }

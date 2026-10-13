@@ -10,7 +10,7 @@
  * | repo.attached              | {repo}                                      | the chat becomes an agent chat: later turns get work blocks |
  * | session.status             | {status}                                    | live / final state of the current turn; a new turn when work starts again |
  * | llm.message (system)       | {message}                                   | hidden |
- * | llm.message (user)         | {message}                                   | a user message (the task's own echo is merged) |
+ * | llm.message (user)         | {message, client_message_id?}               | a user message (the task's own echo is merged; a sent one replaces its optimistic copy) |
  * | llm.message (assistant)    | {message: {content, tool_calls?}}           | prose; before the first step it introduces the block, after it a note in the block; without tool calls it is the reply |
  * | llm.message (tool)         | {message}                                   | hidden (bus.result has the same, in full) |
  * | bus.action                 | {action_id, kind, payload}                  | a step (live until its result) |
@@ -203,10 +203,16 @@ type State = {
   pendingModel: string | null
   /** every event folded in, by seq: a late gap is replayed from scratch */
   log: SessionEvent[]
+  /** the message this client just sent (optimistic), until its own event (same id) arrives */
+  sent: { id: string; text: string; repo: string | null } | null
+  /** the client_message_ids of the user messages folded in */
+  clientIds: Set<string>
 }
 
 export const emptyState = (): State => ({
   log: [],
+  sent: null,
+  clientIds: new Set(),
   pendingModel: null,
   proposal: null,
   declined: null,
@@ -334,6 +340,11 @@ function apply(s: State, e: SessionEvent) {
       const role = str(m.role)
       const content = str(m.content)
       if (role === 'user') {
+        const id = str(p.client_message_id)
+        if (id) {
+          s.clientIds.add(id)
+          if (s.sent?.id === id) s.sent = null // the server's copy replaces the optimistic one
+        }
         const t = current(s)
         if (t?.user && !t.user.confirmed && t.user.text === content && t.outcome === null && !s.restart) {
           t.user.confirmed = true // the task's own echo
@@ -694,15 +705,18 @@ export function view(s: State): View {
   const turns = s.turns.map((t, i) =>
     i === s.turns.length - 1 && live && s.restart?.afterFailure ? { ...t, outcome: null, endedAt: null, error: null } : t,
   )
-  if (live && s.restart && !s.restart.afterFailure) {
+  const restart = live && s.restart && !s.restart.afterFailure ? s.restart : null
+  const pending = restart !== null
+  if (restart) {
     turns.push({
       id: 'pending',
-      user: { text: null, repo: null, confirmed: true },
+      // its message is the one just sent, if this client sent it
+      user: { text: s.sent?.text ?? null, repo: s.sent?.repo ?? null, confirmed: true },
       agent: s.repo !== null,
       intro: [],
       rows: [],
       reply: [],
-      startedAt: s.restart.ts,
+      startedAt: restart.ts,
       endedAt: null,
       outcome: null,
       error: null,
@@ -979,6 +993,9 @@ export function view(s: State): View {
   const lastPr = s.prs[s.prs.length - 1]
   if (!known.pr && lastPr) known.pr = { number: lastPr.number, url: lastPr.url, title: null }
 
+  // a message just sent whose turn hasn't started: it goes last
+  if (s.sent && !pending) items.push({ kind: 'user', id: `sent-${s.sent.id}`, text: s.sent.text, repo: s.sent.repo })
+
   // a plain chat that has answered: the gentle nudge to mention a repo
   const last = items[items.length - 1]
   if (!s.repo && !live && last?.kind === 'prose') items.push({ kind: 'nudge', id: 'nudge' })
@@ -1008,18 +1025,30 @@ export function reduce(prev: State, events: SessionEvent[]): State {
     seen: new Set(prev.seen),
     turns: prev.turns.map((t) => ({ ...t, user: t.user && { ...t.user }, intro: [...t.intro], rows: [...t.rows], reply: [...t.reply] })),
     actions: new Map([...prev.actions].map(([k, a]) => [k, { ...a }])),
+    clientIds: new Set(prev.clientIds),
     restart: prev.restart && { ...prev.restart },
     prs: [...prev.prs],
   }
   // an event older than ones already folded in (a gap filled late) needs a full replay
   const maxSeen = Math.max(0, ...prev.seen)
-  if (fresh[0]!.seq < maxSeen) return reduce(emptyState(), [...prev.log, ...fresh])
+  if (fresh[0]!.seq < maxSeen) return reduce({ ...emptyState(), sent: prev.sent }, [...prev.log, ...fresh])
   for (const e of fresh) {
     s.seen.add(e.seq)
     apply(s, e)
   }
   s.log = [...prev.log, ...fresh]
   return s
+}
+
+/** A message this client is sending (optimistic): shown last until its event, with the same
+ *  client_message_id, replaces it. One whose event is in already is never added. */
+export function sending(prev: State, sent: { id: string; text: string; repo: string | null }): State {
+  return prev.clientIds.has(sent.id) ? prev : { ...prev, sent }
+}
+
+/** The send failed: take the optimistic message away. */
+export function unsend(prev: State, id: string): State {
+  return prev.sent?.id === id ? { ...prev, sent: null } : prev
 }
 
 export type { State }

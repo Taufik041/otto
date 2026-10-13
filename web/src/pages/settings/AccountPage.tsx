@@ -21,6 +21,8 @@ export function AccountPage() {
   const [pwOpen, setPwOpen] = useState(false)
   const [pwChanged, setPwChanged] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
+  // an account made with GitHub has no password: a link (the reset flow) sets one
+  const setUp = useMutation({ mutationFn: api.setUpPassword })
 
   const signOut = async (all: boolean) => {
     try {
@@ -51,6 +53,10 @@ export function AccountPage() {
             <Button variant="outline" size="sm" onClick={() => setPwOpen(true)}>
               Change password
             </Button>
+          ) : me.email ? (
+            <Button variant="outline" size="sm" disabled={setUp.isPending} onClick={() => setUp.mutate()}>
+              Set a password
+            </Button>
           ) : (
             <span className="text-sm text-muted">Signs in with GitHub</span>
           )}
@@ -74,6 +80,16 @@ export function AccountPage() {
           </Row>
         )}
       </Card>
+      {setUp.isSuccess && (
+        <p role="status" className="-mt-4 mb-0 text-sm text-ok">
+          We emailed a link to {setUp.data.email}. Open it within 1 hour to set your password, then log in with your email and password too.
+        </p>
+      )}
+      {setUp.isError && (
+        <p role="alert" className="-mt-4 mb-0 text-sm text-bad">
+          {messageOf(setUp.error)}
+        </p>
+      )}
       {pwChanged && (
         <p role="status" className="-mt-4 mb-0 text-sm text-ok">
           Password changed. Your other devices are signed out.

@@ -11,7 +11,7 @@ ENV PATH=/opt/venv/bin:$PATH
 WORKDIR /src
 # the dependencies first, so a code change doesn't reinstall them
 COPY pyproject.toml ./
-RUN mkdir -p shared runner brain orchestrator gateway \
+RUN mkdir -p shared runner brain/prompts orchestrator gateway \
     && pip install . && pip uninstall -y otto
 COPY shared/ shared/
 COPY runner/ runner/

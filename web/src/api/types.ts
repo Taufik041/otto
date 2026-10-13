@@ -13,6 +13,8 @@ export type Health = {
 export type Me = {
   id: string
   email: string | null
+  /** false: an email sign-up that hasn't opened its confirmation link (it can't chat yet) */
+  email_verified?: boolean
   name: string
   github_login: string | null
   avatar_url: string | null

@@ -93,8 +93,10 @@ shows the app's own components.
   dark, as CSS variables. Tailwind utilities map onto them (`bg-bg2`, `text-muted`,
   `border-line`, `bg-accent-bg`, ...).
   - The theme is `data-theme` on `<html>`.
-  - The choice (Light / Dark / System, **Light by default**) is kept in `localStorage` as
-    `otto.theme`, and `index.html` applies it before first paint.
+  - The choice (Light / Dark / System, **System by default**: the OS setting, followed live) is
+    kept in `localStorage` as `otto.theme.v2` once the user picks one, and `index.html` applies it
+    before first paint by the same rule. The old `otto.theme` key (from when Light was the
+    default) only counts its `dark`: a stored `light` may never have been picked.
   - The favicon (`public/favicon-{light,dark}.svg`, `-32.png`, `-180.png`) and `theme-color`
     follow the active theme, including the in-app toggle.
   - Blue is the brand, not the button: links, focus rings, the working dot and spinners, selected
@@ -145,8 +147,16 @@ explains it on /login (signed out) or on home (signed in).
      (production without `RESEND_API_KEY`).
 3. **Create your account:** a name and a password, then `POST /auth/signup`.
    - The only rule is the gateway's: at least 8 characters. The meter's other advice is optional.
+   - It doesn't sign in: "Check your inbox" names the address, with "Resend"
+     (`POST /auth/verify/resend`, 3 an hour) and "Use a different email" (back to the email step).
+     The emailed link, `/verify-email?token=...` (`src/pages/auth/VerifyPage.tsx`), confirms the
+     email and signs in; someone signed in and confirmed already lands on the app.
    - 403 `invite_only` opens the request-access form (`POST /access-requests`), then "Request sent".
    - 503 `paused`, or an unreachable gateway, shows "Otto is offline right now."
+
+Signed in before confirming, `RequireAuth` shows "Confirm your email"
+(`src/pages/auth/ConfirmEmailPage.tsx`) instead of any app page: Resend (`POST /me/email/verify`),
+Change email (`POST /me/email`) and Sign out.
 
 A GitHub sign-up the gateway refused comes back as `/auth/callback?error=invite_only|paused`, and
 the dialog opens in that state. "Continue with Google" shows only with `VITE_GOOGLE_AUTH=1`, and

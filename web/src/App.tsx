@@ -4,6 +4,7 @@ import { GuestOnly, RequireAuth } from './auth/guards'
 import { CallbackPage } from './pages/auth/CallbackPage'
 import { LoginPage } from './pages/auth/LoginPage'
 import { ResetPage } from './pages/auth/ResetPage'
+import { VerifyPage } from './pages/auth/VerifyPage'
 import { HomePage } from './pages/HomePage'
 import { LegalPage } from './pages/legal/LegalPage'
 import { NotFoundPage } from './pages/NotFoundPage'
@@ -24,6 +25,7 @@ export default function App() {
       <Route path="/request-access" element={<RequestAccessPage />} />
       <Route path="/legal/:doc" element={<LegalPage />} />
       <Route path="/reset-password" element={<ResetPage />} />
+      <Route path="/verify-email" element={<VerifyPage />} />
       <Route path="/auth/callback" element={<CallbackPage />} />
       <Route path="/welcome" element={<RequireAuth><OnboardingPage /></RequireAuth>} />
       <Route path="/settings/:section?" element={<RequireAuth><Suspense fallback={<div className="h-full bg-bg" />}><SettingsLayout /></Suspense></RequireAuth>} />

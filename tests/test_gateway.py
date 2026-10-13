@@ -651,7 +651,8 @@ def test_retry_of_a_plain_chat_needs_no_sandbox(client, env):
     sid = client.post("/sessions", json={"message": "hi"}).json()["id"]
     set_status(sid, "failed")
     assert client.post(f"/sessions/{sid}/retry").status_code == 202
-    assert orch.calls == [] and jobs(ch)[-1] == {"type": "retry", "session_id": sid}
+    assert orch.calls == [] and jobs(ch)[-1] == {"type": "retry", "session_id": sid,
+                                                 "facts": {"workers": "online", "repos": ["Taufik041/otto_test"]}}
 
 
 @pytest.mark.parametrize("status", ["done", "stopped", "running", "queued", "limited"])

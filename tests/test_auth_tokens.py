@@ -10,7 +10,7 @@ from shared import config
 from shared.db import get_db
 from shared.models import RefreshToken, User, utcnow
 from tests.conftest import ORIGIN
-from tests.fakes import PASSWORD
+from tests.fakes import PASSWORD, confirm_email
 from tests.test_tokens import backdate_revocations
 
 EMAIL = "taufik@example.com"
@@ -41,8 +41,11 @@ def bearer(token) -> dict:
 
 
 def sign_up(api, email=EMAIL):
-    r = api.post("/auth/signup", json={"name": "Taufik", "email": email, "password": PASSWORD})
-    assert r.status_code == 201, r.text
+    """Sign up, confirm the email and log in: the login's response."""
+    assert api.post("/auth/signup", json={"name": "Taufik", "email": email, "password": PASSWORD}).status_code == 201
+    confirm_email(email)
+    r = api.post("/auth/login", json={"email": email, "password": PASSWORD})
+    assert r.status_code == 200, r.text
     return r
 
 

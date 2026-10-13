@@ -23,8 +23,6 @@ export type ThreadProps = {
   live: boolean
   repo: string | null
   branch: string | null
-  /** the follow-up just sent, until its own event arrives */
-  sent: { text: string; repo: string | null } | null
   selectedStep: string | null
   onOpenStep: (s: Step) => void
   onOpenWorkspace: () => void
@@ -152,15 +150,13 @@ export function Thread(p: ThreadProps) {
     spinAt = i
     break
   }
-  // the pending turn's message is the one just sent; before its turn shows up, it goes last
-  const pendingTurn = p.items.some((i) => i.kind === 'user' && i.text === null)
 
   return (
     <>
       {p.items.map((it, i) => {
         switch (it.kind) {
           case 'user': {
-            if (it.text === null) return p.sent ? <UserBubble key={it.id} text={p.sent.text} repo={p.sent.repo} /> : null
+            if (it.text === null) return null // a follow-up being set up that this client didn't send
             return <UserBubble key={it.id} text={it.text} repo={it.repo} />
           }
           case 'prose':
@@ -239,7 +235,6 @@ export function Thread(p: ThreadProps) {
             )
         }
       })}
-      {p.sent && !pendingTurn && <UserBubble text={p.sent.text} repo={p.sent.repo} />}
     </>
   )
 }
