@@ -1,20 +1,17 @@
 import { Fragment, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
 import { useIsMobile } from '@/hooks/useMediaQuery'
-import { BUILD_DATE, CONTACT_EMAIL } from '@/utils/links'
+import { BUILD_DATE, CONTACT_EMAIL, SUPPORT_EMAIL } from '@/utils/links'
 import { NotFoundPage } from '../NotFoundPage'
 import { PublicLayout } from '../public/PublicLayout'
 import { LEGAL, LEGAL_DOCS, longDate, OPERATOR, type LegalDoc } from './content'
 
-/** The contact email inside a paragraph, as a link. */
+const MAIL = new RegExp(`(${[CONTACT_EMAIL, SUPPORT_EMAIL].map((m) => m.replace(/\./g, '\\.')).join('|')})`)
+
+/** The contact and support emails inside a paragraph, as links. */
 function withMail(text: string): ReactNode {
-  const parts = text.split(CONTACT_EMAIL)
-  return parts.map((p, i) => (
-    <Fragment key={i}>
-      {p}
-      {i < parts.length - 1 && <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>}
-    </Fragment>
-  ))
+  // split with a capture group: the emails are the odd parts
+  return text.split(MAIL).map((p, i) => <Fragment key={i}>{i % 2 ? <a href={`mailto:${p}`}>{p}</a> : p}</Fragment>)
 }
 
 /** /legal/terms, /legal/privacy, /legal/acceptable-use: a readable article (720px) with, on

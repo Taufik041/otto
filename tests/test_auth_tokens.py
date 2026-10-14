@@ -8,7 +8,7 @@ from sqlmodel import select
 
 from shared import config
 from shared.db import get_db
-from shared.models import RefreshToken, User, utcnow
+from shared.models import RefreshToken, utcnow
 from tests.conftest import ORIGIN
 from tests.fakes import PASSWORD, confirm_email
 from tests.test_tokens import backdate_revocations
@@ -336,11 +336,13 @@ def test_resetting_the_password_voids_every_token_and_signs_this_device_in(api, 
     assert api.post("/auth/refresh").status_code == 401
 
 
-def test_deleting_the_account_deletes_its_refresh_tokens(api):
+def test_deleting_the_account_revokes_its_refresh_tokens(api):
     access = sign_up(api).json()["access_token"]
-    assert api.delete("/me", headers=bearer(access)).status_code == 200
+    r = api.request("DELETE", "/me", headers=bearer(access), json={"confirm": "DELETE", "password": PASSWORD})
+    assert r.status_code == 200
     with get_db() as s:
-        assert s.exec(select(RefreshToken)).all() == [] and s.exec(select(User)).all() == []
+        assert [t.revoked_reason for t in s.exec(select(RefreshToken)).all()] == ["deleted"]
+    assert api.post("/auth/refresh").status_code == 401
 
 
 # --- the old login cookie is gone ---------------------------------------------------------------

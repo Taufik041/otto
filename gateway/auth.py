@@ -30,7 +30,7 @@ from gateway import limits, tokens
 from gateway.errors import Refused
 from gateway.tokens import check_secret
 from shared import access, config, email
-from shared.accounts import take_unconfirmed, unconfirmed
+from shared.accounts import deleted, take_unconfirmed, unconfirmed
 from shared.db import get_db
 from shared.models import EmailVerification, PasswordReset, User, as_utc, utcnow
 
@@ -110,8 +110,11 @@ def user_from_access(token) -> User | None:
         return None
     with get_db() as s:
         user = s.get(User, claims["sub"])
-    # a token from before the last logout-all, password change or reset is void
-    return user if user is not None and claims.get("ver") == user.token_version else None
+    # a token from before the last logout-all, password change or reset is void; a deleted
+    # account's are too (its version was bumped), and it signs nobody in anyway
+    if user is None or deleted(user) or claims.get("ver") != user.token_version:
+        return None
+    return user
 
 
 def optional_user(token: str | None = Depends(oauth2),
@@ -309,7 +312,7 @@ def refresh(request: Request, response: Response):
     user_id, new = got
     with get_db() as s:
         user = s.get(User, user_id)
-    if user is None:
+    if user is None or deleted(user):
         return _refused(401, "sign in again")
     set_refresh(response, new)
     return token_body(user)

@@ -41,7 +41,7 @@ from sqlmodel import select
 from gateway import auth, tokens
 from gateway.errors import Refused
 from shared import access, config
-from shared.accounts import take_unconfirmed
+from shared.accounts import deleted, take_unconfirmed
 from shared.db import get_db
 from shared.models import Installation, User
 
@@ -228,7 +228,8 @@ def _browser_user(request: Request) -> User | None:
     if user_id is None:
         return None
     with get_db() as s:
-        return s.get(User, user_id)
+        user = s.get(User, user_id)
+    return None if deleted(user) else user
 
 
 def _flow_user(claims, browser: User | None) -> User | None:
@@ -242,7 +243,7 @@ def _flow_user(claims, browser: User | None) -> User | None:
         raise Failed("state_invalid", f"started by user {uid}, but {browser.id} is signed in")
     with get_db() as s:
         user = s.get(User, uid)
-    if user is None:
+    if user is None or deleted(user):
         raise Failed("state_invalid", f"user {uid}, who started this, no longer exists")
     return user
 
@@ -532,11 +533,21 @@ def open_pull(installation_id, full_name, title, body, head, base) -> dict:
     raise GitHubError(msg.replace(token, "[REDACTED]"))
 
 
+def uninstall_url(installation_id, account_login, user_login) -> str:
+    """Where on GitHub to uninstall the App from an installation: the user's own settings, or the
+    organization's. Otto can't uninstall it for them."""
+    own = (account_login or "").lower() == (user_login or "").lower()
+    where = "settings" if own else f"organizations/{account_login}/settings"
+    return f"{WEB}/{where}/installations/{installation_id}"
+
+
 @router.get("/github")
 def github_status(user: User = Depends(auth.current_user)):
     rows = installations_of(user.id)
     return {"connected": bool(rows), "login": user.github_login, "avatar_url": user.avatar_url,
-            "installations": [{"id": r.id, "account_login": r.account_login} for r in rows]}
+            "installations": [{"id": r.id, "account_login": r.account_login,
+                               "uninstall_url": uninstall_url(r.id, r.account_login, user.github_login)}
+                              for r in rows]}
 
 
 @router.delete("/github/installations/{installation_id}")
@@ -549,9 +560,7 @@ def unlink_installation(installation_id: int, user: User = Depends(auth.current_
             raise HTTPException(404, f"no installation {installation_id}")
         s.delete(row)
     forget(user.id, installation_id)
-    own = (row.account_login or "").lower() == (user.github_login or "").lower()
-    where = "settings" if own else f"organizations/{row.account_login}/settings"
-    return {"id": installation_id, "uninstall_url": f"{WEB}/{where}/installations/{installation_id}"}
+    return {"id": installation_id, "uninstall_url": uninstall_url(installation_id, row.account_login, user.github_login)}
 
 
 @router.get("/repos")

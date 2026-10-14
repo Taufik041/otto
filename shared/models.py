@@ -82,6 +82,12 @@ class User(SQLModel, table=True):
     daily_token_limit: int = Field(default_factory=lambda: config.DAILY_TOKEN_LIMIT)
     token_version: int = Field(default=0, sa_column_kwargs={"server_default": "0"})  # in login tokens; +1 signs out
     created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
+    # deleted (shared.accounts.deactivate): signs nobody in, and holds no email or GitHub login; its
+    # data is purged later (purged_at), leaving an anonymous row
+    deleted_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    # sha256s of the email and GitHub login it had, for the purge to find its access requests
+    purge_keys: list | None = Field(default=None, sa_column=sa.Column(sa.JSON().with_variant(JSONB(), "postgresql")))
+    purged_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
 
 
 class PasswordReset(SQLModel, table=True):
@@ -107,7 +113,7 @@ class EmailVerification(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
 
 
-REVOKED_REASONS = ("rotated", "logout", "reuse", "password", "logout_all")
+REVOKED_REASONS = ("rotated", "logout", "reuse", "password", "logout_all", "deleted")
 
 
 class RefreshToken(SQLModel, table=True):

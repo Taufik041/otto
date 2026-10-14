@@ -2,7 +2,7 @@
  * The legal pages' text, in plain language. Otto is a non-commercial demo run by one person; the
  * text says so, names both sites, and gives one contact. "Last updated" is the build date.
  */
-import { CONTACT_EMAIL } from '@/utils/links'
+import { CONTACT_EMAIL, SUPPORT_EMAIL } from '@/utils/links'
 
 export type LegalDoc = 'terms' | 'privacy' | 'acceptable-use'
 export type LegalSection = { id: string; heading: string; body: string[] }
@@ -71,12 +71,13 @@ const PRIVACY: Legal = {
       'Otto runs on infrastructure from Vercel (the web app), AWS and Cloudflare (servers and networking), and on personal hardware (the sandboxes). They process data only to provide those services.'),
     s('retention', 'Retention and deletion',
       'Chats are kept until you delete them or your account. A sandbox and its files are removed when its task ends or goes idle.',
-      'Deleting your account deactivates it immediately. Its data is permanently deleted, or anonymized, within 30 days. Security logs may be kept a little longer when needed to stop abuse.'),
+      'Deleting your account deactivates it immediately. Its data is permanently deleted, or anonymized, within 30 days. Security logs may be kept a little longer when needed to stop abuse.',
+      `Delete your account in Settings → Account, or ask ${SUPPORT_EMAIL} to delete it for you. Pull requests Otto already opened live in your own repositories on GitHub and stay there, and the GitHub App stays installed until you uninstall it on GitHub.`),
     s('selling', 'No selling of data', 'We never sell or rent your personal data, and we don\'t share it except as this policy describes or when the law requires it.'),
     s('cookies', 'Cookies',
       'Otto uses only essential cookies: one that keeps you signed in, and short-lived ones that protect GitHub sign-in. No analytics or advertising cookies. Your theme choice is kept in your browser\'s local storage.'),
     s('choices', 'Your choices',
-      `In Settings you can rename or delete chats, disconnect GitHub, change models, and delete your account. Email ${CONTACT_EMAIL} to get a copy of your data or to correct it.`),
+      `In Settings you can rename or delete chats, disconnect GitHub, change models, and delete your account. Email ${CONTACT_EMAIL} to get a copy of your data or to correct it, and ${SUPPORT_EMAIL} to have your account deleted.`),
     s('contact', 'Contact', `Write to ${CONTACT_EMAIL} about anything in this policy.`),
   ],
 }

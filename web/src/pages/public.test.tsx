@@ -55,8 +55,18 @@ describe('the legal pages', () => {
     const text = (await screen.findByRole('article')).textContent!
     for (const phrase of ['What we collect', 'event log', 'Security logs', 'AI providers', 'OpenRouter', 'OpenAI', 'GitHub access',
       'only when you approve', 'Vercel', 'AWS', 'Cloudflare', 'deactivates it immediately', 'within 30 days', 'never sell',
-      'only essential cookies', 'Your choices'])
+      'only essential cookies', 'Your choices', 'Security logs may be kept a little longer'])
       expect(text).toContain(phrase)
+  })
+
+  it('the privacy policy names support@taufi.dev for deleting an account, as a link', async () => {
+    app('/legal/privacy')
+    const retention = (await screen.findByRole('heading', { name: 'Retention and deletion' })).parentElement!
+    expect(retention).toHaveTextContent(
+      'Deleting your account deactivates it immediately. Its data is permanently deleted, or anonymized, within 30 days.',
+    )
+    expect(retention).toHaveTextContent('ask support@taufi.dev to delete it for you')
+    expect(within(retention).getByRole('link', { name: 'support@taufi.dev' })).toHaveAttribute('href', 'mailto:support@taufi.dev')
   })
 
   it('acceptable use: no malware, attacks, sandbox abuse, illegal use, limit dodging, other people\'s repos', async () => {

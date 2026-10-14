@@ -11,7 +11,7 @@ from gateway import auth, github_app
 from shared import config
 from shared.db import get_db
 from shared.models import User
-from tests.fakes import sign_out, signup
+from tests.fakes import PASSWORD, sign_out, signup
 
 
 def start(client, how="get") -> str:
@@ -153,10 +153,10 @@ def test_link_mode_links_by_the_states_uid_without_a_refresh_cookie(client, fake
 def test_a_link_for_a_deleted_account_is_state_invalid(client, fake_github):
     signup(client)
     state = start(client, "link")
-    client.delete("/me")
+    client.request("DELETE", "/me", json={"confirm": "DELETE", "password": PASSWORD})
     fake_github.add_user("c1", gid=101, login="Taufik041")
     failed(callback(client, code="c1", state=state), "state_invalid", "/settings/github")
-    assert users() == []
+    assert [u.github_id for u in users()] == [None]  # only the deleted account, linked to nothing
 
 
 def test_a_state_started_signed_out_links_to_whoever_is_signed_in_at_the_callback(client, fake_github):

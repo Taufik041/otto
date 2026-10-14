@@ -51,3 +51,79 @@ describe('Settings → Account: the password of an account made with GitHub', ()
     expect(within(passwordRow()).getByRole('button', { name: 'Change password' })).toBeInTheDocument()
   })
 })
+
+vi.mock('@/utils/links', async (original) => ({ ...(await original<typeof import('@/utils/links')>()), goToLanding: vi.fn() }))
+
+describe('Settings → Account → Delete account', () => {
+  function deleting(user: Me, answer: () => Response = () => HttpResponse.json({ ok: true })) {
+    const sent: unknown[] = []
+    server.use(
+      http.delete(`${API}/me`, async ({ request }) => {
+        sent.push(await request.json())
+        return answer()
+      }),
+      http.post(`${API}/auth/logout`, () => HttpResponse.json({ ok: true })),
+      http.get(`${API}/github`, () =>
+        HttpResponse.json({
+          connected: true, login: 'Taufik041', avatar_url: null,
+          installations: [{ id: 555, account_login: 'Taufik041', uninstall_url: 'https://github.com/settings/installations/555' }],
+        }),
+      ),
+    )
+    renderSignedIn(<Routes><Route path="/settings/account" element={<AccountPage />} /></Routes>, { path: '/settings/account', user })
+    return sent
+  }
+
+  const open = async () => {
+    await userEvent.click(screen.getByRole('button', { name: 'Delete account' }))
+    return screen.findByRole('dialog', { name: 'Delete your account?' })
+  }
+
+  it('explains what happens: deactivated now, deleted within 30 days, PRs stay, uninstall the App on GitHub', async () => {
+    deleting({ ...me, has_password: true })
+    const dialog = await open()
+    expect(dialog).toHaveTextContent('deactivated right away')
+    expect(dialog).toHaveTextContent('permanently deleted within 30 days')
+    expect(dialog).toHaveTextContent('Pull requests Otto already opened live in your own repositories on GitHub, and they stay there.')
+    expect(await within(dialog).findByRole('link', { name: 'Taufik041 ›' })).toHaveAttribute(
+      'href', 'https://github.com/settings/installations/555',
+    )
+  })
+
+  it('needs DELETE typed and the password; then it deletes and goes to the landing page', async () => {
+    const { goToLanding } = await import('@/utils/links')
+    const sent = deleting({ ...me, has_password: true })
+    const dialog = await open()
+    const button = within(dialog).getByRole('button', { name: 'Delete account' })
+    await userEvent.type(within(dialog).getByLabelText('Type DELETE to confirm'), 'delete')
+    expect(button).toBeDisabled()
+    await userEvent.clear(within(dialog).getByLabelText('Type DELETE to confirm'))
+    await userEvent.type(within(dialog).getByLabelText('Type DELETE to confirm'), 'DELETE')
+    expect(button).toBeDisabled() // and the password
+    await userEvent.type(within(dialog).getByLabelText('Password'), 'correct horse')
+    await userEvent.click(button)
+    await waitFor(() => expect(goToLanding).toHaveBeenCalled())
+    expect(sent).toEqual([{ confirm: 'DELETE', password: 'correct horse' }])
+  })
+
+  it('a wrong password says so, and nothing is deleted', async () => {
+    const { goToLanding } = await import('@/utils/links')
+    vi.mocked(goToLanding).mockClear()
+    deleting({ ...me, has_password: true }, () => HttpResponse.json({ detail: 'the password is wrong' }, { status: 403 }))
+    const dialog = await open()
+    await userEvent.type(within(dialog).getByLabelText('Type DELETE to confirm'), 'DELETE')
+    await userEvent.type(within(dialog).getByLabelText('Password'), 'nope nope')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete account' }))
+    expect(await within(dialog).findByText("That password isn't right.")).toBeInTheDocument()
+    expect(goToLanding).not.toHaveBeenCalled()
+  })
+
+  it('an account without a password only types DELETE', async () => {
+    const sent = deleting(githubMade)
+    const dialog = await open()
+    expect(within(dialog).queryByLabelText('Password')).not.toBeInTheDocument()
+    await userEvent.type(within(dialog).getByLabelText('Type DELETE to confirm'), 'DELETE')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete account' }))
+    await waitFor(() => expect(sent).toEqual([{ confirm: 'DELETE', password: null }]))
+  })
+})
