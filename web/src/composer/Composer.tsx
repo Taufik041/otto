@@ -29,8 +29,19 @@ export type Reply = {
   live: boolean
   model: string | null
   repo: string | null
-  /** the follow-up went: the chat shows it until its own event arrives */
-  onSent: (text: string, repo: string | null) => void
+  /** a follow-up is being sent: the chat shows it until its own event (same id) replaces it */
+  onSending: (m: { id: string; text: string; repo: string | null }) => void
+  /** its send failed: the chat takes it away */
+  onSendFailed: (id: string) => void
+}
+
+/** A new id for a message: the gateway stores it once, however often it's posted. */
+function clientMessageId(): string {
+  try {
+    return crypto.randomUUID()
+  } catch {
+    return `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
+  }
 }
 
 export type ComposerHandle = { mention: () => void }
@@ -96,25 +107,27 @@ export function Composer({
   const selectedModel = models.data?.models.find((m) => m.id === current)
 
   const send = useMutation({
-    mutationFn: async (body: { message: string; repo: string | null; model: string | null }) => {
+    mutationFn: async ({ id, ...body }: { id: string; message: string; repo: string | null; model: string | null }) => {
       if (!reply) return (await api.createSession(body)).id
+      reply.onSending({ id, text: body.message, repo: body.repo })
       await api.followUp(reply.sessionId, {
+        client_message_id: id,
         text: body.message,
         ...(body.repo ? { repo: body.repo } : {}),
         ...(body.model ? { model: body.model } : {}),
       })
       return reply.sessionId
     },
-    onSuccess: (id, body) => {
+    onSuccess: (id) => {
       qc.invalidateQueries({ queryKey: keys.sessions })
       qc.invalidateQueries({ queryKey: keys.usage })
       if (!reply) return navigate(`/c/${id}`)
-      reply.onSent(body.message, body.repo)
       setDraft('')
       setRepo(null)
       setModel(null) // the chat is on the picked model now (session.model_changed)
     },
-    onError: (e) => {
+    onError: (e, body) => {
+      reply?.onSendFailed(body.id)
       const p = sendProblem(e)
       setProblem(p)
       if (p.kind === 'model') qc.invalidateQueries({ queryKey: keys.models })
@@ -141,7 +154,7 @@ export function Composer({
     setOpen(null)
     // a reply names a model only to switch to it
     const switchTo = reply ? (model && model !== reply.model ? model : null) : model
-    send.mutate({ message, repo: target?.full_name ?? null, model: switchTo })
+    send.mutate({ id: clientMessageId(), message, repo: target?.full_name ?? null, model: switchTo })
   }
 
   function onChange(value: string, caret: number) {

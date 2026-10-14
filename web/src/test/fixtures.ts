@@ -3,6 +3,7 @@ import type { Me, Model, Repo, SessionSummary, TokenBody } from '@/api/types'
 export const me: Me = {
   id: 'u1',
   email: 'taufik@hey.com',
+  email_verified: true,
   name: 'Taufik Khan',
   github_login: 'Taufik041',
   avatar_url: null,

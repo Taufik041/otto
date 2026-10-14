@@ -51,7 +51,9 @@ def test_a_plain_chat_never_creates_a_sandbox_and_its_reply_is_stored(client, en
     assert r.status_code == 201
     sid = r.json()["id"]
     assert r.json() == {"id": sid, "status": "queued", "title": "what is a closure?", "repo": None}
-    assert jobs(ch) == [{"type": "chat", "session_id": sid}]
+    # a plain chat's job carries the live facts its prompt tells the model (tests/test_prompts.py)
+    facts = {"workers": "online", "repos": ["Taufik041/otto_test", "some-org/api"]}
+    assert jobs(ch) == [{"type": "chat", "session_id": sid, "facts": facts}]
     fake_llm(monkeypatch, [llm_final("A function that remembers where it was made.")])
 
     run_worker(ch, jobs(ch)[0])
@@ -71,8 +73,35 @@ def test_a_plain_chat_follow_up_is_a_chat_job(client, env):
     r = client.post(f"/sessions/{sid}/messages", json={"text": "and in Python?"})
 
     assert r.status_code == 202 and r.json()["repo"] is None
-    assert jobs(ch)[-1] == {"type": "chat", "session_id": sid, "text": "and in Python?"}
+    assert jobs(ch)[-1] == {"type": "chat", "session_id": sid, "text": "and in Python?",
+                            "facts": {"workers": "online", "repos": ["Taufik041/otto_test", "some-org/api"]}}
     assert orch.calls == []
+
+
+def test_a_plain_chat_job_says_when_the_workers_are_offline(client, env):
+    ch, orch, _ = env
+    orch.online = False
+    r = client.post("/sessions", json={"message": "why are the workers offline?"})
+    assert r.status_code == 201
+    assert jobs(ch)[-1]["facts"]["workers"] == "offline"
+
+
+def test_a_plain_chat_job_leaves_the_repos_out_when_github_cant_say(client, env, monkeypatch):
+    from gateway import github_app
+
+    def broken(user_id):
+        raise github_app.GitHubError("GitHub is down")
+
+    monkeypatch.setattr(github_app, "user_repos", broken)
+    ch, _, _ = env
+    client.post("/sessions", json={"message": "hi"})
+    assert jobs(ch)[-1]["facts"] == {"workers": "online"}
+
+
+def test_an_agent_job_carries_no_facts(client, env):
+    ch, _, _ = env
+    client.post("/sessions", json={"message": "fix it", "repo": "@Taufik041/otto_test"})
+    assert "facts" not in jobs(ch)[-1]
 
 
 def test_a_plain_chat_has_no_sandbox_to_ask_about_or_stop(client, env):
@@ -235,3 +264,80 @@ def test_a_refused_follow_up_is_not_stored(client, env):
     sid = chat(client)  # still queued: busy
     assert client.post(f"/sessions/{sid}/messages", json={"text": "more"}).status_code == 409
     assert not [e for e in user_messages(sid) if e.payload["message"]["content"] == "more"]
+
+
+# --- client_message_id: a follow-up is stored once, however often it's posted ---------------
+
+def user_payloads(sid) -> list[dict]:
+    return [e.payload for e in load_events(sid)
+            if e.type == "llm.message" and e.payload["message"]["role"] == "user"]
+
+
+def test_a_follow_ups_event_carries_its_client_message_id(client, env):
+    sid = chat(client)
+    set_status(sid, "done")
+    r = client.post(f"/sessions/{sid}/messages", json={"text": "and in Python?", "client_message_id": "m-0123456789"})  # gitleaks:allow  # gitleaks:allow
+    assert r.status_code == 202
+    assert user_payloads(sid)[-1] == {"message": {"role": "user", "content": "and in Python?"},
+                                      "client_message_id": "m-0123456789"}  # gitleaks:allow  # gitleaks:allow
+
+
+@pytest.mark.parametrize("meanwhile", ["queued", "running", "done"])
+def test_posting_the_same_client_message_id_again_stores_and_queues_nothing(client, env, meanwhile):
+    """A retry or a double click: whatever the chat is doing by then, the second post is a no-op."""
+    ch, _, _ = env
+    sid = chat(client)
+    set_status(sid, "done")
+    body = {"text": "and in Python?", "client_message_id": "m-0123456789"}  # gitleaks:allow  # gitleaks:allow
+    assert client.post(f"/sessions/{sid}/messages", json=body).status_code == 202
+    set_status(sid, meanwhile)
+    before = len(jobs(ch))
+
+    r = client.post(f"/sessions/{sid}/messages", json=body)
+
+    assert r.status_code == 202 and r.json() == {"id": sid, "status": meanwhile, "repo": None}
+    assert [m["message"]["content"] for m in user_payloads(sid)].count("and in Python?") == 1
+    assert len(jobs(ch)) == before
+
+
+def test_another_client_message_id_is_another_message(client, env):
+    sid = chat(client)
+    set_status(sid, "done")
+    client.post(f"/sessions/{sid}/messages", json={"text": "again", "client_message_id": "m-aaaaaaaa"})
+    set_status(sid, "done")
+    assert client.post(f"/sessions/{sid}/messages", json={"text": "again", "client_message_id": "m-bbbbbbbb"}).status_code == 202
+    assert [m.get("client_message_id") for m in user_payloads(sid)][-2:] == ["m-aaaaaaaa", "m-bbbbbbbb"]
+
+
+def test_the_same_client_message_id_in_another_chat_is_its_own(client, env):
+    a, b = chat(client), chat(client, "another")
+    for sid in (a, b):
+        set_status(sid, "done")
+        r = client.post(f"/sessions/{sid}/messages", json={"text": "hi", "client_message_id": "m-0123456789"})  # gitleaks:allow  # gitleaks:allow
+        assert r.status_code == 202
+        assert user_payloads(sid)[-1]["client_message_id"] == "m-0123456789"
+
+
+@pytest.mark.parametrize("bad", ["short", "x" * 65, "has spaces in it", "../../etc"])
+def test_a_malformed_client_message_id_is_422(client, env, bad):
+    sid = chat(client)
+    set_status(sid, "done")
+    assert client.post(f"/sessions/{sid}/messages", json={"text": "hi", "client_message_id": bad}).status_code == 422
+
+
+def test_without_a_client_message_id_a_follow_up_still_works(client, env):
+    sid = chat(client)
+    set_status(sid, "done")
+    assert client.post(f"/sessions/{sid}/messages", json={"text": "hi"}).status_code == 202
+    assert "client_message_id" not in user_payloads(sid)[-1]
+
+
+def test_the_store_itself_never_keeps_a_client_message_id_twice():
+    from shared.events import append_event
+    from shared.sessions import create_session
+
+    create_session("c1", task="t", repo=None, model="openrouter:openrouter/free")
+    msg = {"message": {"role": "user", "content": "hi"}, "client_message_id": "m-0123456789"}  # gitleaks:allow  # gitleaks:allow
+    first = append_event("c1", "llm.message", msg, client_message_id="m-0123456789")  # gitleaks:allow  # gitleaks:allow
+    again = append_event("c1", "llm.message", msg, client_message_id="m-0123456789")  # gitleaks:allow  # gitleaks:allow
+    assert again == first and len(user_payloads("c1")) == 1

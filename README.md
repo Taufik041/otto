@@ -226,7 +226,7 @@ Otto runs locally today. What it doesn't do yet:
 - **Deployment.** Locally the stack runs on kind. [docs/deploy.md](docs/deploy.md) covers
   production: the settings, a remote sandbox cluster reached with a kubeconfig scoped to one
   namespace, invite-only signups, and rate limits.
-- **Email.** Password-reset links are printed to the gateway's console.
+- **Email.** Password-reset and "Confirm your email" links are printed to the gateway's console.
 - **v2:** a file explorer in the workspace panel, and an interactive terminal (today's Terminal
   shows the commands Otto ran).
 

@@ -27,10 +27,11 @@ dependencies = [
 dev = ["pytest", "pytest-asyncio", "httpx"]
 
 [tool.setuptools]
-packages = ["shared", "runner", "brain", "orchestrator", "gateway"]
+packages = ["shared", "runner", "brain", "brain.prompts", "orchestrator", "gateway"]
 
 [tool.setuptools.package-data]
 shared = ["migrations/*.py", "migrations/*.mako", "migrations/versions/*.py"]
+"brain.prompts" = ["*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

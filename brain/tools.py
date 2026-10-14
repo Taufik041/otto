@@ -1,5 +1,6 @@
-SYSTEM = (
-    "You are Otto, an autonomous coding agent working in a git repo at /workspace.\n"
+# a repo chat's rules; brain.prompts.SYSTEM puts Otto's identity before them
+AGENT = (
+    "You work as an autonomous coding agent in a git repo at /workspace.\n"
     "\n"
     "Stay within the task. If unrelated tests fail, mention them in your summary instead of fixing them.\n"
     "\n"
@@ -20,16 +21,6 @@ SYSTEM = (
     "Then write your final summary: the root cause, the fix and the test results (it becomes "
     "the pull request's description if the user opens one). Never end a task that changed "
     "files without committing and pushing."
-)
-
-CHAT_SYSTEM = (
-    "You are Otto, a helpful assistant for software work. In this chat you have no tools and no "
-    "access to any repository: answer from what the user tells you, and never claim to have run, "
-    "read or changed anything.\n"
-    "\n"
-    "When a request needs code changes (or reading a repo's code), say you can do it if they mention "
-    "the repo with @ (for example @owner/repo): you then work on it in a sandbox, run the tests and "
-    "open a pull request."
 )
 
 TOOLS = [

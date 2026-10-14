@@ -29,22 +29,33 @@ def redact(value):
     return value
 
 
-def append_event(session_id, type, payload) -> int:
-    """Store an event and return its seq (per session, starting at 1)."""
+def client_message_seq(session_id, client_message_id) -> int | None:
+    """The seq of the session's message stored with this client_message_id, if any."""
+    with get_db() as s:
+        return s.exec(select(SessionEvent.seq).where(SessionEvent.session_id == session_id,
+                                                     SessionEvent.client_message_id == client_message_id)).first()
+
+
+def append_event(session_id, type, payload, client_message_id=None) -> int:
+    """Store an event and return its seq (per session, starting at 1). With a client_message_id
+    already stored in the session, nothing is stored: its seq comes back."""
     payload = redact(payload)
     for attempt in range(1, SEQ_ATTEMPTS + 1):
+        if client_message_id and (seq := client_message_seq(session_id, client_message_id)) is not None:
+            return seq
         try:
             with get_db() as s:
                 last = s.exec(select(func.max(SessionEvent.seq))
                               .where(SessionEvent.session_id == session_id)).one()
                 seq = (last or 0) + 1
                 s.add(SessionEvent(session_id=session_id, seq=seq, ts=utcnow(),
-                                   type=type, payload=payload))
+                                   type=type, payload=payload, client_message_id=client_message_id))
                 notify(s, session_id, seq)
             return seq
         except IntegrityError:
-            # a concurrent writer took this seq (the composite PK caught it); try the next one.
-            # a missing session also lands here, and keeps failing
+            # a concurrent writer took this seq (the composite PK caught it), or stored this
+            # client_message_id first (found on the next attempt); try again. A missing session
+            # also lands here, and keeps failing
             if attempt == SEQ_ATTEMPTS:
                 raise
 

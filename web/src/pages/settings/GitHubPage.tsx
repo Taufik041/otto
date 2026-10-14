@@ -6,7 +6,7 @@ import { api, goToGitHub } from '@/api'
 import { messageOf } from '@/api/errors'
 import { keys, useGitHub, useRepos } from '@/api/queries'
 import type { Unlinked } from '@/api/types'
-import { rememberReturn, takeReturn, useMe } from '@/auth/auth'
+import { githubErrorMessage, rememberReturn, takeReturn, useCallbackError, useMe } from '@/auth/auth'
 import { GitHubIcon } from '@/components/brand'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '@/components/ui/dialog'
@@ -20,16 +20,18 @@ export function GitHubPage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const github = useGitHub()
+  const failure = useCallbackError()
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(() => githubErrorMessage(failure.code, failure.login, 'settings'))
 
-  // GitHub's install flow always ends here; go on to the page that started it (onboarding, home)
+  // GitHub's install flow, and a link or install that failed, end here; go on to the page that
+  // started it (onboarding, home), unless it failed: then stay and say why
   useEffect(() => {
     const back = takeReturn()
-    if (back && back !== '/settings/github') navigate(back, { replace: true })
+    if (back && back !== '/settings/github' && !failure.code) navigate(back, { replace: true })
     qc.invalidateQueries({ queryKey: keys.github })
     qc.invalidateQueries({ queryKey: keys.repos })
-  }, [navigate, qc])
+  }, [navigate, qc, failure.code])
 
   async function go(get: () => Promise<{ url: string }>) {
     setBusy(true)

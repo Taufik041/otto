@@ -6,11 +6,16 @@ import pytest
 
 from brain import loop, providers, worker
 from brain.resume import rebuild_messages
-from brain.tools import CHAT_SYSTEM, SYSTEM
+from brain.prompts import SYSTEM, chat_system
+from shared import config
 from shared.bus import SESSIONS_QUEUE, chat_job, resume_job, results_queue
 from shared.events import load_events
 from shared.sessions import attach_repo, create_session, get_session
 from tests.fakes import FakeChannel, FakeConnection, auto_reply, llm_final, llm_tool_calls
+
+
+# a chat's prompt when its job came without live facts: Otto, and the model answering
+CHAT_SYSTEM = chat_system(None, config.catalog_entry("openrouter:openrouter/free")["label"])
 
 
 def fake_llm(monkeypatch, responses):
@@ -103,6 +108,9 @@ def test_parse_chat_jobs():
     assert worker.parse_job(json.dumps(chat_job("c1", "more"))) == {"type": "chat", "session_id": "c1",
                                                                       "text": "more"}
     assert worker.parse_job(json.dumps({"type": "chat", "session_id": "c1", "text": 3})) is None
+    facts = {"type": "chat", "session_id": "c1", "facts": {"workers": "offline"}}
+    assert worker.parse_job(json.dumps(facts)) == facts
+    assert worker.parse_job(json.dumps({**facts, "facts": "junk"})) == {"type": "chat", "session_id": "c1"}
 
 
 @pytest.mark.asyncio
@@ -180,4 +188,5 @@ async def test_each_turn_reads_the_sessions_model_so_a_switch_applies_to_the_nex
     # the first turn and its auto title on the first model, then the next turn on the new one
     assert [r["model"] for r in requests] == ["openrouter/free", "openrouter/free", "model-a"]
     # the history goes to the new model as it is
-    assert [m["content"] for m in requests[2]["messages"]] == [CHAT_SYSTEM, "what is a closure?", "first", "and again?"]
+    switched = chat_system(None, config.catalog_entry("openai:model-a")["label"])  # it says which model answers
+    assert [m["content"] for m in requests[2]["messages"]] == [switched, "what is a closure?", "first", "and again?"]

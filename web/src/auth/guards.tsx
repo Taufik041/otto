@@ -1,26 +1,24 @@
 import { useRef, type ReactNode } from 'react'
 import { Navigate, useLocation } from 'react-router'
-import { safeNext, useAuth, type AuthStatusSettled } from './auth'
+import { ConfirmEmailPage } from '@/pages/auth/ConfirmEmailPage'
+import { needsConfirmation, safeNext, useAuth, type AuthStatusSettled } from './auth'
 
 function Booting() {
   return <div className="h-full bg-bg" aria-busy="true" />
 }
 
 /** Signed-in pages: while the session is restored show nothing; signed out, go to /login and
- *  come back afterwards. A ?github_error= travels along so /login can explain it. */
+ *  come back afterwards; an email that isn't confirmed yet sees "Confirm your email" instead. */
 export function RequireAuth({ children }: { children: ReactNode }) {
-  const { status } = useAuth()
+  const { status, user } = useAuth()
   const loc = useLocation()
   if (status === 'loading') return <Booting />
   if (status === 'signedOut') {
-    const params = new URLSearchParams()
     const here = loc.pathname + loc.search
-    const ghError = new URLSearchParams(loc.search).get('github_error')
-    if (ghError) params.set('github_error', ghError)
-    else if (here !== '/') params.set('next', here)
-    const qs = params.toString()
-    return <Navigate to={`/login${qs ? `?${qs}` : ''}`} replace />
+    const qs = here !== '/' ? `?${new URLSearchParams({ next: here })}` : ''
+    return <Navigate to={`/login${qs}`} replace />
   }
+  if (user && needsConfirmation(user)) return <ConfirmEmailPage email={user.email!} />
   return <>{children}</>
 }
 

@@ -17,14 +17,16 @@ def user_row(user_id) -> User:
 
 # --- signup ------------------------------------------------------------------------
 
-def test_signup_returns_the_user_and_signs_in(client):
+def test_signup_makes_the_account_and_emails_a_link_but_doesnt_sign_in(client):
     r = client.post("/auth/signup", json={"name": " Taufik Khan ", "email": "Taufik@Example.com",
                                           "password": PASSWORD})
 
-    assert r.status_code == 201
+    assert r.status_code == 201 and r.json() == {"ok": True, "email": "taufik@example.com"}
+    assert "set-cookie" not in r.headers and "access_token" not in r.json()
+    r = client.post("/auth/login", json={"email": "taufik@example.com", "password": PASSWORD})
     me = r.json()["user"]
     assert (me["name"], me["email"], me["has_password"]) == ("Taufik Khan", "taufik@example.com", True)
-    assert me["github_login"] is None and me["daily_token_limit"] == 50000
+    assert me["github_login"] is None and me["daily_token_limit"] == 50000 and me["email_verified"] is False
     client.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
     assert client.get("/me").json() == me
 

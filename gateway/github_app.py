@@ -20,10 +20,14 @@ attacker's GitHub account to the victim's Otto account. Each state has its own c
 The callback is a top-level GET from github.com, so it carries no access token; the refresh
 cookie does reach it (SameSite=Lax, Path=/auth). A sign-in ends with a new refresh cookie and a
 redirect to FRONTEND_URL/auth/callback, where the frontend calls /auth/refresh.
+
+The callback is a page a person sees, so it never answers JSON: whatever goes wrong is logged and
+the browser goes back to the frontend with ?error=<code> (see Failed), to Settings → GitHub for a
+link or an install, else to the sign-in dialog.
 """
-import hashlib, json, jwt, secrets, time, uuid
+import hashlib, json, jwt, secrets, time, traceback, uuid
 from datetime import timedelta
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 
 import requests
 from typing import Literal
@@ -37,6 +41,7 @@ from sqlmodel import select
 from gateway import auth, tokens
 from gateway.errors import Refused
 from shared import access, config
+from shared.accounts import take_unconfirmed
 from shared.db import get_db
 from shared.models import Installation, User
 
@@ -61,6 +66,17 @@ class GitHubError(Exception):
 
 class BadClientCredentials(GitHubError):
     """GitHub refused GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET: a server misconfiguration."""
+
+
+class Failed(Exception):
+    """A callback that can't finish. code is what the frontend shows (?error=): github_already_linked
+    (?login= the GitHub account), github_account_mismatch (?login= the one already linked),
+    installation_taken, github_email_in_use, state_invalid, access_denied, github_unavailable or
+    unknown (invite_only and paused come as Refused). The message is for the log only."""
+
+    def __init__(self, code, detail, login=None):
+        super().__init__(detail)
+        self.code, self.login = code, login
 
 
 def request(method, url, **kw) -> requests.Response:
@@ -202,7 +218,7 @@ def _check_state(request: Request, state) -> dict:
     nonce = str((claims or {}).get("nonce", ""))
     cookie = request.cookies.get(nonce_cookie(nonce)) if nonce else None
     if not cookie or not secrets.compare_digest(nonce, cookie):
-        raise HTTPException(400, "invalid or expired GitHub state; start again")
+        raise Failed("state_invalid", "invalid or expired GitHub state, or started in another browser")
     return claims
 
 
@@ -223,11 +239,11 @@ def _flow_user(claims, browser: User | None) -> User | None:
     if uid is None:
         return browser
     if browser is not None and browser.id != uid:
-        raise HTTPException(400, "you signed in or out since this started; start again")
+        raise Failed("state_invalid", f"started by user {uid}, but {browser.id} is signed in")
     with get_db() as s:
         user = s.get(User, uid)
     if user is None:
-        raise HTTPException(400, "that account no longer exists; start again")
+        raise Failed("state_invalid", f"user {uid}, who started this, no longer exists")
     return user
 
 
@@ -259,13 +275,28 @@ def exchange_code(code) -> str:
     return body["access_token"]
 
 
-def _refused(e: GitHubError, message) -> HTTPException:
-    """The 400 for a failed exchange: a misconfigured server says so; anything else, `message`."""
-    return HTTPException(400, BAD_CLIENT if isinstance(e, BadClientCredentials) else message)
+def _unavailable(e: GitHubError, what) -> Failed:
+    """github_unavailable for a GitHub call that failed; a misconfigured server says so in the log."""
+    return Failed("github_unavailable", f"{BAD_CLIENT if isinstance(e, BadClientCredentials) else what}: {e}")
 
 
 def github_user(user_token) -> dict:
     return _json("GET", f"{API}/user", headers=_headers(user_token))
+
+
+def github_emails(user_token, gh) -> tuple[set[str], str | None]:
+    """The GitHub user's verified emails (lower-cased), and the one a new account gets: the
+    verified primary one, else the profile email on gh (GET /user), which GitHub only lets be a
+    verified one. Without the App's "Email addresses" permission, only the profile email."""
+    norm = lambda e: (e or "").strip().lower() or None
+    public = norm(gh.get("email"))
+    try:
+        listed = [e for e in _json("GET", f"{API}/user/emails", headers=_headers(user_token))
+                  if e.get("verified") and norm(e.get("email"))]
+    except GitHubError:
+        listed = []
+    primary = next((norm(e["email"]) for e in listed if e.get("primary")), None) or public
+    return {norm(e["email"]) for e in listed} | ({public} if public else set()), primary
 
 
 def _authorize(response: Response, user: User | None) -> str:
@@ -315,83 +346,122 @@ def github_callback(request: Request, state: str | None = None, code: str | None
                     error: str | None = None, installation_id: int | None = None,
                     setup_action: str | None = None):
     """Both flows come back here: an install or update (installation_id and setup_action in the
-    query), or a sign-in / account link."""
-    if state is None and setup_action == "update" and installation_id is not None:
-        return _updated_on_github(_browser_user(request), installation_id, code)
-    claims = _check_state(request, state)
-    user = _flow_user(claims, _browser_user(request))
-    if error:  # the user cancelled on GitHub
-        return _finish(f"{config.FRONTEND_URL}/?github_error={quote(error)}", claims)
+    query), or a sign-in / account link. A failure goes back to the frontend with ?error=<code>."""
+    browser = claims = None
+    try:
+        browser = _browser_user(request)
+        if state is None and setup_action == "update" and installation_id is not None:
+            return _updated_on_github(browser, installation_id, code)
+        claims = _check_state(request, state)
+        return _callback(request, claims, browser, code, error, installation_id, setup_action)
+    except Exception as e:
+        return _failed(e, claims, browser)
+
+
+def _callback(request: Request, claims, browser: User | None, code, error, installation_id, setup_action):
+    user = _flow_user(claims, browser)
+    if error:  # e.g. the user cancelled on GitHub
+        raise Failed("access_denied" if error == "access_denied" else "unknown", f"GitHub answered error={error}")
     installing = installation_id is not None and setup_action is not None
     if installing != (claims["flow"] == "install"):
-        raise HTTPException(400, "unexpected GitHub callback; start again")
+        raise Failed("state_invalid", f"a {claims['flow']} state came back {'with' if installing else 'without'} an installation")
     if installing:
         if user is None:
-            raise HTTPException(400, "unexpected GitHub callback; start again")
+            raise Failed("state_invalid", "an install state with nobody to install for")
         return _installed(user, installation_id, setup_action, code, claims)
     if not code:
-        raise HTTPException(400, "unexpected GitHub callback; start again")
+        raise Failed("state_invalid", "GitHub sent no authorization code")
     try:
-        gh = github_user(exchange_code(code))
+        token = exchange_code(code)
+        gh = github_user(token)
     except GitHubError as e:
-        print(f"[github] sign-in failed: {e}", flush=True)
-        raise _refused(e, "GitHub sign-in failed; try again") from None
-    try:
-        user = _sign_in(user, gh)
-    except Refused as e:  # a new account while signups are invite-only or paused
-        return _finish(f"{config.FRONTEND_URL}/auth/callback?error={e.error}", claims)
+        raise _unavailable(e, "GitHub sign-in failed") from None
+    user = _sign_in(user, gh, lambda: github_emails(token, gh))
     r = _finish(f"{config.FRONTEND_URL}/auth/callback", claims)
     auth.set_refresh(r, tokens.issue_refresh(user.id, request.headers.get("user-agent")))
     return r
 
 
-def _sign_in(current: User | None, gh: dict) -> User:
+def _failed(e: Exception, claims, browser: User | None) -> RedirectResponse:
+    """Log why the callback failed and send the browser back with ?error=<code>: to Settings →
+    GitHub if someone is signed in or started it signed in (a link or an install), else to the
+    sign-in dialog."""
+    if isinstance(e, Failed):
+        code, login, detail = e.code, e.login, str(e)
+    elif isinstance(e, Refused):  # a new account while signups are invite-only or paused
+        code, login, detail = e.error, None, e.detail
+    else:
+        code, login, detail = "unknown", None, traceback.format_exc()
+    print(f"[github] callback failed ({code}): {detail}", flush=True)
+    linking = browser is not None or (claims or {}).get("uid") is not None
+    query = urlencode({"error": code, **({"login": login} if login else {})})
+    url = f"{config.FRONTEND_URL}{'/settings/github' if linking else '/login'}?{query}"
+    return _finish(url, claims) if claims else RedirectResponse(url, 302)
+
+
+def _sign_in(current: User | None, gh: dict, emails=lambda: (set(), None)) -> User:
     """The user for this GitHub account: the signed-in one (linking it), the one already linked
-    to it, or a new one (Refused unless signups are open to its login). Never matched by email:
-    that would hand over accounts."""
+    to it, or a new one (Refused unless signups are open to its login: the allowlist goes by
+    GitHub login, never by email). Never matched by email: that would hand over accounts. Nor a
+    new account for an email that a confirmed account already uses: that person should log in and
+    link GitHub instead. An unconfirmed email sign-up with the new account's email is deleted (it
+    never proved the address was its own). emails(): GitHub's verified emails, and the one a new
+    account gets (verified; None: no email, as before)."""
     with get_db() as s:
         linked = s.exec(select(User).where(User.github_id == gh["id"])).first()
         if current is not None:
             if linked is not None and linked.id != current.id:
-                raise HTTPException(409, "this GitHub account is linked to another Otto account")
+                raise Failed("github_already_linked", f"GitHub {gh['login']} is linked to user {linked.id}",
+                             login=gh["login"])
             user = s.get(User, current.id)
             if user.github_id not in (None, gh["id"]):
-                raise HTTPException(409, "your account is linked to a different GitHub account")
+                raise Failed("github_account_mismatch", f"user {user.id} is linked to GitHub {user.github_login}, "
+                             f"not {gh['login']}", login=user.github_login)
         elif linked is not None:
             user = linked
-        else:  # a new account: only if signups are open to this GitHub login
+        else:  # a new account: only if no confirmed account has its email and signups are open to its login
+            mails, primary = emails()
+            confirmed = select(User).where(User.email.in_(mails), User.email_verified.is_(True))
+            if mails and s.exec(confirmed).first() is not None:
+                raise Failed("github_email_in_use", f"an account already has an email of GitHub {gh['login']}")
             if code := access.signup_refusal(github_login=gh["login"]):
                 raise auth.refusal(code)
-            user = User(id=uuid.uuid4().hex, name=gh.get("name") or gh["login"])
+            if primary:
+                take_unconfirmed(s, primary)
+            user = User(id=uuid.uuid4().hex, name=gh.get("name") or gh["login"], email=primary,
+                        email_verified=primary is not None)
         user.github_id, user.github_login, user.avatar_url = gh["id"], gh["login"], gh.get("avatar_url")
         s.add(user)
         try:
             s.flush()
-        except IntegrityError:  # a concurrent sign-in linked it first
-            raise HTTPException(409, "this GitHub account is linked to another Otto account") from None
+        except IntegrityError:  # a concurrent sign-in linked it first, or an account took its email
+            s.rollback()
+            if user.email and s.exec(select(User).where(User.email == user.email)).first() is not None:
+                raise Failed("github_email_in_use", f"an account took GitHub {gh['login']}'s email meanwhile") from None
+            raise Failed("github_already_linked", f"GitHub {gh['login']} was linked meanwhile",
+                         login=gh["login"]) from None
     return user
 
 
 def _confirmed(code) -> tuple[str, dict[int, dict]]:
     """Exchange the code; the user token and the installations that GitHub user can access."""
     if not code:
-        raise HTTPException(400, "GitHub sent no authorization code; start again")
+        raise Failed("state_invalid", "GitHub sent no authorization code")
     try:
         token = exchange_code(code)
         return token, {i["id"]: i for i in _pages(f"{API}/user/installations", token, "installations")}
     except GitHubError as e:
-        print(f"[github] install check failed: {e}", flush=True)
-        raise _refused(e, "GitHub didn't confirm the installation; try again") from None
+        raise _unavailable(e, "GitHub didn't confirm the installation") from None
 
 
 def _updated_on_github(user: User | None, installation_id: int, code: str | None):
     """Repos picked on github.com (no state of ours): refresh the caches, if the user is signed in
     and GitHub says the one who authorized can access the installation. Links nothing."""
     if user is None:
-        raise HTTPException(400, "sign in to Otto, then change the repos from Settings")
+        raise Failed("state_invalid", f"repos of installation {installation_id} changed on GitHub, nobody signed in")
     _, mine = _confirmed(code)
     if installation_id not in mine:
-        raise HTTPException(400, "that installation isn't one your GitHub account can access")
+        raise Failed("unknown", f"installation {installation_id} isn't one the GitHub account can access")
     forget(user.id, installation_id)
     return RedirectResponse(f"{config.FRONTEND_URL}/settings/github", 302)
 
@@ -407,14 +477,13 @@ def _installed(user: User, installation_id: int, setup_action: str, code: str | 
     try:
         gh = github_user(token)
     except GitHubError as e:
-        print(f"[github] install check failed: {e}", flush=True)
-        raise _refused(e, "GitHub didn't confirm the installation; try again") from None
+        raise _unavailable(e, "GitHub didn't confirm the installation") from None
     if installation_id not in mine:
-        raise HTTPException(403, "that installation isn't one your GitHub account can access")
+        raise Failed("unknown", f"installation {installation_id} isn't one GitHub {gh['login']} can access")
     with get_db() as s:
         row = s.get(Installation, installation_id)
         if row is not None and row.user_id != user.id:
-            raise HTTPException(409, "this installation is connected to another Otto account")
+            raise Failed("installation_taken", f"installation {installation_id} is connected to user {row.user_id}")
         row = row or Installation(id=installation_id, user_id=user.id, account_login="")
         row.account_login = mine[installation_id]["account"]["login"]
         s.add(row)

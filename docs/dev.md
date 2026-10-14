@@ -27,6 +27,16 @@ sandbox image (the image step of `scripts/dev_up.sh`), or sandboxes keep running
   repo, this comes after `repo.attached`. Then the gateway wakes or creates the sandbox and queues
   the job. The worker continues from the stored message and doesn't add it again, so the
   conversation (`rebuild_messages`) has it exactly once.
+- **A follow-up is stored once, however often it's posted.** The web app sends a
+  `client_message_id` with each message (8–64 of `A-Za-z0-9_-`) and shows the message at once.
+  The gateway stores the id with the event (unique per chat) and in its payload; posting the same
+  id again is a 202 with the chat as it is, storing and queueing nothing. The reducer swaps its
+  optimistic copy for the event with that id, and drops events whose seq it has seen.
+  `node web/scripts/e2e-message-once.mjs` checks it against the real stack.
+- **A plain chat's prompt says what Otto is.** `brain/prompts/otto_about.md` is the one place for
+  it: every chat gets the part above its marker, and plain chats get all of it plus live facts the
+  gateway sends with each job (workers online or offline, as `/health` says; the user's repo
+  names). The brain adds the model's label.
 - **A follow-up may switch the model.** `POST /sessions/{id}/messages` takes an optional
   `model` (a catalog id from `GET /models`). An unknown or unavailable one is a 400, with the
   same `detail` shape POST /sessions gives it, and changes nothing. A different one updates the
@@ -129,7 +139,7 @@ Stop the gateway and workers first, since they hold connections.
 | `MAX_ACTIVE_SANDBOXES` | `3` | The same, for everyone together: protects the cluster. Sandboxes kept warm between turns don't count; they exit after `SANDBOX_IDLE_MINUTES`. |
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Origins allowed to call the API with credentials, to use the refresh cookie (`/auth/refresh`, `/auth/logout`; the gateway's own origin may too, for `/docs`), and to open the WebSocket. In production it defaults to `FRONTEND_URL`. |
 | `OTTO_SIGNUP_MODE` | `open` (`allowlist` in production) | Who may make a new account: `open`, `allowlist` (`OTTO_ALLOWED_GITHUB`, `OTTO_ALLOWED_EMAILS`, approved access requests) or `closed`. Existing users always keep access. `OTTO_ACCEPTING=false` pauses every signup. See `docs/deploy.md`. |
-| `RESEND_API_KEY` | none | Resend's key: password-reset links and "bring it back up" requests are emailed. Unset in development: printed to the console. Unset in production: no email ("Forgot password?" is hidden). |
+| `RESEND_API_KEY` | none | Resend's key: password-reset and "Confirm your email" links and "bring it back up" requests are emailed. Unset in development: printed to the console. Unset in production: no email ("Forgot password?" is hidden). |
 | `OTTO_NOTIFY_TO` | none | The inbox "bring it back up" requests go to. |
 | `EMAIL_FROM` | `Otto <noreply@taufi.dev>` | The sender. |
 | `OTTO_SANDBOX_KUBECONFIG`, `OTTO_SANDBOX_NAMESPACE` | the default kubeconfig, `default` | The sandbox cluster. In development an unset kubeconfig means `~/.kube/config` (kind); in production it means the workers are offline. |
@@ -154,9 +164,11 @@ In the App's settings on GitHub:
   signed-in user whose GitHub account can access the installation, and only refreshes its caches.
 - **Expire user authorization tokens:** either; Otto uses the user token once and doesn't keep it.
 - **Client secret:** generate one for `GITHUB_CLIENT_SECRET`.
-- **Permissions:** repository contents and pull requests read & write, metadata read.
+- **Permissions:** repository contents and pull requests read & write, metadata read; under
+  account permissions, "Email addresses" read. A GitHub sign-up reads the user's verified emails
+  (`GET /user/emails`): a new account gets the verified primary one, and none of them may belong to
+  a confirmed Otto account. Without the permission, only the profile email (`GET /user`) is used.
 - **Webhook:** off (uncheck "Active"); Otto doesn't use webhooks.
-  No account permissions are needed: Otto doesn't read the GitHub email.
 - **Where can this App be installed:** "Any account" if other people will connect their repos.
 
 ### How sign-in works
@@ -172,14 +184,25 @@ In the App's settings on GitHub:
   `REFRESH_REUSE_GRACE_SECONDS` ago, in a family nobody logged out or caught reusing, is a retry.
   It gets a new token in the same family, and the family lives on. `refresh_tokens.revoked_reason`
   says why each token ended: `rotated`, `logout`, `reuse`, `password` or `logout_all`.
+- **Confirming the email:** an email sign-up starts unconfirmed (`users.email_verified`), and
+  isn't signed in until it opens its link. Unconfirmed, it can log in but every chat route is 403
+  `{"error": "email_unverified"}`, and its address reserves nothing: a GitHub sign-up whose
+  verified primary email it is, or another email sign-up, takes the address and the unconfirmed
+  account is deleted. The gateway deletes accounts left unconfirmed for 7 days when it starts and
+  once a day. GitHub sign-ups are confirmed already, and so are accounts from before this
+  (migration 0018). A password reset through the emailed link confirms the email too.
 - No CSRF guard on the API: a cross-site page can't add an `Authorization` header. Only
   `/auth/refresh` and `/auth/logout` read the cookie; SameSite=Lax, `Path=/auth` and an `Origin`
   check (`CORS_ORIGINS` or the gateway itself) protect them.
 
 | Endpoint | Auth | What it does |
 |---|---|---|
-| `POST /auth/signup`, `POST /auth/login` | none (JSON) | `{access_token, token_type: "bearer", expires_in, user}` and the refresh cookie. A signup the signup mode refuses is 403 `{"error": "invite_only"}` (503 `{"error": "paused"}` while paused). Both are rate-limited per IP (429 `{"error": "rate_limited"}`, `Retry-After`). |
-| `POST /auth/email-status` `{email}` | none | `{exists}`: whether to ask for a password next or for a name and password (email-first sign-in). Rate-limited per IP. |
+| `POST /auth/login` | none (JSON) | `{access_token, token_type: "bearer", expires_in, user}` and the refresh cookie. Rate-limited per IP (429 `{"error": "rate_limited"}`, `Retry-After`). |
+| `POST /auth/signup` `{name, email, password}` | none | 201 `{ok: true, email}`: the account, unconfirmed, and a "Confirm your email for Otto" link (24 hours, once). Not signed in. An unconfirmed account with the email is replaced; a confirmed one is 409. A signup the signup mode refuses is 403 `{"error": "invite_only"}` (503 `{"error": "paused"}` while paused); 503 `email_unavailable` without email in production. Rate-limited per IP. |
+| `POST /auth/verify` `{token}` | confirmation token | confirms the email and signs in (the same body as login). 400 for a used, expired or unknown link, or one sent to an address the account no longer has. |
+| `POST /auth/verify/resend` `{email}`, `POST /me/email/verify` | none / Bearer | another link for an unconfirmed account: 3 an hour per address (429 after). The signed-out one is always `{ok: true}` (an unknown or confirmed email gets nothing). |
+| `POST /me/email` `{email}` | Bearer, unconfirmed | changes the address (a typo at sign-up) and sends a link to it; links sent to the old one stop working. 409 if a confirmed account has it (an unconfirmed one is replaced); 400 once confirmed. 5 an hour per user. |
+| `POST /auth/email-status` `{email}` | none | `{exists, password}`: whether to ask for a password next or for a name and password (email-first sign-in). Rate-limited per IP. |
 | `POST /wake-requests` `{message?}` | user | the workers are offline: emails `OTTO_NOTIFY_TO` (the user is the reply-to). 202 `{ok: true}`; once an hour per user (429 after); 503 `email_unavailable` in production without `RESEND_API_KEY`; 502 `email_failed` (the try doesn't count). Without a key in development, the email is printed to the gateway's log. |
 | `POST /access-requests` `{github_login?, email?, note?}` | none | asks for an account while signups are invite-only: 201 `{ok: true}`, the same for a repeat. Rate-limited per IP. `python -m scripts.access_requests` lists and approves them. |
 | `GET /health` | none | `{status: "up" \| "paused", workers: "online" \| "offline", version, password_reset}` (`password_reset`: whether "Forgot password?" can email a link). While workers are offline, agent work (a new repo chat, a repo follow-up, a retry) is 503 `{"error": "workers_offline"}` with nothing created; plain chats work. |
@@ -187,7 +210,7 @@ In the App's settings on GitHub:
 | `POST /auth/refresh` | refresh cookie | the same body, and a new refresh cookie |
 | `POST /auth/logout` | refresh cookie | revokes this device's refresh token family, clears the cookie; no body needed |
 | `POST /auth/logout-all` | Bearer | revokes every refresh token and voids every access token |
-| `POST /me/password`, `POST /auth/reset` | Bearer / reset token | signs out every device, and signs this one in again (the same body as login) |
+| `POST /me/password`, `POST /auth/reset` | Bearer / reset token | signs out every device, and signs this one in again (the same body as login). A reset also confirms the email. |
 | `POST /sessions/{id}/ws-ticket` | Bearer, the session's owner | `{ticket}`: single use, 30 seconds, for `WS /sessions/{id}/ws?ticket=...&after_seq=N` |
 | `POST /sessions/{id}/seen` `{seq}` | Bearer, the session's owner | the user saw the chat up to event `seq`: it never moves backwards, and is capped at the chat's last event. `GET /sessions` gives each chat an `attention`: `working` while Otto works, `done`/`failed` when the latest turn ended so (failed or interrupted) after the last seen event, else `null` (a stop the user made, seen, anything else). |
 | `POST /sessions/{id}/pr` `{title?}` | Bearer, the session's owner | opens the chat's proposed PR on GitHub with the installation's token (no sandbox, no model), and appends `pr.opened`. 201; 200 with the existing one if a PR is already open for `otto/<id>` (double clicks, two tabs). 409 while Otto works or with nothing proposed; 502 with GitHub's reason if it refuses. |
@@ -242,8 +265,13 @@ does all this; with the web app running, signing in at `http://localhost:5173` i
 
 ### A GitHub-only account in /docs
 
-An account made by GitHub sign-in has no password, so the password form can't sign it in. Paste
-a token instead:
+An account made by GitHub sign-in has no password until its owner sets one. It gets GitHub's
+verified primary email (else the profile email, which GitHub only allows to be verified), marked
+`email_verified`. `POST /me/password/setup` (Settings → Account → "Set a password") and
+`POST /auth/forgot` both email it a set-password link (the reset flow: one hour, once); after that
+it logs in with its email and password too. `POST /auth/email-status` answers `password: false`
+for it, and the sign-in dialog sends it to GitHub. Until then, the password form can't sign it
+in. Paste a token instead:
 
 1. Open `http://localhost:8000/auth/github/start` in the browser and sign in on GitHub. The
    callback sets the refresh cookie and sends you to `FRONTEND_URL/auth/callback`, which won't

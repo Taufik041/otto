@@ -9,7 +9,7 @@ from shared import config
 from shared.db import get_db
 from shared.models import Installation, User
 from tests.fakes import log_in_as, repo, sign_out, signup
-from tests.test_github_signin import callback, nonce_cookies, start
+from tests.test_github_signin import callback, failed, nonce_cookies, start
 
 INST = 555
 
@@ -81,7 +81,7 @@ def test_duplicate_install_starts_both_work(client, fake_github, me):
 
     assert install(client, fake_github, state=first).status_code in (302, 307)
     assert install(client, fake_github, iid=777, code="c2", state=second).status_code in (302, 307)
-    assert install(client, fake_github, iid=777, code="c2", state=second).status_code == 400  # used up
+    failed(install(client, fake_github, iid=777, code="c2", state=second), "state_invalid", "/settings/github")  # used up
 
     assert sorted(i for i, _, _ in links()) == [INST, 777]
     assert nonce_cookies(client) == []
@@ -94,7 +94,7 @@ def test_an_installation_that_isnt_the_users_is_refused(client, fake_github, me)
 
     r = install(client, fake_github)
 
-    assert r.status_code == 403
+    failed(r, "unknown", "/settings/github")
     assert links() == []
     assert "/user/installations" in fake_github.paths("GET")
 
@@ -109,7 +109,7 @@ def test_the_installation_check_follows_pagination(client, fake_github, me):
 
 
 @pytest.mark.parametrize("state", ["missing", "garbage", "signin"])
-def test_an_install_callback_without_an_install_state_is_400(client, fake_github, me, state):
+def test_an_install_callback_without_an_install_state_is_state_invalid(client, fake_github, me, state):
     token = fake_github.add_user("c1", gid=101, login="Taufik041")
     fake_github.add_installation(INST, "Taufik041", users=[token])
     params = {"code": "c1", "installation_id": INST, "setup_action": "install"}
@@ -117,23 +117,23 @@ def test_an_install_callback_without_an_install_state_is_400(client, fake_github
         params["state"] = "garbage"
     elif state == "signin":
         params["state"] = start(client)  # a sign-in state can't confirm an installation
-    assert callback(client, **params).status_code == 400
+    failed(callback(client, **params), "state_invalid", "/settings/github")
     assert links() == []
 
 
 def test_an_install_state_cant_be_used_to_sign_in(client, fake_github, me):
     fake_github.add_user("c1", gid=101, login="Taufik041")
-    assert callback(client, code="c1", state=start(client, "install")).status_code == 400
+    failed(callback(client, code="c1", state=start(client, "install")), "state_invalid", "/settings/github")
 
 
-def test_an_installation_linked_to_another_otto_user_is_409(client, fake_github, me):
+def test_an_installation_linked_to_another_otto_user_is_refused(client, fake_github, me):
     token = fake_github.add_user("c1", gid=101, login="Taufik041")
     fake_github.add_installation(INST, "some-org", users=[token])
     install(client, fake_github)
     log_in_as(client, signup(client, email="b@example.com")["id"])
     fake_github.add_user("c2", gid=202, login="bee")
     fake_github.user_installations[fake_github.codes["c2"]] = [INST]
-    assert install(client, fake_github, code="c2").status_code == 409
+    failed(install(client, fake_github, code="c2"), "installation_taken", "/settings/github")
     assert links() == [(INST, me["id"], "some-org")]
 
 
@@ -173,7 +173,7 @@ def test_setup_action_update_for_an_unknown_installation_is_checked_like_an_inst
     someone = fake_github.add_user("c9", gid=999, login="someone")
     fake_github.add_user("c1", gid=101, login="Taufik041")
     fake_github.add_installation(INST, "someone", users=[someone])
-    assert install(client, fake_github, setup_action="update").status_code == 403
+    failed(install(client, fake_github, setup_action="update"), "unknown", "/settings/github")
     assert links() == []
 
 
@@ -207,21 +207,21 @@ def test_a_repo_change_made_on_github_refreshes_the_caches(client, installed):
 def test_a_repo_change_made_on_github_needs_a_login(client, installed):
     sign_out(client)
     before = list(installed.calls)
-    assert update_from_github(client).status_code == 400
+    failed(update_from_github(client), "state_invalid")
     assert installed.calls == before
 
 
 def test_a_repo_change_made_on_github_needs_githubs_confirmation(client, installed):
     installed.add_user("c3", gid=303, login="stranger")
-    assert update_from_github(client, code="c3").status_code == 400  # not an installation of theirs
-    assert update_from_github(client, code=None).status_code == 400
-    assert update_from_github(client, code="bad-code").status_code == 400
+    failed(update_from_github(client, code="c3"), "unknown", "/settings/github")  # not an installation of theirs
+    failed(update_from_github(client, code=None), "state_invalid", "/settings/github")
+    failed(update_from_github(client, code="bad-code"), "github_unavailable", "/settings/github")
     assert len(client.get("/repos").json()) == 1  # still the cached list
 
 
-def test_a_stateless_install_is_still_400(client, installed):
+def test_a_stateless_install_is_state_invalid(client, installed):
     r = callback(client, code="c2", installation_id=777, setup_action="install")
-    assert r.status_code == 400
+    failed(r, "state_invalid", "/settings/github")
     assert [i for i, _, _ in links()] == [INST]
 
 

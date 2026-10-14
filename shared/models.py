@@ -59,6 +59,10 @@ class SessionEvent(SQLModel, table=True):
     type: str
     # JSONB on Postgres, plain JSON elsewhere so tests can run on SQLite
     payload: dict = Field(sa_column=sa.Column(sa.JSON().with_variant(JSONB(), "postgresql"), nullable=False))
+    # a user message's id from the client that sent it: posting it again stores nothing
+    client_message_id: str | None = None
+
+    __table_args__ = (sa.Index("ix_session_events_client_message_id", "session_id", "client_message_id", unique=True),)
 
 
 class User(SQLModel, table=True):
@@ -66,6 +70,9 @@ class User(SQLModel, table=True):
 
     id: str = Field(primary_key=True)
     email: str | None = Field(default=None, unique=True)  # lower-cased; None for GitHub-only accounts
+    # proved its owner's: GitHub's verified primary email (an account made by GitHub sign-in), or a
+    # confirmation or reset link opened from it. An email sign-up is unconfirmed until then
+    email_verified: bool = Field(default=False, sa_column_kwargs={"server_default": sa.false()})
     name: str
     password_hash: str | None = None  # argon2; None: no email/password sign-in
     github_id: int | None = Field(default=None, unique=True, sa_type=sa.BigInteger)
@@ -82,6 +89,19 @@ class PasswordReset(SQLModel, table=True):
 
     token_hash: str = Field(primary_key=True)  # sha256 of the emailed token; the token itself isn't stored
     user_id: str = Field(foreign_key="users.id", index=True)
+    expires_at: datetime = Field(sa_type=sa.DateTime(timezone=True))
+    used_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
+
+
+class EmailVerification(SQLModel, table=True):
+    """A "Confirm your email" link, for the address the account had when it was sent: changing
+    the email voids it."""
+    __tablename__ = "email_verifications"
+
+    token_hash: str = Field(primary_key=True)  # sha256 of the emailed token; the token itself isn't stored
+    user_id: str = Field(foreign_key="users.id", index=True)
+    email: str
     expires_at: datetime = Field(sa_type=sa.DateTime(timezone=True))
     used_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
     created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))

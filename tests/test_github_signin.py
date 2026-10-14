@@ -1,5 +1,6 @@
 """GitHub sign-in and account linking: POST /auth/github/url (or GET /auth/github/start), then
-/auth/github/callback, which sets the refresh cookie and sends the browser to /auth/callback."""
+/auth/github/callback, which sets the refresh cookie and sends the browser to /auth/callback.
+A callback that fails sends the browser to the frontend with ?error=<code>, never JSON."""
 from datetime import timedelta
 from urllib.parse import parse_qs, urlsplit
 
@@ -39,6 +40,16 @@ def callback(client, **params):
     return r
 
 
+def failed(r, code, where="/login", **extra):
+    """The callback sent the browser to the frontend's `where` with ?error=code (and extra)."""
+    assert r.status_code == 302, r.text
+    assert "json" not in r.headers.get("content-type", "")
+    url = urlsplit(r.headers["location"])
+    assert f"{url.scheme}://{url.netloc}{url.path}" == config.FRONTEND_URL + where
+    assert parse_qs(url.query) == {"error": [code], **{k: [v] for k, v in extra.items()}}
+    assert not any(v.startswith("otto_refresh=") for k, v in r.headers.multi_items() if k == "set-cookie")
+
+
 def nonce_cookies(client) -> list[str]:
     return [c.name for c in client.cookies.jar if c.name.startswith("gh_nonce_")]
 
@@ -74,7 +85,7 @@ def test_sign_in_creates_a_user(client, fake_github):
     me = client.get("/me").json()
     assert (me["name"], me["github_login"], me["avatar_url"]) == (
         "Taufik Khan", "Taufik041", "https://avatars.githubusercontent.com/u/101")
-    assert me["email"] is None and me["has_password"] is False  # GitHub's email is never used
+    assert me["email"] == "taufik@example.com" and me["has_password"] is False  # GitHub's verified email (tests/test_github_email.py)
     assert [u.github_id for u in users()] == [101]
     assert nonce_cookies(client) == []  # the state is single-use
 
@@ -139,12 +150,12 @@ def test_link_mode_links_by_the_states_uid_without_a_refresh_cookie(client, fake
     assert [(u.id, u.github_id) for u in users()] == [(me["id"], 101)]
 
 
-def test_a_link_for_a_deleted_account_is_400(client, fake_github):
+def test_a_link_for_a_deleted_account_is_state_invalid(client, fake_github):
     signup(client)
     state = start(client, "link")
     client.delete("/me")
     fake_github.add_user("c1", gid=101, login="Taufik041")
-    assert callback(client, code="c1", state=state).status_code == 400
+    failed(callback(client, code="c1", state=state), "state_invalid", "/settings/github")
     assert users() == []
 
 
@@ -169,42 +180,81 @@ def test_a_signed_out_state_never_takes_over_github_linked_elsewhere(client, fak
     other = signup(client, email="other@example.com")
     fake_github.add_user("c1", gid=101, login="Taufik041")
 
-    assert callback(client, code="c1", state=state).status_code == 409
+    r = callback(client, code="c1", state=state)
+
+    failed(r, "github_already_linked", "/settings/github", login="Taufik041")
     assert client.get("/me").json()["id"] == other["id"] and len(users()) == 2
 
 
-def test_accounts_are_never_merged_by_email(client, fake_github):
+def test_a_github_email_that_an_account_uses_is_neither_merged_nor_a_second_account(client, fake_github):
     email_user = signup(client, email="taufik@example.com")
     sign_out(client)
-    fake_github.add_user("c1", gid=101, login="Taufik041", email="taufik@example.com")
+    fake_github.add_user("c1", gid=101, login="Taufik041",
+                         emails=[("work@example.com", True), ("Taufik@Example.com", True)])
+
+    r = callback(client, code="c1", state=start(client))
+
+    failed(r, "github_email_in_use")
+    assert [(u.id, u.github_id) for u in users()] == [(email_user["id"], None)]
+    assert "/user/emails" in fake_github.paths("GET")
+
+
+def test_an_unverified_github_email_doesnt_count(client, fake_github):
+    email_user = signup(client, email="taufik@example.com")
+    sign_out(client)
+    fake_github.add_user("c1", gid=101, login="Taufik041", emails=[("taufik@example.com", False)])
 
     callback(client, code="c1", state=start(client))
 
     me = client.get("/me").json()
-    assert me["id"] != email_user["id"] and me["email"] is None
-    rows = {u.id: u for u in users()}
-    assert rows[email_user["id"]].github_id is None
-    assert len(rows) == 2
+    assert me["id"] != email_user["id"] and me["email"] is None  # a new account, GitHub's email unused
+    assert len(users()) == 2
 
 
-def test_github_already_linked_to_another_account_is_409(client, fake_github):
+def test_without_the_email_list_the_public_email_counts(client, fake_github):
+    """No email permission on the App: /user's email (GitHub only shows a verified one) still counts."""
+    signup(client, email="taufik@example.com")
+    sign_out(client)
+    fake_github.add_user("c1", gid=101, login="Taufik041", email="taufik@example.com")
+
+    failed(callback(client, code="c1", state=start(client)), "github_email_in_use")
+    assert len(users()) == 1
+
+
+def test_an_email_in_use_never_stops_the_github_account_already_linked(client, fake_github):
+    fake_github.add_user("c1", gid=101, login="Taufik041")
+    callback(client, code="c1", state=start(client))
+    me = client.get("/me").json()["id"]
+    sign_out(client)
+    signup(client, email="taufik@example.com")
+    sign_out(client)
+    fake_github.add_user("c2", gid=101, login="Taufik041", emails=[("taufik@example.com", True)])
+
+    callback(client, code="c2", state=start(client))
+
+    assert client.get("/me").json()["id"] == me
+
+
+def test_github_already_linked_to_another_account_goes_back_to_settings(client, fake_github):
     fake_github.add_user("c1", gid=101, login="Taufik041")
     callback(client, code="c1", state=start(client))  # a GitHub account of its own
     sign_out(client)
     other = signup(client, email="other@example.com")
     fake_github.add_user("c2", gid=101, login="Taufik041")
 
-    r = callback(client, code="c2", state=start(client))
+    r = callback(client, code="c2", state=start(client, "link"))
 
-    assert r.status_code == 409
+    failed(r, "github_already_linked", "/settings/github", login="Taufik041")
     assert {u.id: u.github_id for u in users()}[other["id"]] is None
 
 
-def test_an_account_linked_to_a_different_github_is_409(client, fake_github):
+def test_an_account_linked_to_a_different_github_is_a_mismatch_naming_the_linked_one(client, fake_github, capsys):
     fake_github.add_user("c1", gid=101, login="first")
     callback(client, code="c1", state=start(client))
     fake_github.add_user("c2", gid=202, login="second")
-    assert callback(client, code="c2", state=start(client)).status_code == 409
+    failed(callback(client, code="c2", state=start(client, "link")), "github_account_mismatch", "/settings/github",
+           login="first")
+    assert "linked to GitHub first, not second" in capsys.readouterr().out
     assert client.get("/me").json()["github_login"] == "first"
 
 
@@ -220,15 +270,15 @@ def expired_state(client):
     lambda client: auth.sign({"sub": "someone"}, "session", timedelta(days=1)),  # for another purpose
     lambda client: start(client) + "x",                             # tampered
 ])
-def test_a_bad_state_is_400(client, fake_github, make_state):
+def test_a_bad_state_is_state_invalid(client, fake_github, make_state):
     fake_github.add_user("c1", gid=101, login="Taufik041")
     state = make_state(client)
     r = callback(client, code="c1", **({"state": state} if state else {}))
-    assert r.status_code == 400
+    failed(r, "state_invalid")
     assert users() == [] and fake_github.calls == []
 
 
-def test_a_state_from_another_browser_is_400(client, fake_github):
+def test_a_state_from_another_browser_is_state_invalid(client, fake_github):
     """The attacker's own state and code, replayed in the victim's browser, must not link or log in."""
     fake_github.add_user("c1", gid=666, login="attacker")
     attackers_state = start(client)
@@ -237,17 +287,17 @@ def test_a_state_from_another_browser_is_400(client, fake_github):
 
     r = callback(client, code="c1", state=attackers_state)
 
-    assert r.status_code == 400
+    failed(r, "state_invalid", "/settings/github")  # the victim is signed in here
     assert {u.id: u.github_id for u in users()}[victim["id"]] is None
 
 
-def test_a_state_started_by_someone_else_is_400(client, fake_github):
+def test_a_state_started_by_someone_else_is_state_invalid(client, fake_github):
     a = signup(client, email="a@example.com")
     state = start(client, "link")  # started while signed in as A
     sign_out(client)
     signup(client, email="b@example.com")
     fake_github.add_user("c1", gid=101, login="Taufik041")
-    assert callback(client, code="c1", state=state).status_code == 400
+    failed(callback(client, code="c1", state=state), "state_invalid", "/settings/github")
     assert all(u.github_id is None for u in users()) and a
 
 
@@ -273,12 +323,12 @@ def test_a_used_state_cant_be_used_again(client, fake_github):
     state = start(client)
     assert callback(client, code="c1", state=state).status_code in (302, 307)
     sign_out(client)
-    assert callback(client, code="c2", state=state).status_code == 400
+    failed(callback(client, code="c2", state=state), "state_invalid")
 
 
-def test_a_bad_code_is_400_and_githubs_answer_is_logged(client, fake_github, capsys):
+def test_a_bad_code_is_github_unavailable_and_githubs_answer_is_logged(client, fake_github, capsys):
     r = callback(client, code="nope", state=start(client))
-    assert r.status_code == 400 and r.json()["detail"] == "GitHub sign-in failed; try again"
+    failed(r, "github_unavailable")
     assert users() == []
     out = capsys.readouterr().out
     assert "bad_verification_code" in out and "The code passed is incorrect or expired." in out
@@ -294,9 +344,9 @@ def test_wrong_client_credentials_say_so_and_never_log_the_secret(client, fake_g
 
     r = callback(client, code="c1", state=start(client, path), **extra)
 
-    assert r.status_code == 400
-    assert r.json()["detail"] == "GitHub rejected Otto's client credentials — check GITHUB_CLIENT_ID/SECRET"
+    failed(r, "github_unavailable", "/login" if path == "get" else "/settings/github")
     out = capsys.readouterr().out
+    assert "GitHub rejected Otto's client credentials — check GITHUB_CLIENT_ID/SECRET" in out
     assert "incorrect_client_credentials" in out and "client_secret passed are incorrect" in out
     assert "wrong-secret-0123456789" not in out + r.text
 
@@ -307,9 +357,39 @@ def test_github_sign_in_needs_the_oauth_app_configured(client, monkeypatch):
     assert client.post("/auth/github/url", json={"mode": "signin"}).status_code == 503
 
 
-def test_cancelling_on_github_goes_back_to_the_frontend(client, fake_github):
+def test_cancelling_on_github_goes_back_to_the_sign_in_dialog(client, fake_github):
     r = callback(client, error="access_denied", state=start(client))
-    assert r.status_code in (302, 307)
-    assert r.headers["location"].startswith("http://localhost:5173/")
-    assert "access_denied" in r.headers["location"]
-    assert fake_github.calls == []
+    failed(r, "access_denied")
+    assert fake_github.calls == [] and nonce_cookies(client) == []
+
+
+def test_cancelling_a_link_goes_back_to_settings(client, fake_github):
+    signup(client)
+    failed(callback(client, error="access_denied", state=start(client, "link")), "access_denied", "/settings/github")
+
+
+def test_another_error_from_github_is_unknown_and_logged(client, fake_github, capsys):
+    failed(callback(client, error="application_suspended", state=start(client)), "unknown")
+    assert "application_suspended" in capsys.readouterr().out
+
+
+def test_github_unreachable_is_github_unavailable(client, fake_github, monkeypatch, capsys):
+    import requests
+
+    def down(method, url, **kw):
+        raise requests.ConnectionError("no route to host")
+
+    monkeypatch.setattr(github_app, "request", down)
+    failed(callback(client, code="c1", state=start(client)), "github_unavailable")
+    assert "no route to host" in capsys.readouterr().out
+
+
+def test_a_bug_is_unknown_with_the_traceback_logged(client, fake_github, monkeypatch, capsys):
+    def broken(*args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(github_app, "_sign_in", broken)
+    fake_github.add_user("c1", gid=101, login="Taufik041")
+    failed(callback(client, code="c1", state=start(client)), "unknown")
+    out = capsys.readouterr().out
+    assert "RuntimeError: boom" in out and "Traceback" in out

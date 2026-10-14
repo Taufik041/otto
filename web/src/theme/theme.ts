@@ -1,24 +1,33 @@
-/** Light / Dark / System, Light by default. The choice is kept in localStorage; the resolved theme
- *  is set as data-theme on <html>, which the CSS tokens key on, and picks the favicon. index.html
- *  applies both before first paint. */
+/** Light / Dark / System, System by default (the OS setting, followed live). A choice the user
+ *  makes is kept in localStorage; the resolved theme is set as data-theme on <html>, which the CSS
+ *  tokens key on, and picks the favicon. index.html applies both before first paint, by the same
+ *  rule (keep them in step). */
 export type ThemeChoice = 'light' | 'dark' | 'system'
 export type Theme = 'light' | 'dark'
 
-export const THEME_KEY = 'otto.theme'
+export const THEME_KEY = 'otto.theme.v2'
+// the key from when Light was the default: its "light" may never have been picked, so only
+// "dark" and "system" (which were) still count
+export const LEGACY_THEME_KEY = 'otto.theme'
 const DARK_QUERY = '(prefers-color-scheme: dark)'
 
+/** The user's choice, else System. */
 export function readChoice(): ThemeChoice {
   try {
     const v = localStorage.getItem(THEME_KEY)
-    return v === 'dark' || v === 'system' ? v : 'light'
+    if (v === 'light' || v === 'dark' || v === 'system') return v
+    const old = localStorage.getItem(LEGACY_THEME_KEY)
+    return old === 'dark' ? 'dark' : 'system'
   } catch {
-    return 'light'
+    return 'system'
   }
 }
 
+/** Only for a choice the user made (Settings → Appearance, the profile menu): never a default. */
 export function saveChoice(choice: ThemeChoice) {
   try {
     localStorage.setItem(THEME_KEY, choice)
+    localStorage.removeItem(LEGACY_THEME_KEY)
   } catch {
     // storage blocked: the choice lasts for this page only
   }

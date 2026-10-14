@@ -30,14 +30,18 @@ function app(path: string) {
 /** The gateway's auth routes; `exists` answers /auth/email-status. Returns what was posted. */
 function gateway({
   exists = true,
+  password = exists,
   login = () => HttpResponse.json(tokenBody()),
-  signup = () => HttpResponse.json(tokenBody(), { status: 201 }),
+  signup = () => HttpResponse.json({ ok: true, email: 'new@example.com' }, { status: 201 }),
   status,
+  resend = () => HttpResponse.json({ ok: true }),
 }: {
   exists?: boolean
+  password?: boolean
   login?: () => Response
   signup?: () => Response
   status?: () => Response
+  resend?: () => Response
 } = {}) {
   const posted: { path: string; body: unknown }[] = []
   const log = (path: string, res: () => Response) =>
@@ -46,10 +50,11 @@ function gateway({
       return res()
     })
   server.use(
-    log('/auth/email-status', status ?? (() => HttpResponse.json({ exists }))),
+    log('/auth/email-status', status ?? (() => HttpResponse.json({ exists, password }))),
     log('/auth/login', login),
     log('/auth/signup', signup),
     log('/auth/forgot', () => HttpResponse.json({ ok: true })),
+    log('/auth/verify/resend', resend),
     log('/access-requests', () => HttpResponse.json({ ok: true }, { status: 201 })),
   )
   return posted
@@ -93,15 +98,57 @@ describe('the first step', () => {
     expect(screen.getByTestId('where')).toHaveTextContent('/login')
   })
 
-  it('a cancelled GitHub sign-in says so', async () => {
-    app('/?github_error=access_denied')
-    expect(await screen.findByText('GitHub sign-in was cancelled. Try again, or use your email.')).toBeInTheDocument()
-    expect(screen.getByTestId('where')).toHaveTextContent('/login?github_error=access_denied')
+  it.each([
+    ['github_email_in_use', 'An Otto account already uses this email. Log in with your email, then connect GitHub from Settings.'],
+    ['access_denied', 'GitHub sign-in was cancelled. Try again, or use your email.'],
+    ['state_invalid', 'That GitHub sign-in expired or was started in another browser. Try again.'],
+    ['github_unavailable', "GitHub didn't answer as expected. Try again in a minute."],
+    ['unknown', "GitHub sign-in didn't finish. Try again, or use your email."],
+    ['something_new', "GitHub sign-in didn't finish. Try again, or use your email."],
+  ])('a GitHub sign-in that failed with %s says why, then drops ?error from the URL', async (error, message) => {
+    app(`/login?error=${error}&next=%2Fsettings%2Fusage`)
+    expect(await within(dialog()).findByRole('alert')).toHaveTextContent(message)
+    await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent(/^\/login\?next=%2Fsettings%2Fusage$/))
+    expect(screen.getByRole('dialog', { name: 'Log in or sign up' })).toBeInTheDocument()
+  })
+
+  it('a GitHub account linked elsewhere names it', async () => {
+    app('/login?error=github_already_linked&login=octo')
+    expect(await within(dialog()).findByRole('alert')).toHaveTextContent(
+      'This GitHub account (@octo) is already linked to a different Otto account. Sign in with GitHub to use that account, or unlink it there first.',
+    )
+    await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent(/^\/login$/))
   })
 
   it('a signed-out visit remembers where it was going', async () => {
     app('/settings/usage')
     expect(screen.getByTestId('where')).toHaveTextContent('/login?next=%2Fsettings%2Fusage')
+  })
+})
+
+describe('an account made with GitHub, without a password', () => {
+  it('says to continue with GitHub instead of asking for a password', async () => {
+    const posted = gateway({ exists: true, password: false })
+    server.use(http.post(`${API}/auth/github/url`, () => HttpResponse.json({ url: 'https://github.com/login/oauth/authorize?state=x' })))
+    app('/login')
+    await enterEmail('taufik@hey.com')
+    expect(
+      await within(dialog()).findByText('This account uses GitHub. Continue with GitHub, or set a password from Settings after signing in.'),
+    ).toBeInTheDocument()
+    expect(screen.queryByLabelText('Password')).not.toBeInTheDocument()
+    expect(within(dialog()).getByText('taufik@hey.com')).toBeInTheDocument()
+    expect(within(dialog()).getByRole('button', { name: 'Continue with GitHub' })).toBeInTheDocument()
+    expect(posted.map((p) => p.path)).toEqual(['/auth/email-status'])
+
+    await userEvent.click(within(dialog()).getByRole('button', { name: 'Edit' }))
+    expect(await screen.findByRole('dialog', { name: 'Log in or sign up' })).toBeInTheDocument()
+  })
+
+  it('an older gateway that doesn\'t say still asks for the password', async () => {
+    gateway({ status: () => HttpResponse.json({ exists: true }) })
+    app('/login')
+    await enterEmail()
+    expect(await screen.findByLabelText('Password')).toBeInTheDocument()
   })
 })
 
@@ -187,8 +234,52 @@ describe('a new account', () => {
     await userEvent.type(screen.getByLabelText('Password'), 'enough')
     expect(within(dialog()).queryByText('Use at least 8 characters.')).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Create account' }))
-    await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent('/welcome'))
+    expect(await screen.findByRole('dialog', { name: 'Check your inbox' })).toBeInTheDocument()
     expect(posted.at(-1)).toEqual({ path: '/auth/signup', body: { name: 'New Person', email: 'new@example.com', password: 'shortenough' } })
+    expect(screen.getByTestId('where')).toHaveTextContent(/^\/login$/) // not signed in until the link
+  })
+
+  /** Sign up as new@example.com: the dialog then says "Check your inbox". */
+  async function signUp() {
+    app('/login')
+    await enterEmail('new@example.com')
+    await userEvent.type(await screen.findByLabelText('Your name'), 'New Person')
+    await userEvent.type(screen.getByLabelText('Password'), 'long enough')
+    await userEvent.click(screen.getByRole('button', { name: 'Create account' }))
+    return screen.findByRole('dialog', { name: 'Check your inbox' })
+  }
+
+  it('"Check your inbox" names the address and the 24 hours', async () => {
+    gateway({ exists: false })
+    const d = await signUp()
+    expect(within(d).getByText('We sent a link to new@example.com. Open it to confirm your email and log in. It expires in 24 hours.')).toBeInTheDocument()
+  })
+
+  it('Resend sends another link and says so', async () => {
+    const posted = gateway({ exists: false })
+    const d = await signUp()
+    await userEvent.click(within(d).getByRole('button', { name: 'Resend' }))
+    expect(await within(d).findByRole('status')).toHaveTextContent('Sent. Check your inbox, and your spam folder too.')
+    expect(posted.at(-1)).toEqual({ path: '/auth/verify/resend', body: { email: 'new@example.com' } })
+  })
+
+  it('Resend past the limit (3 an hour) says to wait', async () => {
+    gateway({
+      exists: false,
+      resend: () => HttpResponse.json({ error: 'rate_limited', detail: 'Too many attempts. Wait a minute and try again.' }, { status: 429 }),
+    })
+    const d = await signUp()
+    await userEvent.click(within(d).getByRole('button', { name: 'Resend' }))
+    expect(await within(d).findByRole('alert')).toHaveTextContent('Too many attempts. Wait a minute and try again.')
+    expect(within(d).queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('"Use a different email" starts over with an empty email', async () => {
+    gateway({ exists: false })
+    const d = await signUp()
+    await userEvent.click(within(d).getByRole('button', { name: 'Use a different email' }))
+    expect(screen.getByRole('dialog', { name: 'Log in or sign up' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Email address')).toHaveValue('')
   })
 
   it('a name is required', async () => {
@@ -265,5 +356,6 @@ describe('when Otto can\'t be reached, or GitHub said no', () => {
   ])('a GitHub sign-up refused as %s opens that state', async (error, title) => {
     app(`/login?error=${error}`)
     expect(await screen.findByRole('dialog', { name: title })).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent(/^\/login$/))
   })
 })

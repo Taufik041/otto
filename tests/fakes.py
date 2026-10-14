@@ -253,22 +253,40 @@ PASSWORD = "correct horse battery"
 
 
 def make_user(user_id="u1", **fields):
-    """A user row, straight into the database."""
+    """A user row, straight into the database; one with an email has confirmed it, unless
+    email_verified=False."""
     from shared.db import get_db
     from shared.models import User
 
+    fields.setdefault("email_verified", fields.get("email") is not None)
     user = User(id=user_id, name=fields.pop("name", user_id), **fields)
     with get_db() as s:
         s.add(user)
     return user
 
 
-def signup(client, email="taufik@example.com", name="Taufik Khan", password=PASSWORD) -> dict:
-    """Sign up through the API; the client sends its access token from now on. Returns the user."""
+def signup(client, email="taufik@example.com", name="Taufik Khan", password=PASSWORD, confirm=True) -> dict:
+    """Sign up through the API, confirm the email (as its emailed link would; confirm=False leaves it
+    unconfirmed) and log in: the client sends its access token from now on. Returns the user."""
     r = client.post("/auth/signup", json={"name": name, "email": email, "password": password})
     assert r.status_code == 201, r.text
+    if confirm:
+        confirm_email(r.json()["email"])
+    r = client.post("/auth/login", json={"email": email, "password": password})
+    assert r.status_code == 200, r.text
     client.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
     return r.json()["user"]
+
+
+def confirm_email(email):
+    """Mark the account with this email confirmed, straight in the database."""
+    from sqlmodel import update
+
+    from shared.db import get_db
+    from shared.models import User
+
+    with get_db() as s:
+        s.exec(update(User).where(User.email == email.strip().lower()).values(email_verified=True))
 
 
 def log_in_as(client, user_id):
@@ -310,7 +328,8 @@ class FakeResponse:
 class FakeGitHub:
     """Stands in for gateway.github_app.request: canned GitHub answers and a log of the calls.
 
-    Fill in: codes (OAuth code -> user token), users (user token -> GET /user),
+    Fill in: codes (OAuth code -> user token), users (user token -> GET /user), emails (user
+    token -> GET /user/emails; a token without any is refused, as without the App's email permission),
     user_installations (user token -> installation ids), installations (id -> account login),
     repos (installation id -> repo dicts). Lists are paged by page_size.
     """
@@ -318,16 +337,20 @@ class FakeGitHub:
 
     def __init__(self):
         self.calls = []                # (method, path)
-        self.codes, self.users, self.user_installations = {}, {}, {}
+        self.codes, self.users, self.user_installations, self.emails = {}, {}, {}, {}
         self.installations, self.repos = {}, {}
         self.minted = []               # (installation id, repositories or None)
         self.page_size = 100
         self.pulls = {}                # full name -> [{number, html_url, title, body, head, base, state}]
         self.pull_error = None         # (status, body): what POST .../pulls answers instead
 
-    def add_user(self, code, gid, login, **extra):
+    def add_user(self, code, gid, login, emails=None, **extra):
+        """emails: [(address, verified)] for GET /user/emails."""
         token = f"ghu_{login}_{code}"
         self.codes[code] = token
+        if emails is not None:
+            self.emails[token] = [{"email": e, "verified": v, "primary": i == 0, "visibility": None}
+                                  for i, (e, v) in enumerate(emails)]
         self.users[token] = {"id": gid, "login": login, "name": extra.pop("name", None),
                              "avatar_url": f"https://avatars.githubusercontent.com/u/{gid}", **extra}
         return token
@@ -368,6 +391,10 @@ class FakeGitHub:
             return FakeResponse(200, {"access_token": self.codes[data["code"]], "token_type": "bearer"})
         if path == "/user" and token in self.users:
             return FakeResponse(200, self.users[token])
+        if path == "/user/emails" and token in self.users:
+            if token not in self.emails:
+                return FakeResponse(403, {"message": "Resource not accessible by integration"})
+            return FakeResponse(200, self.emails[token])
         if path == "/user/installations" and token in self.users:
             items = [{"id": i, "account": {"login": self.installations[i]}}
                      for i in self.user_installations.get(token, [])]

@@ -8,7 +8,7 @@ from shared.events import load_events
 from shared.sessions import get_session
 from brain import loop
 from brain.resume import INTERRUPTED, rebuild_messages
-from brain.tools import SYSTEM
+from brain.prompts import SYSTEM
 from tests.fakes import FakeChannel, auto_reply, llm_tool_calls, llm_final
 from tests.test_brain_loop import fake_client
 

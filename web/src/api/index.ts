@@ -29,14 +29,31 @@ export const api = {
   async login(email: string, password: string) {
     client.signIn(await post<TokenBody>('/auth/login', { email, password }, false))
   },
-  async signup(name: string, email: string, password: string) {
-    client.signIn(await post<TokenBody>('/auth/signup', { name, email, password }, false))
+  /** a new email account isn't signed in: it gets a "Confirm your email" link, which signs it in */
+  signup: (name: string, email: string, password: string) =>
+    post<{ ok: true; email: string }>('/auth/signup', { name, email, password }, false),
+  /** the confirmation link's token: confirms the email and signs in */
+  async verifyEmail(token: string) {
+    client.signIn(await post<TokenBody>('/auth/verify', { token }, false))
+  },
+  /** another confirmation link, signed out (the sign-in dialog); 3 an hour per address */
+  resendVerification: (email: string) => post<{ ok: true }>('/auth/verify/resend', { email }, false),
+  /** another confirmation link for the signed-in, unconfirmed account (the same limit) */
+  resendMine: () => post<{ ok: true; email: string }>('/me/email/verify'),
+  /** an unconfirmed account's email (a typo at sign-up): a link goes to the new one */
+  async changeEmail(email: string) {
+    const user = await post<Me>('/me/email', { email })
+    client.setUser(user)
+    return user
   },
   forgot: (email: string) => post<{ ok: true }>('/auth/forgot', { email }, false),
   /** the workers are offline: email Taufik to bring them up (once an hour per user) */
   wakeRequest: (message = '') => post<{ ok: true }>('/wake-requests', { message }),
   /** email-first sign-in: whether this email has an account (rate-limited per IP) */
-  emailStatus: (email: string) => post<{ exists: boolean }>('/auth/email-status', { email }, false),
+  /** password: false for an account made with GitHub that has none (older gateways leave it out) */
+  emailStatus: (email: string) => post<{ exists: boolean; password?: boolean }>('/auth/email-status', { email }, false),
+  /** an account made with GitHub: email it a link that sets a first password */
+  setUpPassword: () => post<{ ok: true; email: string }>('/me/password/setup'),
   /** ask for an account while signups are invite-only; `who` is a GitHub username or an email */
   requestAccess: (who: string, note: string) =>
     post<{ ok: true }>('/access-requests', { github_login: who, note }, false),
@@ -68,7 +85,8 @@ export const api = {
   events: (id: string, afterSeq = 0) =>
     client.request<SessionEvent[]>(`/sessions/${encodeURIComponent(id)}/events?after_seq=${afterSeq}`),
   wsTicket: (id: string) => post<{ ticket: string }>(`/sessions/${encodeURIComponent(id)}/ws-ticket`),
-  followUp: (id: string, body: { text: string; repo?: string | null; model?: string | null }) =>
+  /** client_message_id: posting the same one again stores nothing (a retry, a double click) */
+  followUp: (id: string, body: { text: string; repo?: string | null; model?: string | null; client_message_id?: string }) =>
     post<{ id: string; status: string; repo: string | null }>(`/sessions/${encodeURIComponent(id)}/messages`, body),
   stop: (id: string) => post<{ id: string; status: string }>(`/sessions/${encodeURIComponent(id)}/stop`),
   /** the user saw the chat up to event `seq` (its finished turn stops wanting attention) */

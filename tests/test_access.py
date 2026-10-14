@@ -8,7 +8,7 @@ from shared import access, config
 from shared.db import get_db
 from shared.models import AccessRequest, User
 from tests.fakes import PASSWORD, sign_out, signup
-from tests.test_github_signin import callback, start, users
+from tests.test_github_signin import callback, failed, start, users
 
 
 def sign_up(client, email="new@example.com"):
@@ -85,8 +85,7 @@ def test_allowlist_refuses_a_new_unlisted_github_account(client, fake_github, al
 
     r = callback(client, code="c1", state=start(client))
 
-    assert r.status_code in (302, 307)
-    assert r.headers["location"] == "http://localhost:5173/auth/callback?error=invite_only"
+    failed(r, "invite_only")
     assert users() == [] and "otto_refresh" not in client.cookies
 
 
@@ -107,7 +106,7 @@ def test_paused_refuses_a_new_github_account(client, fake_github, monkeypatch):
     monkeypatch.setattr(config, "ACCEPTING", False)
     fake_github.add_user("c1", gid=101, login="someone")
     r = callback(client, code="c1", state=start(client))
-    assert r.headers["location"] == "http://localhost:5173/auth/callback?error=paused"
+    failed(r, "paused")
     assert users() == []
 
 

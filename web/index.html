@@ -9,12 +9,17 @@
     <meta name="theme-color" content="#FBFCFD" />
     <title>Otto</title>
     <script>
-      // the theme (Light unless Dark or System was chosen) and its favicon, before first paint;
-      // src/theme/theme.ts keeps them afterwards
+      // the theme and its favicon, before first paint, by src/theme/theme.ts's rule (which keeps
+      // them afterwards): the user's choice, else System (the OS setting). The old key only
+      // counts its "dark": its "light" may never have been picked
       ;(function () {
         var c = null
-        try { c = localStorage.getItem('otto.theme') } catch (e) {}
-        var dark = c === 'dark' || (c === 'system' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches)
+        try {
+          c = localStorage.getItem('otto.theme.v2')
+          if (c !== 'light' && c !== 'dark' && c !== 'system') c = localStorage.getItem('otto.theme') === 'dark' ? 'dark' : 'system'
+        } catch (e) {}
+        var os = !!(window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches)
+        var dark = c === 'dark' || (c !== 'light' && os)
         var t = dark ? 'dark' : 'light'
         document.documentElement.dataset.theme = t
         var set = function (sel, attr, v) { var el = document.head.querySelector(sel); if (el) el.setAttribute(attr, v) }

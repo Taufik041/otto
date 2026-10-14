@@ -412,3 +412,61 @@ describe('seen: the open chat never wants attention', () => {
     await waitFor(() => expect(calls).toContain(`seen:${l.events.length}`))
   })
 })
+
+describe('a follow-up shows once', () => {
+  const done = () => log().created('what is a closure?', null).status('running')
+    .msg('user', 'what is a closure?').msg('assistant', 'A function.').status('done')
+
+  /** Send "and in Python?"; the gateway's copy (with the client's id) arrives over the WebSocket
+   *  while the POST is still out, as it does when NOTIFY beats the response. Returns the bodies posted. */
+  async function sendWhileTheEchoBeatsTheResponse() {
+    const bodies: Record<string, unknown>[] = []
+    const l = done()
+    let sock: FakeSocket
+    backend(l.events, { repo: null, work_branch: null }, [
+      http.post(`${API}/sessions/s1/messages`, async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>
+        bodies.push(body)
+        sock.deliver({ seq: 6, ts: '2026-10-02T14:03:00Z', type: 'session.status', payload: { status: 'provisioning' } })
+        sock.deliver({
+          seq: 7,
+          ts: '2026-10-02T14:03:01Z',
+          type: 'llm.message',
+          payload: { message: { role: 'user', content: body.text }, client_message_id: body.client_message_id },
+        })
+        return HttpResponse.json({ id: 's1', status: 'queued', repo: null }, { status: 202 })
+      }),
+    ])
+    expect(await screen.findByText('A function.')).toBeInTheDocument()
+    await waitFor(() => expect(FakeSocket.all).toHaveLength(1))
+    sock = FakeSocket.all[0]!
+    await userEvent.type(screen.getByLabelText('Message Otto'), 'and in Python?')
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    return { bodies, sock }
+  }
+
+  it('when the echo arrives before the POST returns, and after the reply', async () => {
+    const { bodies, sock } = await sendWhileTheEchoBeatsTheResponse()
+    expect(bodies[0]!.client_message_id).toMatch(/^[\w-]{8,64}$/)
+    sock.deliver({ seq: 8, ts: '2026-10-02T14:03:02Z', type: 'session.status', payload: { status: 'running' } })
+    sock.deliver({ seq: 9, ts: '2026-10-02T14:03:03Z', type: 'llm.message', payload: { message: { role: 'assistant', content: 'Python has them too.' } } })
+    sock.deliver({ seq: 10, ts: '2026-10-02T14:03:04Z', type: 'session.status', payload: { status: 'done' } })
+    expect(await screen.findByText('Python has them too.')).toBeInTheDocument()
+    expect(screen.getAllByText('and in Python?')).toHaveLength(1)
+  })
+
+  it('shows at once, before the gateway answers, and goes if the send fails', async () => {
+    const l = done()
+    let answer: (r: Response) => void = () => {}
+    backend(l.events, { repo: null, work_branch: null }, [
+      http.post(`${API}/sessions/s1/messages`, () => new Promise<Response>((resolve) => (answer = resolve))),
+    ])
+    expect(await screen.findByText('A function.')).toBeInTheDocument()
+    await userEvent.type(screen.getByLabelText('Message Otto'), 'and in Python?')
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(await screen.findByText('and in Python?', { selector: ':not(textarea)' })).toBeInTheDocument()
+    act(() => answer(HttpResponse.json({ detail: 'session s1 is running; wait until it finishes' }, { status: 409 })))
+    await waitFor(() => expect(screen.queryByText('and in Python?', { selector: ':not(textarea)' })).not.toBeInTheDocument())
+  })
+})

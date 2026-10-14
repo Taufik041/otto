@@ -44,10 +44,12 @@ it('Terms & Privacy opens the privacy policy (which links the terms)', async () 
   await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent('/legal/privacy'))
 })
 
-it('the Theme control defaults to Light', async () => {
+it('the Theme control defaults to System', async () => {
+  localStorage.clear()
   renderSignedIn(<ProfileMenu />)
   await userEvent.click(screen.getByRole('button', { name: 'Account menu' }))
-  expect(await screen.findByRole('radio', { name: 'Light' })).toHaveAttribute('aria-checked', 'true')
+  expect(await screen.findByRole('radio', { name: 'System' })).toHaveAttribute('aria-checked', 'true')
+  expect(screen.getByRole('radio', { name: 'Light' })).toHaveAttribute('aria-checked', 'false')
 })
 
 it('the collapsed rail opens the same menu', async () => {
