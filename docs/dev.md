@@ -183,7 +183,7 @@ In the App's settings on GitHub:
   device holding a copy) and is a 401, with one exception: a token rotated less than
   `REFRESH_REUSE_GRACE_SECONDS` ago, in a family nobody logged out or caught reusing, is a retry.
   It gets a new token in the same family, and the family lives on. `refresh_tokens.revoked_reason`
-  says why each token ended: `rotated`, `logout`, `reuse`, `password` or `logout_all`.
+  says why each token ended: `rotated`, `logout`, `reuse`, `password`, `logout_all` or `deleted`.
 - **Confirming the email:** an email sign-up starts unconfirmed (`users.email_verified`), and
   isn't signed in until it opens its link. Unconfirmed, it can log in but every chat route is 403
   `{"error": "email_unverified"}`, and its address reserves nothing: a GitHub sign-up whose
@@ -191,6 +191,16 @@ In the App's settings on GitHub:
   account is deleted. The gateway deletes accounts left unconfirmed for 7 days when it starts and
   once a day. GitHub sign-ups are confirmed already, and so are accounts from before this
   (migration 0018). A password reset through the emailed link confirms the email too.
+- **Deleting an account** (`shared/accounts.py`): it is deactivated at once. `users.deleted_at` is
+  set, every refresh token is revoked (`deleted`) and `token_version` bumped, its running sessions
+  are stopped and their sandboxes destroyed, its GitHub installations and emailed links deleted,
+  and "Your Otto account has been deleted" is emailed (with where to uninstall the GitHub App,
+  which Otto can't do). Its email and GitHub login are cleared, so they can sign up again at once;
+  only their sha256s (`purge_keys`) stay, for the purge to find its access requests. A deleted
+  account never signs in. `PURGE_AFTER` (15 days) later, the gateway's purge (when it starts and
+  once a day) deletes its chats, their events, its usage, access requests and tokens, and leaves
+  an anonymous row (id and dates) that server logs may still name. With the 14 days of nightly
+  backups (`BACKUP_KEEP_DAYS`), nothing of it is left after 30 days.
 - No CSRF guard on the API: a cross-site page can't add an `Authorization` header. Only
   `/auth/refresh` and `/auth/logout` read the cookie; SameSite=Lax, `Path=/auth` and an `Origin`
   check (`CORS_ORIGINS` or the gateway itself) protect them.
@@ -211,6 +221,7 @@ In the App's settings on GitHub:
 | `POST /auth/logout` | refresh cookie | revokes this device's refresh token family, clears the cookie; no body needed |
 | `POST /auth/logout-all` | Bearer | revokes every refresh token and voids every access token |
 | `POST /me/password`, `POST /auth/reset` | Bearer / reset token | signs out every device, and signs this one in again (the same body as login). A reset also confirms the email. |
+| `DELETE /me` `{confirm: "DELETE", password?}` | Bearer | deletes the account, as the Privacy Policy says (below). 422 unless `confirm` is `DELETE`; 403 without the right password, for an account that has one. Clears the refresh cookie. `python -m scripts.accounts delete <email-or-github-login>` does the same for requests sent to support@taufi.dev. |
 | `POST /sessions/{id}/ws-ticket` | Bearer, the session's owner | `{ticket}`: single use, 30 seconds, for `WS /sessions/{id}/ws?ticket=...&after_seq=N` |
 | `POST /sessions/{id}/seen` `{seq}` | Bearer, the session's owner | the user saw the chat up to event `seq`: it never moves backwards, and is capped at the chat's last event. `GET /sessions` gives each chat an `attention`: `working` while Otto works, `done`/`failed` when the latest turn ended so (failed or interrupted) after the last seen event, else `null` (a stop the user made, seen, anything else). |
 | `POST /sessions/{id}/pr` `{title?}` | Bearer, the session's owner | opens the chat's proposed PR on GitHub with the installation's token (no sandbox, no model), and appends `pr.opened`. 201; 200 with the existing one if a PR is already open for `otto/<id>` (double clicks, two tabs). 409 while Otto works or with nothing proposed; 502 with GitHub's reason if it refuses. |

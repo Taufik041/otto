@@ -68,7 +68,8 @@ def test_a_valid_installation_is_saved(client, fake_github, me):
     assert (after["github_login"], after["avatar_url"]) == ("Taufik041", "https://avatars.githubusercontent.com/u/101")
     assert client.get("/github").json() == {
         "connected": True, "login": "Taufik041", "avatar_url": "https://avatars.githubusercontent.com/u/101",
-        "installations": [{"id": INST, "account_login": "Taufik041"}]}
+        "installations": [{"id": INST, "account_login": "Taufik041",
+                           "uninstall_url": f"https://github.com/settings/installations/{INST}"}]}
 
 
 def test_duplicate_install_starts_both_work(client, fake_github, me):

@@ -88,7 +88,8 @@ export type GitHubStatus = {
   connected: boolean
   login: string | null
   avatar_url: string | null
-  installations: { id: number; account_login: string }[]
+  /** uninstall_url: where on GitHub to uninstall the App from it (Otto can't) */
+  installations: { id: number; account_login: string; uninstall_url: string }[]
 }
 
 export type Unlinked = { id: number; uninstall_url: string }

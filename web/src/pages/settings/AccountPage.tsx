@@ -3,6 +3,7 @@ import { Mail } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { api, client } from '@/api'
+import { useGitHub } from '@/api/queries'
 import { ApiError, messageOf } from '@/api/errors'
 import { useMe } from '@/auth/auth'
 import { Avatar } from '@/components/Avatar'
@@ -11,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '@/components/ui/dialog'
 import { Field } from '@/components/ui/field'
 import { StrengthMeter } from '@/pages/auth/StrengthMeter'
+import { goToLanding } from '@/utils/links'
 import { MIN_PASSWORD } from '@/utils/password'
 import { Card, Row } from './parts'
 
@@ -107,7 +109,9 @@ export function AccountPage() {
 
       <Card className="px-5 py-[18px]">
         <div className="text-[15px] font-medium text-bad">Delete account</div>
-        <div className="mt-1 text-sm text-muted">This deletes your chats and disconnects GitHub. It can't be undone.</div>
+        <div className="mt-1 text-sm text-muted">
+          Your account is deactivated right away, and its data is permanently deleted within 30 days. It can't be undone.
+        </div>
         <Button variant="danger" size="none" className="mt-3.5 h-9 px-4 text-sm" onClick={() => setDeleteOpen(true)}>
           Delete account
         </Button>
@@ -265,40 +269,112 @@ function ChangePassword({
   )
 }
 
+const DELETE_WORD = 'DELETE'
+
 function DeleteAccount({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const navigate = useNavigate()
-  const qc = useQueryClient()
+  const me = useMe()
+  const [typed, setTyped] = useState('')
+  const [password, setPassword] = useState('')
+  const [wrong, setWrong] = useState(false)
   const del = useMutation({
-    mutationFn: api.deleteMe,
-    onSuccess: async () => {
-      await client.logout()
-      qc.clear()
-      navigate('/login', { replace: true })
-    },
+    mutationFn: () => api.deleteMe(typed, me.has_password ? password : undefined),
+    // the gateway signed every device out and dropped the refresh cookie; leaving the app drops
+    // this page's access token (signing out here first would flash the sign-in page)
+    onSuccess: goToLanding,
+    onError: (err) => setWrong(err instanceof ApiError && err.status === 403),
   })
+  const ready = typed === DELETE_WORD && (!me.has_password || password !== '')
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) {
+          setTyped('')
+          setPassword('')
+          setWrong(false)
+          del.reset()
+        }
+        onOpenChange(o)
+      }}
+    >
       <DialogContent>
         <DialogTitle>Delete your account?</DialogTitle>
         <DialogDescription>
-          This deletes your chats and disconnects GitHub. It can't be undone.
+          Your account is deactivated right away: every device is signed out, and anything Otto is working on stops. Its
+          chats and the rest of its data are permanently deleted within 30 days. This can't be undone.
         </DialogDescription>
-        {del.isError && (
-          <p role="alert" className="mb-0 mt-3 text-sm text-bad">
-            {messageOf(del.error)}
-          </p>
-        )}
-        <DialogFooter>
-          <DialogClose asChild>
-            <Button variant="outline" size="sm">
-              Cancel
+        <ul className="mb-0 mt-3 flex list-disc flex-col gap-1.5 pl-5 text-sm text-muted">
+          <li>Pull requests Otto already opened live in your own repositories on GitHub, and they stay there.</li>
+          <GitHubAppNote />
+          <li>Your email and GitHub account can sign up again afterwards.</li>
+        </ul>
+        <form
+          className="mt-4 flex flex-col gap-3.5"
+          noValidate
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (ready) del.mutate()
+          }}
+        >
+          <Field
+            label={`Type ${DELETE_WORD} to confirm`}
+            autoComplete="off"
+            autoCapitalize="characters"
+            spellCheck={false}
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+          />
+          {me.has_password && (
+            <Field
+              label="Password"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => {
+                setPassword(e.target.value)
+                setWrong(false)
+              }}
+              error={wrong ? "That password isn't right." : undefined}
+            />
+          )}
+          {del.isError && !wrong && (
+            <p role="alert" className="m-0 text-sm text-bad">
+              {messageOf(del.error)}
+            </p>
+          )}
+          <DialogFooter className="mt-2">
+            <DialogClose asChild>
+              <Button variant="outline" size="sm">
+                Cancel
+              </Button>
+            </DialogClose>
+            <Button type="submit" variant="dangerSolid" size="sm" disabled={!ready || del.isPending}>
+              Delete account
             </Button>
-          </DialogClose>
-          <Button variant="dangerSolid" size="sm" disabled={del.isPending} onClick={() => del.mutate()}>
-            Delete account
-          </Button>
-        </DialogFooter>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** Otto can't uninstall its GitHub App for the user: link to where they can, on GitHub. */
+function GitHubAppNote() {
+  const github = useGitHub()
+  const installations = github.data?.installations ?? []
+  if (installations.length === 0) return null
+  return (
+    <li>
+      Otto stops using GitHub, but its GitHub App stays installed until you uninstall it on GitHub:{' '}
+      {installations.map((i, n) => (
+        <span key={i.id}>
+          {n > 0 && ', '}
+          <a href={i.uninstall_url} target="_blank" rel="noopener noreferrer">
+            {i.account_login} ›
+          </a>
+        </span>
+      ))}
+    </li>
   )
 }

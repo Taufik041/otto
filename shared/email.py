@@ -1,7 +1,7 @@
 """Email through Resend's HTTP API (https://resend.com/docs/api-reference/emails/send-email).
 
-Three kinds go out: password-reset and "Confirm your email" links (to the account's own email),
-and "bring it back up" requests (only ever to OTTO_NOTIFY_TO, with the asker as reply_to).
+Four kinds go out: password-reset and "Confirm your email" links and "Your Otto account has been
+deleted" (to the account's own email), and "bring it back up" requests (only ever to OTTO_NOTIFY_TO, with the asker as reply_to).
 Without RESEND_API_KEY, development prints each email instead of sending it, and production
 refuses (EmailUnavailable), so the caller can say so.
 """
@@ -19,6 +19,7 @@ IST = timezone(timedelta(hours=5, minutes=30), "IST")
 # one plain address: no display name, no list, no whitespace or line breaks (header injection)
 ADDRESS = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+")
 WAKE_SUBJECT = "Someone wants to try Otto"
+SUPPORT_EMAIL = "support@taufi.dev"
 
 
 class EmailError(Exception):
@@ -118,6 +119,26 @@ def set_password_email(link: str, address: str) -> tuple[str, str, str]:
         "If you didn't ask, ignore this email: you keep signing in with GitHub.",
     ])
     return "Set your Otto password", text, html
+
+
+DELETED_SUBJECT = "Your Otto account has been deleted"
+
+
+def deleted_email(uninstall_urls: list[str]) -> tuple[str, str, str]:
+    """(subject, text, html) confirming an account's deletion. uninstall_urls: where on GitHub to
+    uninstall each installation it had (Otto can't do that for them)."""
+    gone = ("Your Otto account has been deleted. You're signed out everywhere, and nobody can sign in to it again. "
+            "Its chats and the rest of its data are permanently deleted, or anonymized, within 30 days.")
+    prs = ("Pull requests Otto already opened live in your own repositories on GitHub, and they stay there.")
+    app = "The Otto GitHub App stays installed until you uninstall it on GitHub:"
+    ask = f"If you didn't ask for this, write to {SUPPORT_EMAIL}."
+    text = f"{gone}\n\n{prs}\n\n" + (f"{app}\n" + "".join(f"{u}\n" for u in uninstall_urls) + "\n"
+                                       if uninstall_urls else "") + f"{ask}\n"
+    e = html_lib.escape
+    links = "<br>".join(f'<a href="{e(u, quote=True)}">{e(u)}</a>' for u in uninstall_urls)
+    html = _html([gone, prs] + ([f"{app}<br>{links}"] if uninstall_urls else []) +
+                 [f'If you didn\'t ask for this, write to <a href="mailto:{SUPPORT_EMAIL}">{SUPPORT_EMAIL}</a>.'])
+    return DELETED_SUBJECT, text, html
 
 
 def wake_email(who: str, message: str, page: str, user_agent: str, when: datetime | None = None) -> tuple[str, str, str]:

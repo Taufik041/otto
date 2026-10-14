@@ -26,10 +26,10 @@ from brain.bus import bus_call, start_consumer, stop_consumer
 from gateway import auth, errors, github_app, limits, live, tokens, workers
 from orchestrator import sandbox
 from shared import config, email, health, usage
-from shared.accounts import delete_account, prune_unconfirmed
+from shared.accounts import deactivate, prune_unconfirmed, purge_deleted
 from shared.bus import (SESSIONS_QUEUE, actions_queue, chat_job, connect_with_backoff, results_queue, resume_job,
                         retry_job, start_job)
-from shared.db import get_engine, init_db
+from shared.db import get_db, get_engine, init_db
 from shared.events import append_event, client_message_seq, load_events, redact
 from shared.models import User, as_utc, utcnow
 from shared.sessions import (ACTIVE, attach_repo, attention, end_seqs, mark_seen, count_active_agents, create_session, delete_session, get_session,
@@ -44,7 +44,7 @@ RETRYABLE = ("failed", "interrupted")  # a turn that ended in an error, which PO
 REPO_NAME = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
 NEW_REPO = "Start a new chat for a different repo."
 UNAVAILABLE = "Unavailable right now. Try again later."  # the picker's hint for a model without a key
-DAY = 24 * 3600  # seconds between sweeps of unconfirmed sign-ups
+DAY = 24 * 3600  # seconds between sweeps of unconfirmed sign-ups and deleted accounts
 
 
 def check_production():
@@ -78,6 +78,11 @@ def _prune_unconfirmed():
         print(f"[gateway] deleted {len(pruned)} email sign-up(s) left unconfirmed for a week", flush=True)
 
 
+def _purge_deleted():
+    if purged := purge_deleted():
+        print(f"[gateway] purged {len(purged)} deleted account(s): {', '.join(purged)}", flush=True)
+
+
 async def daily(fn):
     """fn (blocking) once a day, until cancelled; an error is logged and the next day tries again."""
     while True:
@@ -97,12 +102,13 @@ async def lifespan(app):
     if pruned := tokens.prune_refresh():
         print(f"[gateway] deleted {pruned} refresh token(s) that expired over a week ago", flush=True)
     _prune_unconfirmed()
+    _purge_deleted()
     swept = sweep_stale_sessions()
     if swept:
         print(f"[gateway] marked {len(swept)} stale session(s) interrupted: {', '.join(swept)}", flush=True)
     conn = await connect_with_backoff(connect_robust, config.BUS_URL, "gateway")
     listener = None
-    sweeper = asyncio.create_task(daily(_prune_unconfirmed))
+    sweepers = [asyncio.create_task(daily(fn)) for fn in (_prune_unconfirmed, _purge_deleted)]
     try:
         engine = get_engine()
         if engine.dialect.name == "postgresql":
@@ -115,7 +121,8 @@ async def lifespan(app):
         app.state.create_lock = asyncio.Lock()
         yield
     finally:
-        sweeper.cancel()
+        for sweeper in sweepers:
+            sweeper.cancel()
         if listener:
             await live.stop(listener)
         await conn.close()
@@ -472,8 +479,31 @@ async def _send_after(websocket, sid, last) -> int:
     return last
 
 
-async def _stream(websocket, sid, after_seq, q):
-    """Replay events after after_seq, then send new ones as notifications arrive on q."""
+# user id -> a function per open WebSocket of theirs that ends it (deleting the account does)
+_sockets: dict[str, set] = {}
+ACCOUNT_DELETED = 4401, "this account was deleted"
+
+
+def _end_sockets(user_id):
+    """End the user's open WebSockets on this gateway: they close with 4401."""
+    for end in list(_sockets.get(user_id, ())):
+        end()
+
+
+def _account_gone(user_id) -> bool:
+    with get_db() as s:
+        user = s.get(User, user_id)
+    return user is None or user.deleted_at is not None
+
+
+class AccountGone(Exception):
+    pass
+
+
+async def _stream(websocket, sid, after_seq, q, user_id):
+    """Replay events after after_seq, then send new ones as notifications arrive on q. Each
+    heartbeat checks the account is still there (one deleted by another process, e.g. the support
+    CLI, can't reach _sockets): AccountGone if not."""
     last = await _send_after(websocket, sid, after_seq)
     loop = asyncio.get_running_loop()
     next_ping = loop.time() + PING_INTERVAL
@@ -481,6 +511,8 @@ async def _stream(websocket, sid, after_seq, q):
         try:
             seq = await asyncio.wait_for(q.get(), max(next_ping - loop.time(), 0))
         except TimeoutError:
+            if await asyncio.to_thread(_account_gone, user_id):
+                raise AccountGone(user_id) from None
             await websocket.send_text(json.dumps({"type": "ping"}))
             next_ping = loop.time() + PING_INTERVAL
             continue
@@ -514,6 +546,7 @@ async def watch(websocket: WebSocket, sid: str, ticket: str | None = None, after
     Needs a ticket from POST /sessions/{sid}/ws-ticket (browsers can't send an Authorization
     header on a WebSocket, and access tokens don't belong in URLs) and an Origin in CORS_ORIGINS.
     Refusals close with 4403 (origin), 4401 (no valid ticket) or 4404 (no such session).
+    Deleting the account closes it with 4401 ("this account was deleted").
     """
     await websocket.accept()  # then close, so the client sees the code (a refused handshake is a bare 403)
     if websocket.headers.get("origin") not in config.CORS_ORIGINS:
@@ -528,16 +561,26 @@ async def watch(websocket: WebSocket, sid: str, ticket: str | None = None, after
         await websocket.close(code=4404, reason=f"no session {sid!r}")
         return
     q = live.subscribe(sid)  # before the replay, so nothing committed in between is missed
+    deleted = False
+
+    def end():
+        nonlocal deleted
+        deleted = True
+        tg.cancel_scope.cancel()
+
     try:
         async with anyio.create_task_group() as tg:
             async def read():
                 await _read_until_closed(websocket)
                 tg.cancel_scope.cancel()  # the client went away: stop streaming
 
+            _sockets.setdefault(user_id, set()).add(end)
             tg.start_soon(read)
-            await _stream(websocket, sid, after_seq, q)  # only ends on an error
+            await _stream(websocket, sid, after_seq, q, user_id)  # only ends on an error
     except* WebSocketDisconnect:
         pass
+    except* AccountGone:
+        deleted = True
     except* Exception as eg:
         e = eg.exceptions[0]
         print(f"[gateway] event stream for {sid} failed: {type(e).__name__}: {e}", flush=True)
@@ -545,6 +588,13 @@ async def watch(websocket: WebSocket, sid: str, ticket: str | None = None, after
             await websocket.close(code=1011)
     finally:
         live.unsubscribe(sid, q)
+        if (mine := _sockets.get(user_id)) is not None:
+            mine.discard(end)
+            if not mine:
+                del _sockets[user_id]
+    if deleted:
+        with suppress(Exception):
+            await websocket.close(code=ACCOUNT_DELETED[0], reason=ACCOUNT_DELETED[1])
 
 
 @app.post("/sessions/{sid}/messages", status_code=202)
@@ -765,19 +815,52 @@ async def stop_sandbox(sid: str, user: User = Depends(auth.verified_user)):
     return {"id": sid, "status": get_session(sid).status, "sandbox_status": "missing"}
 
 
+class DeleteMe(BaseModel):
+    confirm: str = Field(max_length=20)  # "DELETE", typed
+    password: str | None = Field(default=None, max_length=1024)  # needed if the account has one
+
+    @field_validator("confirm")
+    @classmethod
+    def typed(cls, v):
+        if v != "DELETE":
+            raise ValueError('type DELETE to confirm')
+        return v
+
+
+async def close_account(ch, user_id) -> bool:
+    """Delete the account (shared.accounts.deactivate), close its WebSockets, stop its sandboxes,
+    and email "Your Otto account has been deleted". False if there was no such account. DELETE /me, and the support
+    path (python -m scripts.accounts delete)."""
+    gone = await asyncio.to_thread(deactivate, user_id)
+    if gone is None:
+        return False
+    _end_sockets(user_id)  # an open tab stops getting events now
+    for sid in gone.sandboxes:
+        try:
+            await _destroy_sandbox(ch, sid)
+        except Exception as e:  # best effort: a sandbox ends by itself within SANDBOX_MAX_AGE_SECONDS
+            print(f"[gateway] deleting user {user_id}: sandbox of {sid}: {e}", flush=True)
+    github_app.forget(user_id)
+    for iid, _ in gone.installations:
+        github_app.forget(installation_id=iid)
+    if gone.email:
+        urls = [github_app.uninstall_url(iid, account, gone.github_login) for iid, account in gone.installations]
+        try:
+            await asyncio.to_thread(email.send, [gone.email], *email.deleted_email(urls))
+        except email.EmailError as e:
+            print(f"[gateway] the deletion email to user {user_id} didn't go: {e}", flush=True)
+    return True
+
+
 @app.delete("/me")
-async def delete_me(response: Response, user: User = Depends(auth.current_user)):
-    """Delete the account: stop the user's sessions and sandboxes, then delete everything of theirs."""
-    for row in await asyncio.to_thread(list_sessions, user.id):
-        if row.status in ACTIVE:
-            set_status(row.id, "stopped")  # a worker on it ends after its current step
-        if row.repo:
-            try:
-                await _destroy_sandbox(app.state.ch, row.id)
-            except Exception as e:  # best effort: a sandbox ends by itself within SANDBOX_MAX_AGE_SECONDS
-                print(f"[gateway] deleting user {user.id}: sandbox of {row.id}: {e}", flush=True)
-    await asyncio.to_thread(delete_account, user.id)
-    github_app.forget(user.id)
+async def delete_me(body: DeleteMe, response: Response, user: User = Depends(auth.current_user)):
+    """Delete the account, as the Privacy Policy says: it is deactivated at once (every device
+    signed out, its sessions and sandboxes stopped, GitHub dropped, its email and GitHub login
+    free to sign up again) and its data purged within 30 days. Body {confirm: "DELETE", password}
+    (403 without the right password, for an account that has one)."""
+    if user.password_hash is not None and not auth.password_ok(user, body.password or ""):
+        raise HTTPException(403, "the password is wrong")
+    await close_account(app.state.ch, user.id)
     auth.clear_refresh(response)
     return {"ok": True}
 

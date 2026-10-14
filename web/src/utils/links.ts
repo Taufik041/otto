@@ -5,6 +5,14 @@ export const LANDING_URL: string = (import.meta.env.VITE_LANDING_URL || 'https:/
 
 export const CONTACT_EMAIL = 'hello@taufi.dev'
 
+/** Where to ask for an account to be deleted (python -m scripts.accounts delete) */
+export const SUPPORT_EMAIL = 'support@taufi.dev'
+
+/** Leave the app for the landing page (after deleting the account). */
+export function goToLanding() {
+  window.location.assign(LANDING_URL)
+}
+
 /** "Book a live demo" beside the workers-offline notice; hidden when unset */
 export const DEMO_BOOKING_URL: string | null = import.meta.env.VITE_DEMO_BOOKING_URL || null
 

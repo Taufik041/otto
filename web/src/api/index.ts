@@ -70,7 +70,9 @@ export const api = {
   async changePassword(current: string, next: string) {
     client.signIn(await post<TokenBody>('/me/password', { current, new: next }))
   },
-  deleteMe: () => client.request<{ ok: true }>('/me', { method: 'DELETE' }),
+  /** delete the account: confirm is "DELETE" typed; password, for an account that has one */
+  deleteMe: (confirm: string, password?: string) =>
+    client.request<{ ok: true }>('/me', { method: 'DELETE', body: { confirm, password: password || null } }),
 
   health: () => client.request<Health>('/health'),
   models: () => client.request<Models>('/models'),
