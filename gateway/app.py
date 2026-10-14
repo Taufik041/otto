@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from starlette.websockets import WebSocketDisconnect
 from kubernetes.client.exceptions import ApiException
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy.exc import IntegrityError
 
 from brain.bus import bus_call, start_consumer, stop_consumer
 from gateway import auth, errors, github_app, limits, live, tokens, workers
@@ -34,7 +35,7 @@ from shared.events import append_event, client_message_seq, load_events, redact
 from shared.models import User, as_utc, utcnow
 from shared.sessions import (ACTIVE, attach_repo, attention, end_seqs, mark_seen, count_active_agents, create_session, delete_session, get_session,
                              list_sessions, record_pr, repo_sessions_since, set_model, set_status, set_title,
-                             sweep_stale_sessions,
+                             session_for_client_message, sweep_stale_sessions,
                              transition, work_branch)
 
 PING_TIMEOUT = 5  # seconds to wait for a warm runner to answer control.ping / control.shutdown
@@ -45,6 +46,7 @@ REPO_NAME = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
 NEW_REPO = "Start a new chat for a different repo."
 UNAVAILABLE = "Unavailable right now. Try again later."  # the picker's hint for a model without a key
 DAY = 24 * 3600  # seconds between sweeps of unconfirmed sign-ups and deleted accounts
+BUS_STARTUP_WAIT = 5  # seconds the gateway waits for RabbitMQ before it serves without it
 
 
 def check_production():
@@ -106,7 +108,11 @@ async def lifespan(app):
     swept = sweep_stale_sessions()
     if swept:
         print(f"[gateway] marked {len(swept)} stale session(s) interrupted: {', '.join(swept)}", flush=True)
-    conn = await connect_with_backoff(connect_robust, config.BUS_URL, "gateway")
+    # RabbitMQ is waited for only briefly: without it the gateway still serves (GET /health says
+    # "bus": "down"), and whatever needs it answers 503 bus_unavailable until it connects
+    app.state.conn = app.state.ch = None
+    bus = asyncio.create_task(_connect_bus(app))
+    await asyncio.wait({bus}, timeout=BUS_STARTUP_WAIT)
     listener = None
     sweepers = [asyncio.create_task(daily(fn)) for fn in (_prune_unconfirmed, _purge_deleted)]
     try:
@@ -115,17 +121,39 @@ async def lifespan(app):
             listener = live.start(live.pg_url(engine.url))
         else:
             print("[gateway] not on Postgres: WebSockets replay events but get no live ones", flush=True)
-        ch = await conn.channel()
-        await ch.declare_queue(SESSIONS_QUEUE, durable=True)
-        app.state.ch = ch
         app.state.create_lock = asyncio.Lock()
         yield
     finally:
-        for sweeper in sweepers:
-            sweeper.cancel()
+        for task in (bus, *sweepers):
+            task.cancel()
         if listener:
             await live.stop(listener)
-        await conn.close()
+        if app.state.conn:
+            await app.state.conn.close()
+
+
+async def _connect_bus(app):
+    """Connect to RabbitMQ (retrying with backoff until it answers) and declare the sessions queue.
+    The connection is robust: once made, it reconnects by itself."""
+    conn = await connect_with_backoff(connect_robust, config.BUS_URL, "gateway")
+    app.state.conn = conn
+    ch = await conn.channel()
+    await ch.declare_queue(SESSIONS_QUEUE, durable=True)
+    app.state.ch = ch
+
+
+def _bus_up() -> bool:
+    """Connected now: a robust connection clears `connected` while it's down, between reconnects."""
+    conn = app.state.conn
+    return app.state.ch is not None and conn is not None and conn.connected.is_set()
+
+
+def _channel():
+    """The bus channel; 503 bus_unavailable (nothing stored yet) while RabbitMQ is unreachable."""
+    if not _bus_up():
+        raise errors.Refused(503, "bus_unavailable", "Otto can't reach its message queue right now. "
+                                                     "Try again in a minute.")
+    return app.state.ch
 
 
 app = FastAPI(title="Otto", lifespan=lifespan, **docs_urls())
@@ -182,10 +210,16 @@ def repo_name(v):
     return v
 
 
+# the client's id for a message: posting it again (a retry, a double click) stores nothing
+CLIENT_MESSAGE_ID = r"^[A-Za-z0-9_-]{8,64}$"
+
+
 class NewSession(BaseModel):
     message: str = Field(min_length=1)
     repo: str | None = None  # "owner/name" from GET /repos; None: a plain chat
     model: str | None = None  # a catalog id (GET /models); None: the user's default, else the server's
+    # posting it again returns the chat the first post made
+    client_message_id: str | None = Field(default=None, pattern=CLIENT_MESSAGE_ID)
 
     _repo = field_validator("repo")(repo_name)
 
@@ -201,8 +235,7 @@ class FollowUp(BaseModel):
     text: str = Field(min_length=1)
     repo: str | None = None  # attaches a repo to a plain chat; the chat's own repo is fine too
     model: str | None = None  # a catalog id: the chat continues on it from this message on
-    # the client's id for this message: posting it again (a retry, a double click) stores nothing
-    client_message_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{8,64}$")
+    client_message_id: str | None = Field(default=None, pattern=CLIENT_MESSAGE_ID)
 
     _repo = field_validator("repo")(repo_name)
 
@@ -348,13 +381,16 @@ async def _create_sandbox(sid, repo):
 async def health_status(request: Request, response: Response):
     """No sign-in needed: the landing page's status pill and the app's offline states. status:
     "paused" while OTTO_ACCEPTING is false (no new accounts), else "up"; workers: whether the
-    sandbox cluster is reachable (checked at most every WORKERS_CHECK_SECONDS)."""
+    sandbox cluster is reachable (checked at most every WORKERS_CHECK_SECONDS); bus: whether RabbitMQ
+    is connected. It never waits on RabbitMQ, so it answers while the broker is down."""
     origin = request.headers.get("origin")
     if origin and origin in config.LANDING_ORIGINS:  # the app's origins get CORS from the middleware
         response.headers["Access-Control-Allow-Origin"] = origin
     response.headers["Cache-Control"] = "no-store"
     return {"status": "up" if config.ACCEPTING else "paused",
-            "workers": "online" if await workers.online() else "offline", "version": version(),
+            "workers": "online" if await workers.online() else "offline",
+            # whether RabbitMQ is connected: without it, no chat can start or go on
+            "bus": "up" if _bus_up() else "down", "version": version(),
             # whether "Forgot password?" can email a link (a key, or development)
             "password_reset": email.available()}
 
@@ -401,8 +437,14 @@ def models():
 
 
 @app.post("/sessions", status_code=201)
-async def create(body: NewSession, user: User = Depends(auth.verified_user)):
-    """A new chat. With a repo, Otto works on it in a sandbox; without one, it just answers."""
+async def create(body: NewSession, response: Response, user: User = Depends(auth.verified_user)):
+    """A new chat. With a repo, Otto works on it in a sandbox; without one, it just answers. A
+    client_message_id the user made a chat with already is that chat posted again: 200 with the
+    chat as it is, and nothing else."""
+    if again := _created_already(user, body):
+        response.status_code = 200
+        return again
+    ch = _channel()
     _within_limit(user)
     model = _model_for(user, body.model)
     _usable(model)
@@ -410,19 +452,34 @@ async def create(body: NewSession, user: User = Depends(auth.verified_user)):
         await workers.require()  # 503 workers_offline before anything is created
     repo = await _repo_for(user, body.repo) if body.repo else None
     async with app.state.create_lock:  # count + insert as one step within this gateway
+        if again := _created_already(user, body):  # the same chat, posted while its first post was at work
+            response.status_code = 200
+            return again
         if repo:
             _room_for_an_agent(user)
         sid = new_session_id()
-        row = create_session(sid, task=body.message, repo=repo["full_name"] if repo else None, model=model,
-                             status="provisioning", user_id=user.id)
+        try:
+            row = create_session(sid, task=body.message, repo=repo["full_name"] if repo else None, model=model,
+                                 status="provisioning", user_id=user.id, client_message_id=body.client_message_id)
+        except IntegrityError:
+            if again := _created_already(user, body):  # another gateway made it first
+                response.status_code = 200
+                return again
+            raise
     if repo:
         try:
             await _create_sandbox(sid, repo)
         except Exception as e:
             _fail(sid, "create_sandbox", e)
     # the runner needn't be up yet: its actions wait in the durable queue
-    await _enqueue(app.state.ch, sid, start_job(sid) if repo else chat_job(sid))
+    await _enqueue(ch, sid, start_job(sid) if repo else chat_job(sid))
     return {"id": sid, "status": "queued", "title": row.title, "repo": row.repo}
+
+
+def _created_already(user, body: NewSession) -> dict | None:
+    """The chat this user made with body's client_message_id, as POST /sessions answers it."""
+    row = body.client_message_id and session_for_client_message(user.id, body.client_message_id)
+    return {"id": row.id, "status": row.status, "title": row.title, "repo": row.repo} if row else None
 
 
 @app.get("/sessions")
@@ -602,10 +659,10 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.verified
     """The next message. A repo given to a plain chat attaches it: the chat gets a sandbox and
     the agent takes over. A chat keeps its first repo: another one is 409. A client_message_id
     stored already is this message posted again: 202 with the chat as it is, and nothing else."""
-    ch = app.state.ch
     row = _row(sid, user)
     if _posted_already(sid, body):
         return {"id": sid, "status": row.status, "repo": row.repo}
+    ch = _channel()
     # the model this message would run on: one asked for, else the chat's own
     _usable(body.model) if body.model is not None else _healthy(row.model)
     _within_limit(user)
@@ -716,7 +773,7 @@ def decline_pull_request(sid: str, user: User = Depends(auth.verified_user)):
 async def retry(sid: str, body: Retry | None = None, user: User = Depends(auth.verified_user)):
     """Run a failed (or interrupted) turn again from where it stopped, with no new message: the
     error card's Retry, optionally on another model. Other statuses are 409."""
-    ch = app.state.ch
+    ch = _channel()
     row = _row(sid, user)
     model = body.model if body else None
     _usable(model) if model is not None else _healthy(row.model)  # the model the retry would run on
@@ -783,10 +840,11 @@ async def _wake_sandbox(ch, sid, repo):
 async def stop(sid: str, user: User = Depends(auth.verified_user)):
     """Stop the session and its sandbox; it stays in the list, and a follow-up starts it again."""
     row = _row(sid, user)
+    ch = _channel() if row.repo else None  # a plain chat has no sandbox
     # stopped first: a worker still running this session ends after its current step
     set_status(sid, "stopped")
-    if row.repo:  # a plain chat has no sandbox
-        await _destroy_sandbox(app.state.ch, sid)
+    if row.repo:
+        await _destroy_sandbox(ch, sid)
     return {"id": sid, "status": "stopped"}
 
 
@@ -795,10 +853,11 @@ async def delete_chat(sid: str, user: User = Depends(auth.verified_user)):
     """Delete the chat: stop its sandbox (and its queues), then delete its events and the session.
     Its token usage stays on the user's account."""
     row = _row(sid, user)
+    ch = _channel() if row.repo else None  # a plain chat has no sandbox or queues
     if row.status in ACTIVE:
         set_status(sid, "stopped")  # a worker on it ends after its current step
-    if row.repo:  # a plain chat has no sandbox or queues
-        await _destroy_sandbox(app.state.ch, sid)
+    if row.repo:
+        await _destroy_sandbox(ch, sid)
     await asyncio.to_thread(delete_session, sid)
     return {"id": sid, "deleted": True}
 
@@ -808,10 +867,11 @@ async def stop_sandbox(sid: str, user: User = Depends(auth.verified_user)):
     """Stop just the sandbox. A session between turns keeps its status (a follow-up starts a new
     sandbox); one that is working can't go on without it, so it is stopped too."""
     row = _row(sid, user)
+    ch = _channel() if row.repo else None
     if row.status in ACTIVE:
         set_status(sid, "stopped")
     if row.repo:
-        await _destroy_sandbox(app.state.ch, sid)
+        await _destroy_sandbox(ch, sid)
     return {"id": sid, "status": get_session(sid).status, "sandbox_status": "missing"}
 
 
@@ -860,7 +920,7 @@ async def delete_me(body: DeleteMe, response: Response, user: User = Depends(aut
     (403 without the right password, for an account that has one)."""
     if user.password_hash is not None and not auth.password_ok(user, body.password or ""):
         raise HTTPException(403, "the password is wrong")
-    await close_account(app.state.ch, user.id)
+    await close_account(_channel(), user.id)
     auth.clear_refresh(response)
     return {"ok": True}
 

@@ -108,7 +108,7 @@ export function Composer({
 
   const send = useMutation({
     mutationFn: async ({ id, ...body }: { id: string; message: string; repo: string | null; model: string | null }) => {
-      if (!reply) return (await api.createSession(body)).id
+      if (!reply) return (await api.createSession({ ...body, client_message_id: id })).id
       reply.onSending({ id, text: body.message, repo: body.repo })
       await api.followUp(reply.sessionId, {
         client_message_id: id,

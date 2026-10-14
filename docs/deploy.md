@@ -36,6 +36,8 @@ step links to its details below. You need:
 - a Resend account with `taufi.dev` verified, and its two keys ("Email (Resend)")
 - a sandbox node: a second Ubuntu 24.04 machine for the sandboxes ("Sandbox node"), set up during
   step 3
+- an S3 bucket for the nightly backups, with an IAM user that can use only that bucket
+  ("Backups")
 
 ### 1. An AWS budget alert
 
@@ -54,7 +56,9 @@ Before anything else bills:
 In **EC2**, click **Launch instance**:
 
 1. **Name:** `otto-prod`.
-2. **Application and OS Images:** Ubuntu Server 24.04 LTS, 64-bit (x86).
+2. **Application and OS Images:** pick **Ubuntu Server 24.04 LTS**, 64-bit (x86), explicitly.
+   The picker now defaults to a newer Ubuntu release, which the scripts weren't written for
+   (`bootstrap.sh` warns on anything but 24.04).
 3. **Instance type:** `t3.small`.
 4. **Key pair:** "Proceed without a key pair". You'll connect through Session Manager, then
    Tailscale.
@@ -62,9 +66,10 @@ In **EC2**, click **Launch instance**:
    Remove the SSH rule, so there are **no inbound rules** at all. Outbound stays open.
 6. **Configure storage:** 30 GiB, gp3.
 7. **Advanced details:**
-   - **IAM instance profile:** a role with `AmazonSSMManagedInstanceCore`. Create one under
-     **IAM** → **Roles** → **Create role** → **AWS service: EC2** if you haven't. This is what
-     makes Session Manager work.
+   - **IAM instance profile:** a role with only `AmazonSSMManagedInstanceCore`, nothing else.
+     Create one under **IAM** → **Roles** → **Create role** → **AWS service: EC2** if you
+     haven't. It's what makes Session Manager work. Backups don't use it: they have their own IAM
+     user, limited to the bucket ("Backups").
    - **Credit specification:** **Standard**, so CPU bursts can't add charges.
 8. Click **Launch instance**.
 
@@ -100,7 +105,7 @@ First, on your machine:
       { "action": "accept", "src": ["autogroup:admin"], "dst": ["*:*"] }
     ],
     "ssh": [
-      // you can open a shell on the server and the sandbox node through Tailscale
+      // Tailscale SSH to the sandbox node (the server runs plain OpenSSH; tag:otto here applies only if it ever runs --ssh)
       { "action": "accept", "src": ["autogroup:admin"], "dst": ["tag:otto", "tag:sandbox"], "users": ["ubuntu", "root", "deploy"] },
       // Tailscale's default: your own untagged devices
       { "action": "check",  "src": ["autogroup:member"], "dst": ["autogroup:self"], "users": ["autogroup:nonroot", "root"] }
@@ -109,6 +114,13 @@ First, on your machine:
   ```
 
   `tag:ci` must exist here before the OAuth client below can use it.
+
+  How each machine is reached: the **server** runs plain OpenSSH, reached over the tailnet with the
+  deploy key (`otto-deploy`, below); the bootstrap joins it without `--ssh`. Only the **sandbox
+  node** uses Tailscale SSH. So the policy's `ssh` section matters only for the sandbox node. Its
+  `tag:otto` entry does nothing today; it would apply to the server only if someone later turned on
+  `--ssh` there (and then GitHub Actions' deploys, from `tag:ci`, would need an `ssh` rule of their
+  own).
 
 - **Still in Tailscale**, under **Settings** → **Keys** → **Generate auth key**, make the
   server's key:
@@ -130,22 +142,27 @@ Then, on the server:
    It installs everything, joins the tailnet as `tag:otto`, and stops before the stack: `.env`
    is still empty. It prints the server's Tailscale address and its host key line. Keep both
    (step 7, and the sandbox node).
-3. Fill in the stack's settings ("One server with compose", `.env.prod.example` explains each):
+3. Fill in the stack's settings ("One server with compose", `.env.prod.example` explains each).
+   Write them on your laptop, in a **worksheet**, and move them over in one go ("Moving settings
+   to the server" below). Pasting into a browser terminal is how invisible characters get in.
 
-   ```sh
-   sudo -u deploy nano /opt/otto/deploy/compose/.env
-   ```
-
-   - `RABBITMQ_BIND` is already set: the bootstrap put the server's Tailscale address there.
+   - `RABBITMQ_BIND` is already set in `.env`: the bootstrap put the server's Tailscale address
+     there, and the merge keeps it.
    - `RABBITMQ_RUNNER_PASSWORD`: `openssl rand -hex 24`. The sandbox node's runners log in with it.
    - `OTTO_SANDBOX_NAMESPACE=otto-sandboxes`, `OTTO_RUNNER_AMQP_SECRET=otto-runner-amqp`, and
      `MAX_ACTIVE_SANDBOXES=1` (a 2 GB sandbox node runs one sandbox at a time).
    - `CLOUDFLARE_TUNNEL_TOKEN` comes from step 4.
    - `OTTO_GITHUB_CALLBACK_URL=https://ottoci-api.taufi.dev/auth/github/callback`
+   - The allowlist, `OTTO_ALLOWED_GITHUB` and `OTTO_ALLOWED_EMAILS` ("Signups").
+   - The models: `OPENAI_API_KEY`, and `OTTO_OPENAI_MODELS` for the models to offer ("Production
+     environment").
+   - Backups: `BACKUP_S3_BUCKET`, `AWS_DEFAULT_REGION`, and the backup user's
+     `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` ("Backups").
 4. Set up the sandbox node ("Sandbox node", "The EC2 test node"). It needs the server's
    Tailscale address and `RABBITMQ_RUNNER_PASSWORD`, and gives you `sandbox.kubeconfig`.
 5. Put the two secret files in `/opt/otto/deploy/compose/secrets/`: `sandbox.kubeconfig` and
-   `github-app.pem`. Paste each with `sudo tee`.
+   `github-app.pem`. Copy them to `incoming/` with the worksheet, and install each one readable
+   only by the backend's user (uid 10001), as "Moving settings to the server" shows.
 6. Run the bootstrap again. It fixes the files' owners, starts the stack, waits for `/health`,
    and creates RabbitMQ's `otto-runner` user:
 
@@ -156,7 +173,68 @@ Then, on the server:
    If the `otto-backend` package on GHCR is private, add `GHCR_USER=Taufik041` and
    `GHCR_TOKEN=<a token with read:packages>` to that command.
 
-From now on, `ssh deploy@otto-prod` works from any device on your tailnet.
+From now on, `ssh -i otto-deploy deploy@otto-prod` works from any device on your tailnet that has
+the deploy key: plain OpenSSH over the tailnet, not Tailscale SSH (the server runs without
+`--ssh`).
+
+#### Moving settings to the server
+
+The settings start on your laptop and end in the server's `.env`. Nothing is typed or pasted on
+the server:
+
+1. **The worksheet**, on your laptop, outside any checkout (or in the repo's `otto-secrets/`,
+   which git ignores): a copy of the example with your values. Uncomment each optional setting you
+   fill in; commented lines and empty values are skipped.
+
+   ```sh
+   cp deploy/compose/.env.prod.example otto-secrets/otto.env    # then fill it in
+   ```
+
+2. **Copy it**, and the secret files, to the deploy user's `incoming/` folder: plain OpenSSH
+   (`scp`) over the tailnet, with the deploy key. The server doesn't run Tailscale SSH.
+   (`sandbox.kubeconfig` comes from the sandbox node, "The EC2 test node" step 6.)
+
+   ```sh
+   ssh -i otto-deploy deploy@otto-prod 'install -d -m 700 incoming'
+   scp -i otto-deploy otto-secrets/otto.env otto-secrets/github-app.pem sandbox.kubeconfig \
+       deploy@otto-prod:incoming/
+   ```
+
+3. **Merge it into `.env`**, on the server. `deploy/aws/merge_env.py` sets each name in place (a
+   commented-out `# NAME=` line becomes the setting), appends the rest, and keeps `RABBITMQ_BIND`
+   as the bootstrap set it. It refuses the whole worksheet over a name the example doesn't list (a
+   typo), a malformed line, or a name given twice. It prints names, never values, keeps the old
+   file as `.env.bak-<time>`, and replaces `.env` in one step with its mode and owner. Check with
+   `--dry-run` first:
+
+   ```sh
+   cd /opt/otto/deploy/compose
+   python3 ../aws/merge_env.py --dry-run ~/incoming/otto.env .env
+   python3 ../aws/merge_env.py ~/incoming/otto.env .env
+   ```
+
+4. **Install the secret files**, readable only by the backend's user (uid 10001). This needs
+   root (Session Manager, or a sudoer):
+
+   ```sh
+   cd /opt/otto/deploy/compose
+   sudo install -m 400 -o 10001 -g 10001 ~deploy/incoming/github-app.pem secrets/github-app.pem
+   sudo install -m 400 -o 10001 -g 10001 ~deploy/incoming/sandbox.kubeconfig secrets/sandbox.kubeconfig
+   ```
+
+5. **Clean up**: `shred -u ~/incoming/*` on the server, once the stack runs with them. Delete the
+   old `.env.bak-*` files when you no longer need them: they hold the old secrets.
+6. **Restart** what reads them. Compose reads `.env` when it creates a container, so recreate
+   (a plain `restart` keeps the old values):
+
+   ```sh
+   docker compose -f docker-compose.prod.yml up -d --force-recreate gateway worker
+   ```
+
+   On launch day, the bootstrap's second run (step 6) starts everything instead.
+
+The same steps change one setting later (the allowlist, a model key): a worksheet with only
+those lines.
 
 ### 4. The Cloudflare Tunnel (`ottoci-api.taufi.dev`)
 
@@ -189,9 +267,16 @@ On GitHub, open **Settings** → **Developer settings** → **GitHub Apps** → 
 ### 6. Vercel
 
 Create the two projects and their DNS records, as "The web app and the landing page
-(Vercel)" describes, with the landing project's email variables (`RESEND_API_KEY`,
-`OTTO_NOTIFY_TO`). Then check that `https://ottoci.taufi.dev` and `https://otto.taufi.dev`
-load.
+(Vercel)" describes. Both import this repository with:
+
+- **Framework Preset:** Other
+- **Root Directory:** `web/`
+- **Node.js Version:** 22.x
+- **Build Command:** `npm run vercel:app` (`otto-app`) or `npm run vercel:landing`
+  (`otto-landing`)
+
+Add the landing project's email variables (`RESEND_API_KEY`, `OTTO_NOTIFY_TO`). Then check that
+`https://ottoci.taufi.dev` and `https://otto.taufi.dev` load.
 
 ### 7. Deploys from GitHub Actions
 
@@ -238,7 +323,8 @@ images go back to that commit's.
 6. Back on the server: `curl -s 127.0.0.1:8000/health` says `"workers":"online"`, and `docker
    compose -f /opt/otto/deploy/compose/docker-compose.prod.yml ps` shows every service healthy.
 7. Run a backup now, and see its dump in the bucket: `docker compose -f
-   docker-compose.prod.yml exec backup backup_db.sh`.
+   docker-compose.prod.yml exec backup backup_db.sh`. Then run the restore drill on it
+   (`bash /opt/otto/scripts/restore_drill.sh`, "Backups"): it ends `restore drill passed`.
 8. Email: `curl -s https://ottoci-api.taufi.dev/health` says `"password_reset":true`. Log out,
    and use **Forgot password?**: the link arrives. Then send the landing page's form by hand
    (what the offline dialog posts); it answers `{"ok":true}`, the email reaches
@@ -249,6 +335,22 @@ images go back to that commit's.
      -H 'Content-Type: application/json' \
      -d "{\"email\":\"you@example.com\",\"message\":\"smoke test\",\"openedAt\":$(( $(date +%s) * 1000 - 10000 ))}"
    ```
+
+### 9. Uptime monitoring
+
+Point an uptime monitor at the API, with a **keyword** check:
+
+- **URL:** `https://ottoci-api.taufi.dev/health`, every 5 minutes.
+- **Keyword:** `"status":"up"`, exactly like that (the gateway's JSON has no spaces). Alert when
+  it's missing.
+- **Don't alert on the workers.** `"workers":"offline"` is normal whenever the sandbox node sleeps
+  or is down, and plain chats keep working. Keep the check to `status`, not the whole body.
+
+It alerts when the server or the stack is down, or the tunnel is (Cloudflare then answers with its
+own error page). It also alerts while signups are paused (`OTTO_ACCEPTING=false`: `"status":
+"paused"`); pause the monitor for that. `/health` answers even while RabbitMQ is down, and says
+`"bus":"down"` ("Health and offline workers"): look there when chats don't start but the check is
+green.
 
 ### Stopping and starting the server
 
@@ -469,15 +571,18 @@ docker compose -f docker-compose.prod.yml ps        # all healthy
 curl -s http://127.0.0.1:8000/health
 ```
 
-- **The tunnel:** in Cloudflare's Zero Trust dashboard, create a tunnel, put its token in
-  `CLOUDFLARE_TUNNEL_TOKEN`, and add a public hostname (the API's, e.g. `ottoci-api.taufi.dev`) for the
-  service `http://gateway:8000`. Set `OTTO_TRUST_PROXY=1`: every request comes through Cloudflare.
+- **The tunnel:** create it with the `cloudflared` CLI ("Launch day" step 4), and put its token
+  in `CLOUDFLARE_TUNNEL_TOKEN`. The compose service sends everything to `http://gateway:8000`.
+  Set `OTTO_TRUST_PROXY=1`: every request comes through Cloudflare.
 - **Updating:** `docker compose -f docker-compose.prod.yml pull && docker compose -f
   docker-compose.prod.yml up -d`. The gateway migrates when it starts. To roll back, set
   `OTTO_IMAGE` to an earlier commit's tag. A migration is only undone by hand (`alembic
   downgrade`).
 - **Approving access:** `docker compose -f docker-compose.prod.yml exec gateway otto
   access-requests approve <who>`.
+- **Changing a setting:** a worksheet with just that line, merged with `merge_env.py`, then
+  `up -d --force-recreate` of the services that read it ("Launch day", "Moving settings to the
+  server"). `docker compose restart` keeps the old values.
 
 ### Backups
 
@@ -489,14 +594,75 @@ The `backup` service (`deploy/backup/`: `pg_dump` 16, the aws CLI, cron) runs
 - It deletes that prefix's dumps older than `BACKUP_KEEP_DAYS` (14), going by the time in their
   names.
 - `AWS_ENDPOINT_URL` points it at an S3-compatible store instead of AWS.
-- The S3 user needs `s3:PutObject`, `s3:ListBucket` and `s3:DeleteObject` on that prefix.
+
+#### The bucket and its user
+
+Production's backups go to one S3 bucket, with an **IAM user that can use only that bucket**. Its
+access keys are in `.env`. (The server's instance role has only Session Manager's policy: no S3.)
+
+1. **S3** → **Create bucket**: a name like `otto-backups-<something unique>`, in the server's
+   region. Keep **Block all public access** on.
+2. **IAM** → **Users** → **Create user**: `otto-backup`, no console access. Under **Set
+   permissions**, choose **Attach policies directly** → **Create policy** → **JSON**, and paste
+   this, with your bucket's name:
+
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       { "Effect": "Allow", "Action": "s3:ListBucket",
+         "Resource": "arn:aws:s3:::otto-backups-example" },
+       { "Effect": "Allow", "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+         "Resource": "arn:aws:s3:::otto-backups-example/*" }
+     ]
+   }
+   ```
+
+   Name it `otto-backup-bucket`, create it, attach it to the user, and create the user.
+   `PutObject` uploads the dumps, `ListBucket` and `DeleteObject` prune the old ones, and
+   `GetObject` is for restores and the drill.
+3. The user → **Security credentials** → **Create access key** (use case: an application
+   running outside AWS). Put the pair in your worksheet as `AWS_ACCESS_KEY_ID` and
+   `AWS_SECRET_ACCESS_KEY`, with `BACKUP_S3_BUCKET` and `AWS_DEFAULT_REGION` (the bucket's
+   region), and merge it into `.env` ("Launch day", "Moving settings to the server").
+
+#### Running one, and restoring
 
 ```sh
+cd /opt/otto/deploy/compose
 docker compose -f docker-compose.prod.yml exec backup backup_db.sh      # one now
-# restore, into the running stack's database (stop the gateway and the worker first)
-aws s3 cp s3://$BUCKET/otto/db/otto-20261008T031500Z.dump otto.dump
+# restore, into the running stack's database (stop the gateway and the worker first). The
+# server has no aws CLI of its own: the backup image's runs with the bucket's settings
+docker compose -f docker-compose.prod.yml run --rm --no-deps -T backup \
+    sh -c 'aws s3 cp "s3://$BACKUP_S3_BUCKET/otto/db/otto-20261008T031500Z.dump" -' > otto.dump
 docker compose -f docker-compose.prod.yml exec -T postgres pg_restore --clean --if-exists --no-owner -U otto -d otto < otto.dump
 ```
+
+#### The restore drill (monthly)
+
+A backup is only as good as its restore. `scripts/restore_drill.sh` proves that the newest dump
+restores, without touching the running stack:
+
+```sh
+ssh -i otto-deploy deploy@otto-prod
+bash /opt/otto/scripts/restore_drill.sh
+```
+
+As the deploy user, it:
+
+1. lists the newest dumps in the bucket, with their dates and sizes
+2. downloads the newest one (through the backup image, with the bucket's settings from `.env`)
+3. restores it into a throwaway Postgres 16 container (`postgres:16-alpine`, as production's) with
+   no network and no ports
+4. prints sanity counts: users, sessions, session_events, and the newest event's time
+5. removes the container and the download
+
+It exits non-zero if any step fails, if the restored database has no users, or if the newest dump
+is older than 36 hours (`MAX_AGE_HOURS`): the nightly backup has stopped. It ends with `restore
+drill passed: otto-<time>.dump restores, with N user(s)`.
+
+**Run it once a month.** Set a recurring reminder (the first Monday of each month, say), and run
+it after anything that touches backups: new keys, a new bucket, a Postgres upgrade.
 
 ## Production environment
 
@@ -529,7 +695,9 @@ The gateway's environment (the workers need `DATABASE_URL`, `BUS_URL`, the provi
 | `OTTO_TRUST_PROXY` | `1` | Only when every request comes through Cloudflare: rate limits then use `CF-Connecting-IP`. |
 | `OTTO_VERSION` | the git commit | Shown by `GET /health`. |
 | `OTTO_SIGNUP_MODE` | `allowlist` | `open`, `allowlist` or `closed`. See "Signups". |
-| `OTTO_ALLOWED_GITHUB`, `OTTO_ALLOWED_EMAILS` | `someone,another` | Who may sign up in `allowlist` mode. |
+| `OTTO_ALLOWED_GITHUB`, `OTTO_ALLOWED_EMAILS` | `someone,another` | Who may sign up in `allowlist` mode. Read at startup: recreate the gateway after a change. |
+| `OPENAI_API_KEY` | `sk-...` | OpenAI's key, for the gateway and the workers. |
+| `OTTO_OPENAI_MODELS` | `gpt-4.1-mini,gpt-4.1` | The OpenAI models to offer, comma-separated. Without it, none are offered even with a key. Recreate the gateway and the worker after a change. |
 | `OTTO_ACCEPTING` | `true` | `false` pauses every signup; `GET /health` says `paused`. |
 | `OTTO_GITHUB_CALLBACK_URL` | `https://ottoci-api.taufi.dev/auth/github/callback` | Must be one of the App's callback URLs. |
 | `GITHUB_APP_ID`, `GITHUB_APP_KEY_PATH`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_APP_SLUG` | | As in `docs/dev.md`. |
@@ -558,6 +726,14 @@ always works, whatever the mode:
   email is in `OTTO_ALLOWED_EMAILS`, and anyone with an approved access request. GitHub
   sign-ups are matched by login only, never by GitHub's email.
 - `closed`: no one.
+
+In production, the allowlist is two lines in `.env`, comma-separated, then a restart of the
+gateway (a worksheet merged with `merge_env.py`, "Launch day", "Moving settings to the server"):
+
+    OTTO_ALLOWED_GITHUB=someone,another
+    OTTO_ALLOWED_EMAILS=friend@example.com
+
+    docker compose -f docker-compose.prod.yml up -d --force-recreate gateway
 
 Everyone else gets `403 {"error": "invite_only"}` from `POST /auth/signup`. A GitHub sign-up
 lands on `FRONTEND_URL/auth/callback?error=invite_only`. With `OTTO_ACCEPTING=false`, every new
@@ -591,7 +767,15 @@ anyone could then pick their own IP.
 
 `GET /health` needs no sign-in:
 
-    {"status": "up" | "paused", "workers": "online" | "offline", "version": "..."}
+    {"status": "up" | "paused", "workers": "online" | "offline", "bus": "up" | "down",
+     "version": "...", "password_reset": true | false}
+
+`bus` says whether the gateway is connected to RabbitMQ. `/health` never waits on it: the gateway
+starts serving after waiting at most 5 seconds for the broker, and keeps connecting in the
+background (then reconnects by itself). While it's `down`, `/health` and reading chats work, and
+anything that needs the bus (a new chat, a follow-up, a retry, stopping a repo chat, deleting the
+account) is `503 {"error": "bus_unavailable"}` with nothing stored. Uptime checks watch `status`
+only ("Launch day" step 9).
 
 `workers` reports whether the sandbox cluster answers. It's checked at most every
 `OTTO_WORKERS_CHECK_SECONDS` (30; 20 in the compose file), and again right after a sandbox
@@ -754,16 +938,23 @@ changing anything.
 
 ### The tailnet policy
 
-Add one rule to the policy from "Launch day" step 3. It's already in that snippet:
+The whole policy is the one in "Launch day" step 3; production runs exactly that. For the
+sandbox node, these parts matter:
 
 ```jsonc
 // the gateway, on the server, reaches the sandbox node's Kubernetes API
 { "action": "accept", "src": ["tag:otto"], "dst": ["tag:sandbox:6443"] },
+// sandbox runners reach RabbitMQ only
+{ "action": "accept", "src": ["tag:sandbox"], "dst": ["tag:otto:5672"] },
 ```
 
-`tag:sandbox` → `tag:otto:5672` (the runners to RabbitMQ) is already there. Nothing else: the
+and its `ssh` section: the rule that lets you (`autogroup:admin`) open a shell on `tag:sandbox`
+as `ubuntu` or `root` with Tailscale SSH. Only the sandbox node uses Tailscale SSH: it joins with
+`--ssh`, and has no ssh keys and no IAM role, so that rule is the only way in. The server runs
+plain OpenSSH over the tailnet, with the deploy key, and joins without `--ssh`; the rule's
+`tag:otto` entry applies to it only if someone later turns on `--ssh` there. Nothing else: the
 node can't reach the server's ssh or any other port, the server reaches only the node's API, and
-`tag:ci` reaches only the server's ssh. Your own devices (`autogroup:admin`) reach both, to ssh in.
+`tag:ci` reaches only the server's ssh.
 
 ### Isolation
 
@@ -806,48 +997,54 @@ A temporary `t3.small` (2 GB, one sandbox at a time), until the laptop takes ove
 
    Ephemeral means that Tailscale removes the node by itself once it's been offline for a while
    (after you terminate it).
-2. **Launch it** in **EC2** → **Launch instance**:
+2. **The user data**, as a file, written on your laptop with `printf`. Don't paste the script
+   into the launch form: a browser paste can add invisible characters (a non-breaking space, a
+   carriage return), and the script then fails at once, before Tailscale is up, leaving a node
+   you can't reach. It joins the tailnet with Tailscale SSH (`--ssh`), which is the only way in:
+   no ssh keys, no open ports.
+
+   ```sh
+   read -rsp 'Tailscale auth key: ' TS_KEY; echo
+   printf '%s\n' '#!/bin/bash' \
+     '# runs once, as root, at the first boot' \
+     'set -euo pipefail' \
+     'curl -fsSL https://tailscale.com/install.sh | sh' \
+     "tailscale up --auth-key='$TS_KEY' --hostname=otto-sandbox --advertise-tags=tag:sandbox --ssh" \
+     > otto-sandbox-user-data.sh
+   cat -A otto-sandbox-user-data.sh   # every line ends in a plain $, with no ^M or M- characters
+   ```
+
+   Anything on the instance can read its user data from the metadata service. The key in it is
+   single-use, and spent by the time anything else runs. Delete the file once the node has joined.
+3. **Launch it** in **EC2** → **Launch instance**:
    1. **Name:** `otto-sandbox`.
-   2. **Application and OS Images:** Ubuntu Server 24.04 LTS, 64-bit (x86).
+   2. **Application and OS Images:** pick **Ubuntu Server 24.04 LTS**, 64-bit (x86), explicitly
+      (the picker defaults to a newer release).
    3. **Instance type:** `t3.small`.
-   4. **Key pair:** "Proceed without a key pair". The user data below adds your ssh key, and you
-      connect over Tailscale.
+   4. **Key pair:** "Proceed without a key pair". You connect over Tailscale SSH.
    5. **Network settings:** the `otto-no-inbound` security group (no inbound rules at all).
    6. **Configure storage:** 20 GiB, gp3.
    7. **Advanced details:**
       - **IAM instance profile:** none. Nothing on the node needs AWS, and that leaves nothing for
-        a sandbox to steal.
+        a sandbox to steal. (So no Session Manager either: Tailscale SSH is the only way in.)
       - **Credit specification:** **Standard**.
       - **Metadata accessible:** Enabled. **Metadata version:** V2 only (token required).
         **Metadata response hop limit:** 1, so nothing in a container (one network hop away) can
         get a token, even without the NetworkPolicy.
-      - **User data** (the key, the address, your public key):
-
-        ```sh
-        #!/bin/bash
-        # runs once, as root, at the first boot
-        set -euo pipefail
-        curl -fsSL https://tailscale.com/install.sh | sh
-        tailscale up --auth-key='tskey-auth-...' --hostname=otto-sandbox --advertise-tags=tag:sandbox
-        install -d -m 700 -o ubuntu -g ubuntu /home/ubuntu/.ssh
-        echo 'ssh-ed25519 AAAA... you@your-machine' >> /home/ubuntu/.ssh/authorized_keys
-        chown ubuntu:ubuntu /home/ubuntu/.ssh/authorized_keys
-        chmod 600 /home/ubuntu/.ssh/authorized_keys
-        ```
-
-        Anything on the instance can read its user data from the metadata service. The key in it
-        is single-use, and spent by the time anything else runs.
+      - **User data:** **Choose file**, and upload `otto-sandbox-user-data.sh`.
    8. Click **Launch instance**. In a minute or two, `otto-sandbox` shows up under **Machines**
-      in Tailscale, tagged `tag:sandbox`.
-3. **Copy the scripts over**, from your checkout:
+      in Tailscale, tagged `tag:sandbox`, with SSH on. If it never shows up, the user data
+      failed: look at **Actions** → **Monitor and troubleshoot** → **Get system log**, then
+      terminate it and launch again with a new key.
+4. **Copy the scripts over**, from your checkout, over Tailscale SSH:
 
    ```sh
    tar c deploy/sandbox-node scripts/sandbox_kubeconfig.sh scripts/check_isolation.sh \
      | ssh ubuntu@otto-sandbox 'mkdir -p otto && tar x -C otto'
    ```
 
-4. **Set it up.** Read `RABBITMQ_RUNNER_PASSWORD` on the server (Session Manager: `sudo grep
-   RABBITMQ_RUNNER_PASSWORD /opt/otto/deploy/compose/.env`), then on the node:
+5. **Set it up.** `RABBITMQ_RUNNER_PASSWORD` is in your worksheet ("Moving settings to the
+   server"). On the node:
 
    ```sh
    ssh ubuntu@otto-sandbox
@@ -858,14 +1055,21 @@ A temporary `t3.small` (2 GB, one sandbox at a time), until the laptop takes ove
 
    It takes a few minutes, most of it the image. A warning that nothing answers at
    `SERVER_TS_IP:5672` is expected while the server's stack isn't up yet.
-5. **The gateway's kubeconfig.** On the node, `sudo bash scripts/sandbox_kubeconfig.sh` prints it
-   (after checking its access: `create jobs: yes; get secrets: no; pods in kube-system: no`). On
-   the server (Session Manager), paste it in:
+6. **The gateway's kubeconfig.** `scripts/sandbox_kubeconfig.sh` prints it, after checking its
+   access (`create jobs: yes; get secrets: no; pods in kube-system: no`, on stderr). Fetch it to
+   your laptop, then on to the server's `incoming/`:
 
    ```sh
-   sudo tee /opt/otto/deploy/compose/secrets/sandbox.kubeconfig >/dev/null   # paste, then Ctrl-D
-   sudo chown 10001:10001 /opt/otto/deploy/compose/secrets/sandbox.kubeconfig
-   sudo chmod 400 /opt/otto/deploy/compose/secrets/sandbox.kubeconfig
+   ssh ubuntu@otto-sandbox 'cd otto && sudo bash scripts/sandbox_kubeconfig.sh' > sandbox.kubeconfig
+   scp -i otto-deploy sandbox.kubeconfig deploy@otto-prod:incoming/   # OpenSSH, the deploy key
+   ```
+
+   On the server, install it readable only by the backend's user ("Moving settings to the
+   server", step 4), and delete both copies:
+
+   ```sh
+   sudo install -m 400 -o 10001 -g 10001 ~deploy/incoming/sandbox.kubeconfig \
+       /opt/otto/deploy/compose/secrets/sandbox.kubeconfig
    ```
 
    The compose file already points `OTTO_SANDBOX_KUBECONFIG` at it (`/run/otto/sandbox.kubeconfig`
@@ -879,14 +1083,14 @@ A temporary `t3.small` (2 GB, one sandbox at a time), until the laptop takes ove
    ```
 
    On launch day, the bootstrap's second run (step 3.6) does this.
-6. **Check it:**
+7. **Check it:**
    - on the server, `curl -s 127.0.0.1:8000/health` says `"workers":"online"`
    - on the node, `sudo bash scripts/check_isolation.sh` passes, and `sudo sandbox-node status`
      shows the node Ready
    - a repo chat runs in a sandbox ("Launch day" step 8)
    - `sudo sandbox-node down`, and within 30 seconds `/health` says `"workers":"offline"` and the
      landing page says "Chat only". `sudo sandbox-node up` brings it back.
-7. **Tear it down** when the laptop has taken over (or to stop paying for it):
+8. **Tear it down** when the laptop has taken over (or to stop paying for it):
    1. In **EC2**, select `otto-sandbox` → **Instance state** → **Terminate instance**. Its disk
       goes with it.
    2. Tailscale removes the ephemeral node by itself; or remove it now under **Machines**. The key
@@ -922,7 +1126,7 @@ The same steps, on Ubuntu Desktop 24.04 (x86), with these differences:
 
   Then, in the server's `.env`, set `MAX_ACTIVE_SANDBOXES=3`, `OTTO_SANDBOX_CPU_LIMIT=2`,
   `OTTO_SANDBOX_MEMORY_LIMIT=2Gi` and `OTTO_SANDBOX_STORAGE_LIMIT=8Gi`.
-- **The kubeconfig** is new (a new cluster, address and token): step 5 again, then tear down the
+- **The kubeconfig** is new (a new cluster, address and token): step 6 again, then tear down the
   EC2 node.
 - The tailnet policy doesn't change: the rules name tags, not machines.
 - Ubuntu Desktop already has swap (`/swap.img`); `setup.sh` leaves it. Docker on the laptop is
@@ -980,4 +1184,6 @@ a minute without a broker, and its Job ends.
 6. `curl https://ottoci-api.taufi.dev/health` says `"workers": "online"` and
    `"password_reset": true` (`RESEND_API_KEY` and `OTTO_NOTIFY_TO` set; "Email (Resend)").
 7. A backup ran (`docker compose -f docker-compose.prod.yml exec backup backup_db.sh`) and its dump
-   is in the bucket.
+   is in the bucket; `scripts/restore_drill.sh` passes on it, and a monthly reminder to run it
+   again is set ("Backups").
+8. The uptime check watches `/health` for `"status":"up"` ("Launch day" step 9).

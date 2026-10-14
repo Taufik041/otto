@@ -107,6 +107,8 @@ class FakeConnection:
     def __init__(self, channel):
         self._channel = channel
         self.closed = False
+        self.connected = asyncio.Event()  # as aio_pika's: cleared while a robust connection is down
+        self.connected.set()
 
     async def channel(self):
         return self._channel

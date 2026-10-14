@@ -64,7 +64,12 @@ it('sends the message, repo and model, then opens the chat', async () => {
 
   await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent('/c/abc123'))
   expect(sent).toEqual([
-    { message: 'fix the failing tests', repo: 'Taufik041/otto_test', model: 'openrouter:openrouter/free' },
+    {
+      message: 'fix the failing tests',
+      repo: 'Taufik041/otto_test',
+      model: 'openrouter:openrouter/free',
+      client_message_id: expect.stringMatching(/^[\w-]{8,64}$/),
+    },
   ])
 })
 
@@ -150,6 +155,18 @@ it('Send is disabled without text', async () => {
   await userEvent.type(box(), '   ')
   expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
 })
+
+it('a new chat refused with bus_unavailable says Otto is restarting', async () => {
+  const detail = "Otto can't reach its message queue right now. Try again in a minute."
+  api({ create: () => HttpResponse.json({ error: 'bus_unavailable', detail }, { status: 503 }) })
+  await ready()
+  await userEvent.type(box(), 'hello{Enter}')
+  expect(await screen.findByRole('alert')).toHaveTextContent('Otto is restarting. Try again in a minute.')
+  expect(screen.queryByText(detail)).not.toBeInTheDocument()
+  expect(screen.queryByText(/model isn.t available/)).not.toBeInTheDocument()
+  expect(box()).toHaveValue('hello') // nothing was made: the draft stays, to send again
+})
+
 
 describe('workers offline (GET /health)', () => {
   const offline = () =>

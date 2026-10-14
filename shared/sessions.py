@@ -12,11 +12,12 @@ STALE_AGE = timedelta(minutes=30)     # crash sweep: only sessions older than th
 STALE_QUIET = timedelta(minutes=10)   # ...with no events for this long
 
 
-def create_session(sid, task, repo, model, status="pending", user_id=None) -> Session:
-    """A new session. repo is "owner/name", or None for a plain chat; the title comes from task."""
+def create_session(sid, task, repo, model, status="pending", user_id=None, client_message_id=None) -> Session:
+    """A new session. repo is "owner/name", or None for a plain chat; the title comes from task. A
+    user's client_message_id names one session at most (IntegrityError for a second)."""
     task = redact(task)
     row = Session(id=sid, task=task, title=make_title(task), repo=repo, model=model, status=status,
-                  user_id=user_id)
+                  user_id=user_id, client_message_id=client_message_id)
     with get_db() as s:
         s.add(row)
     append_event(sid, "session.created", {"task": task, "repo": repo, "model": model})
@@ -26,6 +27,13 @@ def create_session(sid, task, repo, model, status="pending", user_id=None) -> Se
 def get_session(sid) -> Session | None:
     with get_db() as s:
         return s.get(Session, sid)
+
+
+def session_for_client_message(user_id, client_message_id) -> Session | None:
+    """The user's session whose first message was posted with this client_message_id, if any."""
+    with get_db() as s:
+        return s.exec(select(Session).where(Session.user_id == user_id,
+                                            Session.client_message_id == client_message_id)).first()
 
 
 def delete_session(sid):

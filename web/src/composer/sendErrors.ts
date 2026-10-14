@@ -18,7 +18,10 @@ const sentence = (s: string) => {
 export function sendProblem(e: unknown): SendProblem {
   if (e instanceof ApiError) {
     if (e.dailyLimit) return { kind: 'limit', limit: e.dailyLimit }
-    if (e.status === 503 && (e.body as { error?: unknown } | null)?.error === 'workers_offline') return { kind: 'offline' }
+    const code = e.status === 503 ? (e.body as { error?: unknown } | null)?.error : undefined
+    if (code === 'workers_offline') return { kind: 'offline' }
+    // the gateway can't reach RabbitMQ (a restart, usually): nothing was stored, so sending again works
+    if (code === 'bus_unavailable') return { kind: 'busy', message: 'Otto is restarting. Try again in a minute.' }
     // the per-user (MAX_ACTIVE_SESSIONS) and cluster (MAX_ACTIVE_SANDBOXES) caps
     if (e.status === 429) return { kind: 'busy', message: sentence(e.message) }
     // a follow-up while Otto works, or a second repo in one chat

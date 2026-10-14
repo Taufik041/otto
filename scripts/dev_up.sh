@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Bring Otto's dev stack up: postgres -> kind cluster -> rabbitmq -> sandbox image -> port-forward.
+# Bring Otto's dev stack up: postgres -> kind cluster -> rabbitmq -> sandbox image -> port-forward
+# (supervised by scripts/rabbitmq_forward.sh, so it survives a RabbitMQ pod restart).
 # Sandboxes (runner Jobs) are created per session by the gateway.
 set -euo pipefail
 
@@ -37,9 +38,13 @@ docker build -t "$IMAGE" --target runner -f infra/sandbox.Dockerfile .
 docker save "$IMAGE" | docker exec -i "${CLUSTER}-control-plane" ctr -n k8s.io images import -
 
 echo "== port-forward"
+# supervised: restarted when it ends or stops answering (a RabbitMQ pod restart)
+pkill -f "rabbitmq_forward.sh" || true
 pkill -f "port-forward svc/rabbitmq" || true
-kubectl port-forward svc/rabbitmq 5672:5672 >/dev/null 2>&1 &
-sleep 2
+mkdir -p .logs
+nohup scripts/rabbitmq_forward.sh >> .logs/rabbitmq-forward.log 2>&1 &
+scripts/rabbitmq_forward.sh wait 60
+echo "rabbitmq on localhost:5672 (supervised; .logs/rabbitmq-forward.log)"
 
 cat <<'EOF'
 ready. In three terminals:

@@ -5,6 +5,8 @@
 export type Health = {
   status: 'up' | 'paused'
   workers: 'online' | 'offline'
+  /** whether the gateway is connected to RabbitMQ (down: no chat can start or go on) */
+  bus?: 'up' | 'down'
   version: string
   /** whether "Forgot password?" can email a link (false: production without email set up) */
   password_reset?: boolean
@@ -81,7 +83,8 @@ export type SessionDetail = SessionSummary & {
   created_at: string
 }
 
-export type NewSession = { message: string; repo?: string | null; model?: string | null }
+/** client_message_id: posting the same one again returns the chat the first post made */
+export type NewSession = { message: string; repo?: string | null; model?: string | null; client_message_id?: string }
 export type Created = { id: string; status: string; title: string; repo: string | null }
 
 export type GitHubStatus = {

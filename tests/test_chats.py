@@ -341,3 +341,79 @@ def test_the_store_itself_never_keeps_a_client_message_id_twice():
     first = append_event("c1", "llm.message", msg, client_message_id="m-0123456789")  # gitleaks:allow  # gitleaks:allow
     again = append_event("c1", "llm.message", msg, client_message_id="m-0123456789")  # gitleaks:allow  # gitleaks:allow
     assert again == first and len(user_payloads("c1")) == 1
+
+
+# --- client_message_id on a new chat: the first message makes one chat, however often it's posted
+
+def test_posting_a_new_chat_again_with_the_same_client_message_id_returns_the_first(client, env):
+    """A retry or a double click: the second post answers with the chat the first one made."""
+    ch, _, _ = env
+    body = {"message": "what is a closure?", "client_message_id": "m-0123456789"}  # gitleaks:allow
+    first = client.post("/sessions", json=body)
+    assert first.status_code == 201
+
+    again = client.post("/sessions", json=body)
+
+    assert again.status_code == 200
+    assert again.json() == first.json() | {"status": get_session(first.json()["id"]).status}
+    assert [s["id"] for s in client.get("/sessions").json()] == [first.json()["id"]]
+    assert len(jobs(ch)) == 1
+
+
+def test_a_repo_chat_posted_again_creates_no_second_sandbox(client, env):
+    _, orch, _ = env
+    body = {"message": "fix it", "repo": REPO, "client_message_id": "m-0123456789"}  # gitleaks:allow
+    sid = client.post("/sessions", json=body).json()["id"]
+
+    r = client.post("/sessions", json=body)
+
+    assert r.status_code == 200 and r.json()["id"] == sid and r.json()["repo"] == REPO
+    assert [c for c in orch.calls if c[0] == "create"] == [("create", sid, f"https://github.com/{REPO}", 555)]
+
+
+def test_a_new_chat_posted_again_counts_once_against_the_limit(client, env, monkeypatch):
+    from shared import config
+
+    monkeypatch.setattr(config, "MAX_ACTIVE_SESSIONS", 1)
+    body = {"message": "hi", "client_message_id": "m-0123456789"}  # gitleaks:allow
+    assert client.post("/sessions", json=body).status_code == 201
+    assert client.post("/sessions", json=body).status_code == 200  # not 429: it's the same chat
+
+
+def test_another_client_message_id_is_another_chat(client, env):
+    a = client.post("/sessions", json={"message": "hi", "client_message_id": "m-aaaaaaaa"}).json()["id"]
+    b = client.post("/sessions", json={"message": "hi", "client_message_id": "m-bbbbbbbb"}).json()["id"]
+    assert a != b
+
+
+def test_without_a_client_message_id_every_post_is_a_new_chat(client, env):
+    assert chat(client, "hi") != chat(client, "hi")
+
+
+def test_another_users_client_message_id_is_their_own(client, env):
+    from tests.fakes import log_in_as
+
+    body = {"message": "hi", "client_message_id": "m-0123456789"}  # gitleaks:allow
+    mine = client.post("/sessions", json=body).json()["id"]
+    log_in_as(client, signup(client, email="someone@example.com", name="Someone")["id"])
+
+    theirs = client.post("/sessions", json=body)
+
+    assert theirs.status_code == 201 and theirs.json()["id"] != mine
+
+
+@pytest.mark.parametrize("bad", ["short", "x" * 65, "has spaces in it", "../../etc"])
+def test_a_malformed_client_message_id_on_a_new_chat_is_422(client, env, bad):
+    assert client.post("/sessions", json={"message": "hi", "client_message_id": bad}).status_code == 422
+
+
+def test_the_store_never_keeps_one_users_client_message_id_on_two_chats(client):
+    """Two gateways racing past the lookup: the database refuses the second chat."""
+    import sqlalchemy as sa
+
+    from shared.sessions import create_session
+
+    cid = "m-0123456789"  # gitleaks:allow
+    create_session("c1", task="t", repo=None, model="m", user_id=client.user_id, client_message_id=cid)
+    with pytest.raises(sa.exc.IntegrityError):
+        create_session("c2", task="t", repo=None, model="m", user_id=client.user_id, client_message_id=cid)

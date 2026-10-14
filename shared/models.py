@@ -37,8 +37,12 @@ class Session(SQLModel, table=True):
     model: str
     work_branch: str | None = None  # otto/<id>, set once the session opens a PR
     pr_url: str | None = None
+    # the first message's id from the client that sent it: posting it again returns this chat
+    client_message_id: str | None = None
     created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
     updated_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
+
+    __table_args__ = (sa.Index("ix_sessions_client_message_id", "user_id", "client_message_id", unique=True),)
 
     @property
     def repo_url(self) -> str | None:

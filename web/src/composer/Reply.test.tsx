@@ -117,6 +117,15 @@ it('a 409 because Otto is still working says so plainly', async () => {
   expect(await screen.findByText('Otto is still working on this chat. Wait until it finishes, or stop it.')).toBeInTheDocument()
 })
 
+it('bus_unavailable (the gateway lost RabbitMQ) says Otto is restarting, not a raw error', async () => {
+  const detail = "Otto can't reach its message queue right now. Try again in a minute."
+  setup({}, () => HttpResponse.json({ error: 'bus_unavailable', detail }, { status: 503 }))
+  await userEvent.type(box(), 'x{Enter}')
+  expect(await screen.findByRole('alert')).toHaveTextContent('Otto is restarting. Try again in a minute.')
+  expect(screen.queryByText(detail)).not.toBeInTheDocument()
+  expect(screen.queryByText(/model isn.t available/)).not.toBeInTheDocument()
+})
+
 it('a 429 cap is shown inline', async () => {
   setup({}, () => HttpResponse.json({ code: 'daily_limit', used: 50000, limit: 50000, resets_at: 'x' }, { status: 429 }))
   await userEvent.type(box(), 'x{Enter}')
