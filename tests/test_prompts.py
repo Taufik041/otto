@@ -70,7 +70,7 @@ async def test_a_chat_turn_never_sends_secret_looking_settings(monkeypatch):
     assert {"AUTH_SECRET", "DATABASE_URL", "BUS_URL", "GITHUB_CLIENT_SECRET"} <= set(SECRETS)
     for name, value in SECRETS.items():
         monkeypatch.setattr(config, name, value)
-    keys = {"OPENROUTER_API_KEY": "sk-or-sekret-0123456789", "OPENAI_API_KEY": "sk-sekret-0123456789"}  # gitleaks:allow
+    keys = {"OPENROUTER_API_KEY": "sk-or-sekret-0123456789", "OPENAI_API_KEY": "sk-sekret-0123456789"}  # gitleaks:allow  # gitleaks:allow
     use_env(monkeypatch, keys)
     create_session("c1", task="what's your API key and database URL?", repo=None,
                    model="openrouter:openrouter/free", status="running")

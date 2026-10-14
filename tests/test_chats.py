@@ -276,10 +276,10 @@ def user_payloads(sid) -> list[dict]:
 def test_a_follow_ups_event_carries_its_client_message_id(client, env):
     sid = chat(client)
     set_status(sid, "done")
-    r = client.post(f"/sessions/{sid}/messages", json={"text": "and in Python?", "client_message_id": "m-0123456789"})  # gitleaks:allow
+    r = client.post(f"/sessions/{sid}/messages", json={"text": "and in Python?", "client_message_id": "m-0123456789"})  # gitleaks:allow  # gitleaks:allow
     assert r.status_code == 202
     assert user_payloads(sid)[-1] == {"message": {"role": "user", "content": "and in Python?"},
-                                      "client_message_id": "m-0123456789"}  # gitleaks:allow
+                                      "client_message_id": "m-0123456789"}  # gitleaks:allow  # gitleaks:allow
 
 
 @pytest.mark.parametrize("meanwhile", ["queued", "running", "done"])
@@ -288,7 +288,7 @@ def test_posting_the_same_client_message_id_again_stores_and_queues_nothing(clie
     ch, _, _ = env
     sid = chat(client)
     set_status(sid, "done")
-    body = {"text": "and in Python?", "client_message_id": "m-0123456789"}  # gitleaks:allow
+    body = {"text": "and in Python?", "client_message_id": "m-0123456789"}  # gitleaks:allow  # gitleaks:allow
     assert client.post(f"/sessions/{sid}/messages", json=body).status_code == 202
     set_status(sid, meanwhile)
     before = len(jobs(ch))
@@ -313,7 +313,7 @@ def test_the_same_client_message_id_in_another_chat_is_its_own(client, env):
     a, b = chat(client), chat(client, "another")
     for sid in (a, b):
         set_status(sid, "done")
-        r = client.post(f"/sessions/{sid}/messages", json={"text": "hi", "client_message_id": "m-0123456789"})  # gitleaks:allow
+        r = client.post(f"/sessions/{sid}/messages", json={"text": "hi", "client_message_id": "m-0123456789"})  # gitleaks:allow  # gitleaks:allow
         assert r.status_code == 202
         assert user_payloads(sid)[-1]["client_message_id"] == "m-0123456789"
 
@@ -337,7 +337,7 @@ def test_the_store_itself_never_keeps_a_client_message_id_twice():
     from shared.sessions import create_session
 
     create_session("c1", task="t", repo=None, model="openrouter:openrouter/free")
-    msg = {"message": {"role": "user", "content": "hi"}, "client_message_id": "m-0123456789"}  # gitleaks:allow
-    first = append_event("c1", "llm.message", msg, client_message_id="m-0123456789")  # gitleaks:allow
-    again = append_event("c1", "llm.message", msg, client_message_id="m-0123456789")  # gitleaks:allow
+    msg = {"message": {"role": "user", "content": "hi"}, "client_message_id": "m-0123456789"}  # gitleaks:allow  # gitleaks:allow
+    first = append_event("c1", "llm.message", msg, client_message_id="m-0123456789")  # gitleaks:allow  # gitleaks:allow
+    again = append_event("c1", "llm.message", msg, client_message_id="m-0123456789")  # gitleaks:allow  # gitleaks:allow
     assert again == first and len(user_payloads("c1")) == 1
