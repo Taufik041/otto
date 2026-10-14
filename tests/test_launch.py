@@ -99,7 +99,7 @@ def test_health_needs_no_sign_in(client, monkeypatch):
     monkeypatch.setattr(config, "VERSION", "abc123")
     r = client.get("/health")
     assert r.status_code == 200
-    assert r.json() == {"status": "up", "workers": "online", "version": "abc123", "password_reset": True}
+    assert r.json() == {"status": "up", "workers": "online", "bus": "up", "version": "abc123", "password_reset": True}
     assert r.headers["cache-control"] == "no-store"
 
 
@@ -121,6 +121,65 @@ def test_the_workers_check_is_cached(client, env, monkeypatch):
     assert orch.reach_checks == 1
     monkeypatch.setattr(config, "WORKERS_CHECK_SECONDS", 0)
     assert client.get("/health").json()["workers"] == "offline"
+
+
+@pytest.fixture
+def no_bus(env, monkeypatch):
+    """RabbitMQ never answers; the gateway waits for it only briefly before it serves."""
+    async def unreachable(url):
+        raise ConnectionError("connection refused")
+
+    monkeypatch.setattr(gateway_app, "connect_robust", unreachable)
+    monkeypatch.setattr(gateway_app, "BUS_STARTUP_WAIT", 0.05)
+
+
+def test_health_answers_while_rabbitmq_is_unreachable(no_bus):
+    from fastapi.testclient import TestClient
+
+    with TestClient(gateway_app.app) as c:
+        r = c.get("/health")
+    assert r.status_code == 200
+    assert r.json()["status"] == "up" and r.json()["bus"] == "down"
+
+
+def test_without_rabbitmq_a_new_chat_is_503_and_nothing_is_stored(no_bus):
+    from fastapi.testclient import TestClient
+
+    with TestClient(gateway_app.app) as c:
+        signup(c)
+        r = c.post("/sessions", json={"message": "hi"})
+    assert r.status_code == 503 and r.json()["error"] == "bus_unavailable"
+    with get_db() as s:
+        assert s.exec(select(Session)).all() == []
+
+
+def test_the_gateway_connects_once_rabbitmq_answers(env, monkeypatch):
+    import time
+
+    from fastapi.testclient import TestClient
+    from tests.fakes import FakeConnection
+
+    async def slow(url):
+        await asyncio.sleep(0.3)
+        return FakeConnection(env[0])
+
+    monkeypatch.setattr(gateway_app, "connect_robust", slow)
+    monkeypatch.setattr(gateway_app, "BUS_STARTUP_WAIT", 0.01)
+    with TestClient(gateway_app.app) as c:
+        assert c.get("/health").json()["bus"] == "down"
+        deadline = time.monotonic() + 5
+        while c.get("/health").json()["bus"] == "down" and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert c.get("/health").json()["bus"] == "up"
+        signup(c)
+        assert c.post("/sessions", json={"message": "hi"}).status_code == 201
+
+
+def test_health_says_the_bus_is_down_when_the_connection_drops(client, env):
+    gateway_app.app.state.conn.connected.clear()  # a robust connection, between reconnects
+    assert client.get("/health").json()["bus"] == "down"
+    gateway_app.app.state.conn.connected.set()  # reconnected
+    assert client.get("/health").json()["bus"] == "up"
 
 
 def test_health_allows_the_landing_and_app_origins(client, monkeypatch):

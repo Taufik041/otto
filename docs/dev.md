@@ -33,6 +33,10 @@ sandbox image (the image step of `scripts/dev_up.sh`), or sandboxes keep running
   id again is a 202 with the chat as it is, storing and queueing nothing. The reducer swaps its
   optimistic copy for the event with that id, and drops events whose seq it has seen.
   `node web/scripts/e2e-message-once.mjs` checks it against the real stack.
+- **A new chat is made once, however often it's posted.** `POST /sessions` takes the same
+  `client_message_id` for the first message. It's stored on the session (unique per user), and
+  posting it again is a 200 with that chat as it is: no second chat, sandbox or job, and no count
+  against the limits. Without an id, every post is a new chat.
 - **A plain chat's prompt says what Otto is.** `brain/prompts/otto_about.md` is the one place for
   it: every chat gets the part above its marker, and plain chats get all of it plus live facts the
   gateway sends with each job (workers online or offline, as `/health` says; the user's repo

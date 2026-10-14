@@ -3,6 +3,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 docker start otto-control-plane otto-pg >/dev/null 2>&1 || true
 ./scripts/dev_up.sh
+# the gateway and the worker start once RabbitMQ answers through the port-forward
+./scripts/rabbitmq_forward.sh wait 60
 # shellcheck source=/dev/null
 source .venv/bin/activate
 mkdir -p .logs

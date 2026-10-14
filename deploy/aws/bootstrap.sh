@@ -30,14 +30,25 @@ OTTO_DIR="${OTTO_DIR:-/opt/otto}"
 SWAP_SIZE="${SWAP_SIZE:-2G}"
 COMPOSE_DIR="$OTTO_DIR/deploy/compose"
 COMPOSE=(docker compose -f docker-compose.prod.yml)
-export DEBIAN_FRONTEND=noninteractive
+
+# apt never prompts (it runs from Session Manager, or unattended): no debconf questions, needrestart
+# restarts services by itself instead of asking, a changed config file keeps the version on disk,
+# and stdin is /dev/null, so nothing can wait for an answer. The settings are exported (APT_CONFIG
+# too), so they also hold for the apt calls in Tailscale's installer. Every apt call here goes
+# through apt_get (tests/test_bootstrap.py checks it).
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+APT_CONFIG=$(mktemp)
+export APT_CONFIG
+trap 'rm -f "$APT_CONFIG"' EXIT
+printf '%s\n' 'APT::Get::Assume-Yes "true";' 'Dpkg::Options { "--force-confdef"; "--force-confold"; };' > "$APT_CONFIG"
+apt_get() { apt-get -y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" </dev/null; }
 
 step() { printf '\n== %s\n' "$*"; }
 note() { printf '   %s\n' "$*"; }
 [ "$(id -u)" -eq 0 ] || { echo "run it as root: sudo bash $0" >&2; exit 1; }
 # shellcheck source=/dev/null
 . /etc/os-release
-[ "${ID:-}" = ubuntu ] || echo "warning: written for Ubuntu 24.04; this is ${PRETTY_NAME:-unknown}" >&2
+[ "${ID:-}" = ubuntu ] && [ "${VERSION_ID:-}" = 24.04 ] || echo "warning: written for Ubuntu 24.04; this is ${PRETTY_NAME:-unknown}" >&2
 
 step "swap ($SWAP_SIZE)"
 if [ -f /.dockerenv ] || [ -f /run/.containerenv ] || systemd-detect-virt --container --quiet 2>/dev/null; then
@@ -55,8 +66,8 @@ echo 'vm.swappiness=10' > /etc/sysctl.d/90-otto-swap.conf
 sysctl -q -p /etc/sysctl.d/90-otto-swap.conf
 
 step "packages and unattended upgrades"
-apt-get update -q
-apt-get install -y -q ca-certificates curl git gnupg unattended-upgrades >/dev/null
+apt_get update
+apt_get install ca-certificates curl git gnupg unattended-upgrades >/dev/null
 cat > /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
@@ -79,8 +90,8 @@ if ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; t
     chmod a+r /etc/apt/keyrings/docker.asc
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
         > /etc/apt/sources.list.d/docker.list
-    apt-get update -q
-    apt-get install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null
+    apt_get update
+    apt_get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null
 fi
 systemctl enable --now docker >/dev/null
 note "$(docker --version), compose $(docker compose version --short)"
@@ -91,8 +102,11 @@ fi
 
 step "tailscale"
 if ! command -v tailscale >/dev/null; then
-    curl -fsSL https://tailscale.com/install.sh | sh >/var/log/tailscale-install.log 2>&1 \
+    # its installer runs apt itself: the settings above apply (exported), and it gets no stdin
+    curl -fsSL https://tailscale.com/install.sh -o /tmp/tailscale-install.sh
+    sh /tmp/tailscale-install.sh </dev/null >/var/log/tailscale-install.log 2>&1 \
         || { cat /var/log/tailscale-install.log >&2; exit 1; }
+    rm -f /tmp/tailscale-install.sh
 fi
 systemctl enable --now tailscaled >/dev/null
 ts_self() { tailscale status --json | python3 -c 'import json,sys; me=json.load(sys.stdin)["Self"]; print(me["HostName"], *(me.get("Tags") or []))'; }
