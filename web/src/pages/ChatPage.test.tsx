@@ -470,3 +470,166 @@ describe('a follow-up shows once', () => {
     await waitFor(() => expect(screen.queryByText('and in Python?', { selector: ':not(textarea)' })).not.toBeInTheDocument())
   })
 })
+
+describe('CI on the pull request', () => {
+  // the events' own time (log() starts at 14:02): CI recorded minutes ago, not stale
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-02T14:10:00Z'))
+  })
+  afterEach(() => vi.useRealTimers())
+  const SHA = 'a'.repeat(40)
+  const RUN = 'https://github.com/Taufik041/otto_test/actions/runs/7'
+  const check = (name: string, status = 'completed', conclusion: string | null = 'success', duration: number | null = 65) => ({
+    key: `run:${name}`, name, status, conclusion, duration, html_url: `${RUN}/job/${name}`,
+  })
+  const PROPOSAL = { title: 'Fix failing pricing tests', body: 'Found it.', head: 'otto/s1', base: 'main', additions: 1, deletions: 1, files: 1, tests: null }
+  function withCi(state: string, checks: unknown[], status = 'done') {
+    const l = log().created('fix the tests').status('running')
+      .act('git.push', {}, { exit_code: 0, stdout: '', stderr: '', branch: 'otto/s1', base: 'main', sha: SHA, diffstat: { files: 1, additions: 1, deletions: 1 } })
+      .msg('assistant', 'Found it.')
+      .add('pr.proposed', PROPOSAL)
+      .add('pr.opened', { number: 3, html_url: 'https://github.com/Taufik041/otto_test/pull/3' })
+    if (status !== 'running') l.status(status)
+    l.add('ci.updated', { sha: SHA, state, checks, url: state === 'failed' ? `${RUN}/job/tests` : RUN, pushed_at: '2026-10-02T14:02:00Z' })
+    return l
+  }
+  const ciRow = async () => within(await screen.findByRole('region', { name: 'Pull request opened' })).findByRole('group', { name: 'CI' })
+  function fixRoute(answer: () => Response | Promise<Response> = () => HttpResponse.json({ id: 's1', status: 'queued' }, { status: 202 })) {
+    const calls: string[] = []
+    return {
+      calls,
+      handler: http.post(`${API}/sessions/s1/ci/fix`, () => {
+        calls.push('fix')
+        return answer()
+      }),
+    }
+  }
+
+  it('running: blue, with the number of checks and a link to the run; the checks expand', async () => {
+    backend(withCi('running', [check('tests', 'in_progress', null, null), check('lint')]).events)
+    const row = await ciRow()
+    expect(within(row).getByText('CI running · 2 checks')).toHaveClass('truncate')
+    expect(within(row).getByText('CI running · 2 checks').parentElement).toHaveClass('text-accent')
+    expect(within(row).getByRole('link', { name: 'View run' })).toHaveAttribute('href', RUN)
+    expect(within(row).queryByRole('button', { name: 'Fix CI' })).not.toBeInTheDocument()
+
+    await userEvent.click(within(row).getByRole('button', { name: 'Show checks' }))
+    const list = within(row).getByRole('list', { name: 'Checks' })
+    const [tests, lint] = within(list).getAllByRole('listitem')
+    expect(tests).toHaveTextContent('testsRunning')
+    expect(lint).toHaveTextContent('lintPassed1m 5s')
+    expect(within(lint!).getByRole('link', { name: 'Open lint' })).toHaveAttribute('href', `${RUN}/job/lint`)
+    expect(within(row).getByRole('button', { name: 'Hide checks' })).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('passed: green, and a quiet divider in the thread', async () => {
+    backend(withCi('passed', [check('tests'), check('lint')]).events)
+    const row = await ciRow()
+    expect(within(row).getByText('CI passed').parentElement).toHaveClass('text-ok')
+    expect(screen.getByRole('separator', { name: 'CI passed · 2 checks' })).toBeInTheDocument()
+  })
+
+  it('no CI on the repo, or none GitHub would show', async () => {
+    backend(withCi('none', []).events)
+    expect(within(await ciRow()).getByText('No CI on this repo')).toBeInTheDocument()
+    expect(screen.queryByRole('separator', { name: /CI/ })).not.toBeInTheDocument()
+  })
+
+  it('failed: red, naming the first failing check, linking to it; Fix CI starts the follow-up', async () => {
+    const { calls, handler } = fixRoute()
+    backend(withCi('failed', [check('lint'), check('tests', 'completed', 'failure')]).events, {}, [handler])
+    const row = await ciRow()
+    expect(within(row).getByText('CI failed · tests').parentElement).toHaveClass('text-bad')
+    expect(within(row).getByRole('link', { name: 'View run' })).toHaveAttribute('href', `${RUN}/job/tests`)
+    expect(screen.getByRole('separator', { name: 'CI failed · tests' })).toBeInTheDocument()
+
+    await userEvent.click(within(row).getByRole('button', { name: 'Fix CI' }))
+    await waitFor(() => expect(calls).toEqual(['fix']))
+    expect(await within(row).findByRole('button', { name: 'Fixing CI…' })).toBeDisabled()
+
+    // the turn starts: the request shows as the user's message, never the logs
+    await waitFor(() => expect(FakeSocket.all.length).toBeGreaterThan(0))
+    const sock = FakeSocket.all.at(-1)!
+    sock.deliver({ seq: 20, ts: '2026-10-02T14:10:00Z', type: 'session.status', payload: { status: 'provisioning' } })
+    sock.deliver({ seq: 21, ts: '2026-10-02T14:10:01Z', type: 'llm.message',
+                   payload: { message: { role: 'user', content: 'CI failed ... <ci-log>the log</ci-log>' }, display: 'Fix CI: tests', ci_fix: { sha: SHA, checks: ['tests'] } } })
+    expect(await screen.findByText('Fix CI: tests')).toBeInTheDocument()
+    expect(screen.queryByText(/the log/)).not.toBeInTheDocument()
+  })
+
+  it('Fix CI waits while Otto works', async () => {
+    const { handler } = fixRoute()
+    backend(withCi('failed', [check('tests', 'completed', 'failure')], 'running').events, {}, [handler])
+    expect(within(await ciRow()).getByRole('button', { name: 'Fix CI' })).toBeDisabled()
+  })
+
+  it('Fix CI is off with the workers-offline notice while the workers are offline', async () => {
+    const { calls, handler } = fixRoute()
+    backend(withCi('failed', [check('tests', 'completed', 'failure')]).events, {}, [
+      handler,
+      http.get(`${API}/health`, () => HttpResponse.json({ status: 'up', workers: 'offline', version: 'test' })),
+    ])
+    const row = await ciRow()
+    await waitFor(() => expect(within(row).getByRole('button', { name: 'Fix CI' })).toBeDisabled())
+    expect(within(row).getByText("Otto's workers are offline right now. Plain chat still works.")).toBeInTheDocument()
+    expect(calls).toEqual([])
+  })
+
+  it('the workers going offline as it is clicked: the notice, and the button turns off', async () => {
+    const { calls, handler } = fixRoute(() =>
+      HttpResponse.json({ error: 'workers_offline', detail: "Otto's workers are offline right now." }, { status: 503 }))
+    backend(withCi('failed', [check('tests', 'completed', 'failure')]).events, {}, [handler])
+    const row = await ciRow()
+    await userEvent.click(within(row).getByRole('button', { name: 'Fix CI' }))
+    await waitFor(() => expect(calls).toEqual(['fix']))
+    expect(await within(row).findByText("Otto's workers are offline right now. Plain chat still works.")).toBeInTheDocument()
+    expect(within(row).getByRole('button', { name: 'Fix CI' })).toBeDisabled()
+    expect(within(row).queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('at the daily limit, it says so', async () => {
+    const { handler } = fixRoute(() =>
+      HttpResponse.json({ code: 'daily_limit', used: 300000, limit: 300000, resets_at: '2026-10-03T00:00:00Z' }, { status: 429 }))
+    backend(withCi('failed', [check('tests', 'completed', 'failure')]).events, {}, [handler])
+    const row = await ciRow()
+    await userEvent.click(within(row).getByRole('button', { name: 'Fix CI' }))
+    expect(await within(row).findByRole('alert')).toHaveTextContent("You've used today's limit. It resets at midnight UTC.")
+  })
+
+  it('CI arriving live updates the row', async () => {
+    backend(withCi('running', [check('tests', 'in_progress', null, null)]).events)
+    await ciRow()
+    await waitFor(() => expect(FakeSocket.all.length).toBeGreaterThan(0))
+    FakeSocket.all.at(-1)!.deliver({ seq: 30, ts: '2026-10-02T14:12:00Z', type: 'ci.updated',
+      payload: { sha: SHA, state: 'failed', checks: [check('tests', 'completed', 'failure')], url: `${RUN}/job/tests`, pushed_at: '2026-10-02T14:02:00Z' } })
+    expect(await within(await ciRow()).findByText('CI failed · tests')).toBeInTheDocument()
+    expect(screen.getByRole('separator', { name: 'CI failed · tests' })).toBeInTheDocument()
+  })
+
+  it('running with no change for 2 hours: "CI status unknown", grey, and Check again reads GitHub once', async () => {
+    vi.setSystemTime(new Date('2026-10-02T16:30:00Z'))
+    const checks: string[] = []
+    let answer = { ci: 'unknown' }
+    backend(withCi('running', [check('tests', 'in_progress', null, null)]).events, {}, [
+      http.post(`${API}/sessions/s1/ci/check`, () => {
+        checks.push('check')
+        return HttpResponse.json(answer)
+      }),
+    ])
+    const row = await ciRow()
+    expect(within(row).getByText('CI status unknown').parentElement).toHaveClass('text-muted')
+    expect(within(row).queryByText(/CI running/)).not.toBeInTheDocument()
+
+    await userEvent.click(within(row).getByRole('button', { name: 'Check again' }))
+    await waitFor(() => expect(checks).toEqual(['check']))
+    expect(await within(row).findByRole('status')).toHaveTextContent('Still nothing new.')
+
+    // GitHub had news: it arrives as an event, and the row is known again
+    answer = { ci: 'failed' }
+    FakeSocket.all.at(-1)!.deliver({ seq: 40, ts: '2026-10-02T16:30:05Z', type: 'ci.updated',
+      payload: { sha: SHA, state: 'failed', checks: [check('tests', 'completed', 'failure')], url: `${RUN}/job/tests`, pushed_at: '2026-10-02T14:02:00Z' } })
+    expect(await within(await ciRow()).findByText('CI failed · tests')).toBeInTheDocument()
+    expect(within(await ciRow()).queryByRole('button', { name: 'Check again' })).not.toBeInTheDocument()
+  })
+})

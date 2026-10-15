@@ -17,7 +17,7 @@ and settings in full; `web/README.md` has the frontend.
 | Postgres | | Users, chats, the event log, usage, refresh tokens, provider health. `LISTEN/NOTIFY` carries new-event signals to the gateway. |
 | RabbitMQ | | The session queue (gateway → brain) and each chat's action and result queues (brain ↔ runner). |
 | Kubernetes | | One Job per working chat (kind locally). |
-| GitHub | | Sign-in, the App's installations, clone and push with short-lived installation tokens, pull requests. |
+| GitHub | | Sign-in, the App's installations, clone and push with short-lived installation tokens, pull requests, and the CI of Otto's pushes (webhooks and polling, read-only). |
 
 ```mermaid
 flowchart LR
@@ -175,6 +175,7 @@ then streams. A client that reconnects passes the last seq it has and misses not
 | `usage.limit_reached` | `{used, limit, resets_at}` | brain |
 | `error` | `{stage, step?, reason?, message}` | gateway, brain |
 | `sandbox.reused`, `sandbox.recreated` | `{}`, `{previous}` | gateway |
+| `ci.updated` | `{sha, state, checks, url, pushed_at, run_url?, reason?}`: the CI of the chat's latest push | brain (a push starts it over), gateway |
 
 The web app turns this into the chat view with one pure reducer (`web/src/chat/reduce.ts`);
 `web/README.md` maps every kind to what the chat shows.
@@ -190,6 +191,7 @@ mid-step) gets a synthetic "interrupted" result, so the history stays valid for 
 | `otto.sessions` | gateway → brain workers | `{type, session_id, text?}` |
 | `otto.<id>.actions` | brain (and the gateway's control messages) → the chat's runner | `{session_id, action_id, kind, payload}` |
 | `otto.<id>.results` | runner → brain | `{session_id, action_id, kind: "<kind>.result", ok, payload}` |
+| `otto.ci` | brain and the webhook → the gateway | `{type: "pushed", session_id, sha}`, `{type: "webhook", repo, sha, checks, ...}` |
 
 Action kinds: `shell.exec`, `fs.read`, `fs.write`, `fs.replace`, `code.search`, `git.status`,
 `git.diff`, `git.commit`, `git.push` (and `git.open_pr`, which nothing calls any more), plus

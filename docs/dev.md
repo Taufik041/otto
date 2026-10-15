@@ -92,6 +92,33 @@ sandbox image (the image step of `scripts/dev_up.sh`), or sandboxes keep running
   `runner/`; rebuild it after pulling (the image step of `scripts/dev_up.sh`). With an older
   image, the finish stops after the status check.
 
+## CI on Otto's pushes
+
+GitHub runs the CI; Otto reads it for the commits it pushes (`shared/ci.py`, `gateway/ci.py`).
+
+- **A push names its commit.** `git.push` returns the `sha` it pushed. The brain (`announce_push`
+  in `brain/loop.py`, for the model's pushes and the finish's) sets `sessions.head_sha`, appends
+  `ci.updated {sha, state: "queued", checks: [], pushed_at}`, and puts `{type: "pushed"}` on the
+  `otto.ci` queue. A sandbox image from before this doesn't return `sha`, and CI isn't shown.
+- **The gateway reads CI** two ways, both ending in `shared.ci.record`: webhooks
+  (`POST /github/webhook`, signed with `OTTO_GITHUB_WEBHOOK_SECRET`, queued on `otto.ci`), and
+  polling (the check runs and the combined status every 30 seconds until CI is final or 30
+  minutes have passed, and again when the chat is opened while it isn't final).
+- **`ci.updated`** holds the whole picture each time: `{sha, state, checks: [{key, name, status,
+  conclusion, started_at, completed_at, duration, html_url, job_id, updated}], url, pushed_at}`,
+  plus `run_url` and `reason: "unreadable"` when known. `state` is `queued`, `running`, `passed`,
+  `failed`, `cancelled` or `none` (no check within 3 minutes). A check never moves backwards.
+- **CI that never finishes** is "unknown": queued or running with no `ci.updated` for 2 hours
+  reads as `unknown` in `GET /sessions` (`shared.ci.states`; it's never stored). The chat list
+  stops its 30-second refresh for it, and the row says "CI status unknown" with **Check again**
+  (`POST /sessions/{id}/ci/check`: one read from GitHub; `{ci}` is the state after it).
+- **Fix CI** (`POST /sessions/{id}/ci/fix`) fetches the failing Actions jobs' logs, trims them
+  (`trim_log`: the tail and the error regions, 20 KB in all), and stores the turn's message with
+  `display: "Fix CI: <check>"` (what the thread shows) and `ci_fix {sha, checks}`. The logs sit in
+  `<ci-log>` blocks under a line telling the model they're untrusted data.
+- **Locally** leave `OTTO_GITHUB_WEBHOOK_SECRET` unset and the App's webhook off: polling does it.
+  To try the webhook, point the App's webhook at a tunnel to `localhost:8000/github/webhook`.
+
 ## Database and migrations
 
 The schema lives in `shared/models.py` and is changed only through Alembic migrations in
@@ -130,6 +157,7 @@ Stop the gateway and workers first, since they hold connections.
 | `AUTH_SECRET` | (required) | Signs access tokens and GitHub OAuth state. At least 32 characters: `python -c 'import secrets; print(secrets.token_urlsafe(48))'`. The gateway won't start without it. |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | none | The GitHub App's user OAuth (App settings, "Client ID" and a generated client secret). Needed for GitHub sign-in and for connecting installations. |
 | `GITHUB_APP_SLUG` | none | The App's name in `github.com/apps/<slug>`: `ottoci`. |
+| `OTTO_GITHUB_WEBHOOK_SECRET` | none | The App's webhook secret. `POST /github/webhook` takes only deliveries signed with it (CI results); unset, it answers 503 and CI is read by polling. |
 | `ACCESS_TOKEN_MINUTES` | `15` | How long an access token (the Bearer JWT) lasts. |
 | `REFRESH_TOKEN_DAYS` | `30` | How long a refresh token (the `otto_refresh` cookie) lasts unused; each refresh swaps it for a new one. Rows that expired over a week ago are deleted when the gateway starts. |
 | `REFRESH_REUSE_GRACE_SECONDS` | `20` | How long a just-rotated refresh token may come back as a retry (a lost response, two tabs refreshing at once) instead of counting as theft. |
@@ -168,11 +196,13 @@ In the App's settings on GitHub:
   signed-in user whose GitHub account can access the installation, and only refreshes its caches.
 - **Expire user authorization tokens:** either; Otto uses the user token once and doesn't keep it.
 - **Client secret:** generate one for `GITHUB_CLIENT_SECRET`.
-- **Permissions:** repository contents and pull requests read & write, metadata read; under
-  account permissions, "Email addresses" read. A GitHub sign-up reads the user's verified emails
+- **Permissions:** repository contents and pull requests read & write, metadata read, and for CI
+  checks, commit statuses and actions read; under account permissions, "Email addresses" read. A GitHub sign-up reads the user's verified emails
   (`GET /user/emails`): a new account gets the verified primary one, and none of them may belong to
   a confirmed Otto account. Without the permission, only the profile email (`GET /user`) is used.
-- **Webhook:** off (uncheck "Active"); Otto doesn't use webhooks.
+- **Webhook:** off (uncheck "Active") locally, where GitHub can't reach the gateway: CI is read
+  by polling. In production it's on, with the events Check run, Check suite, Status and Workflow
+  run (`docs/deploy.md`, "CI results").
 - **Where can this App be installed:** "Any account" if other people will connect their repos.
 
 ### How sign-in works

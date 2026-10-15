@@ -283,6 +283,9 @@ def handle_git_push(payload=None) -> dict:
     r = _scrub(r, [token, basic])
     r["branch"] = branch
     if r["exit_code"] == 0:
+        head = _run_argv(["git", "rev-parse", "HEAD"])
+        if head["exit_code"] == 0:
+            r["sha"] = head["stdout"].strip()  # the commit CI runs on (shared/ci.py)
         base = _default_branch()
         r["base"] = base
         if (stat := _diffstat(base)) is not None:

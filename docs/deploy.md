@@ -700,6 +700,7 @@ The gateway's environment (the workers need `DATABASE_URL`, `BUS_URL`, the provi
 | `OTTO_OPENAI_MODELS` | `gpt-4.1-mini,gpt-4.1` | The OpenAI models to offer, comma-separated. Without it, none are offered even with a key. Recreate the gateway and the worker after a change. |
 | `OTTO_ACCEPTING` | `true` | `false` pauses every signup; `GET /health` says `paused`. |
 | `OTTO_GITHUB_CALLBACK_URL` | `https://ottoci-api.taufi.dev/auth/github/callback` | Must be one of the App's callback URLs. |
+| `OTTO_GITHUB_WEBHOOK_SECRET` | 64 hex characters | The App's webhook secret, for CI results. See "CI results". Unset: `POST /github/webhook` answers 503 and CI is read by polling alone. |
 | `GITHUB_APP_ID`, `GITHUB_APP_KEY_PATH`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_APP_SLUG` | | As in `docs/dev.md`. |
 | `OTTO_SANDBOX_KUBECONFIG` | `/etc/otto/sandbox.kubeconfig` | See "The sandbox cluster". |
 | `OTTO_SANDBOX_NAMESPACE` | `otto-sandboxes` | |
@@ -710,11 +711,84 @@ The gateway's environment (the workers need `DATABASE_URL`, `BUS_URL`, the provi
 
 ### The GitHub App
 
-As in `docs/dev.md`, except that the **Callback URL** is the gateway's public one,
+As in `docs/dev.md`, except that the webhook is on for CI results ("CI results" has the exact
+settings), and the **Callback URL** is the gateway's public one,
 `https://ottoci-api.taufi.dev/auth/github/callback`. Keep `http://localhost:8000/auth/github/callback`
 as a second callback URL if the same App serves development. `OTTO_GITHUB_CALLBACK_URL` picks the
 production one for sign-in. Installs always come back to the App's first callback URL, so list
 the production one first.
+
+## CI results
+
+Otto shows the CI of the commits it pushes (GitHub runs the CI; Otto only reads it): a CI row on
+the PR card, a quiet line in the thread when CI finishes, a red sidebar dot when it fails in a
+chat you haven't opened, and **Fix CI**, a follow-up turn that gets the failing jobs' logs. It
+reads them two ways: GitHub's webhooks, at once, and polling, every 30 seconds for 30 minutes
+after each push (and again when the chat is opened). Polling alone works, so the webhook is an
+improvement, not a requirement. Without any check within 3 minutes of a push, the row says
+"No CI on this repo".
+
+### The GitHub App's settings for CI
+
+On GitHub, open **Settings** → **Developer settings** → **GitHub Apps** → your App → **Edit**.
+
+1. **Permissions & events** → **Repository permissions**. Add, each **Read-only** (no write
+   access is needed):
+
+   | Permission | What Otto reads with it |
+   |---|---|
+   | **Checks** | A commit's check runs (`GET /repos/{repo}/commits/{sha}/check-runs`), and the Check run and Check suite events. |
+   | **Commit statuses** | A commit's combined status (`GET /repos/{repo}/commits/{sha}/status`), and the Status event. |
+   | **Actions** | A failed job's log for Fix CI (`GET /repos/{repo}/actions/jobs/{id}/logs`), and the Workflow run event. |
+
+   Keep the existing ones: Contents (read and write), Pull requests (read and write), Metadata
+   (read-only), and the account permission Email addresses (read-only). That's the minimum: CI
+   needs these three, read-only, and nothing else.
+2. **Subscribe to events** (this list appears once the permissions above are set): tick **Check
+   run**, **Check suite**, **Status** and **Workflow run**. Check run and Status carry the
+   results; Check suite and Workflow run tell Otto that a whole run finished (it then reads the
+   commit's checks again) and give the run's link. All four come with the three permissions, so
+   ticking them asks for nothing more.
+3. **General** → **Webhook**:
+   - **Active**: on.
+   - **Webhook URL**: `https://ottoci-api.taufi.dev/github/webhook`
+   - **Webhook secret**: a new random value (`openssl rand -hex 32`). Put the same value in
+     `OTTO_GITHUB_WEBHOOK_SECRET` in the server's `.env`, and recreate the gateway
+     (`docker compose -f docker-compose.prod.yml up -d gateway`). Never commit it.
+   - **SSL verification**: enabled.
+4. Click **Save changes**.
+5. **Every installation must accept the new permissions.** GitHub asks each account that installed
+   the App (an email, and a banner on the installation's settings page:
+   `github.com/settings/installations/<id>`, or the organization's). Until it's accepted, Otto
+   can't read CI there: the row ends "Can't read CI for this repo", and that account's webhooks
+   don't come.
+
+Check it: **Advanced** → **Recent Deliveries** shows the first `ping` with a 202. Each later
+delivery should be 202 too. A 401 means the two secrets differ; a 503 means
+`OTTO_GITHUB_WEBHOOK_SECRET` isn't set (or RabbitMQ was down: **Redeliver** it).
+
+**Cloudflare Bot Fight Mode must stay off** for `taufi.dev` (**Security** → **Bots**). It
+challenges automated requests, and GitHub's webhook deliveries can't answer a challenge, so they
+would fail. The same goes for "I'm Under Attack" mode, or any WAF rule that challenges
+`/github/webhook`.
+
+### How the gateway takes them
+
+- `POST /github/webhook` checks `X-Hub-Signature-256` against the secret in constant time
+  (401 when it's missing or wrong), takes each `X-GitHub-Delivery` once (`webhook_deliveries`,
+  kept a week; a redelivery is a no-op), puts a small message on the `otto.ci` queue, and answers
+  202 at once. The gateway's own consumer applies it.
+- A delivery maps to a chat by its commit: the chat whose latest push (`sessions.head_sha`) is
+  that SHA, whether CI ran on the push or on the pull request. Anything else is ignored.
+- Late or repeated news never moves CI backwards: a completed check stays completed, an older
+  status never replaces a newer one, and a rerun replaces the run it reruns. A new push starts
+  over for the new commit.
+- CI still queued or running with no change for 2 hours shows as "CI status unknown", with a
+  "Check again" link that reads it from GitHub once; nothing polls it any more.
+- Fix CI (`POST /sessions/{id}/ci/fix`) is a follow-up turn like any other: refused while the
+  workers are offline, counted against the daily limit, one turn per chat at a time. The failing
+  jobs' logs are trimmed to their tail and the lines around errors, about 20 KB in all, and the
+  agent is told they're untrusted data. Otto never starts it by itself.
 
 ## Signups
 
@@ -1180,6 +1254,9 @@ a minute without a broker, and its Job ends.
 3. The `otto-sandbox` package on GHCR made public (or the node given pull credentials), and
    `MAX_ACTIVE_SANDBOXES` at most the node's `SANDBOX_SLOTS`.
 4. The GitHub App's callback URL set to the gateway's, and `OTTO_GITHUB_CALLBACK_URL`.
+   For CI: the Checks, Commit statuses and Actions read permissions, the four events, the webhook
+   at `https://ottoci-api.taufi.dev/github/webhook` with `OTTO_GITHUB_WEBHOOK_SECRET`, and
+   Cloudflare's Bot Fight Mode off ("CI results").
 5. `OTTO_ENV=production`, `FRONTEND_URL`, `AUTH_SECRET`, the signup settings.
 6. `curl https://ottoci-api.taufi.dev/health` says `"workers": "online"` and
    `"password_reset": true` (`RESEND_API_KEY` and `OTTO_NOTIFY_TO` set; "Email (Resend)").

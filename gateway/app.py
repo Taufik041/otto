@@ -24,11 +24,11 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.exc import IntegrityError
 
 from brain.bus import bus_call, start_consumer, stop_consumer
-from gateway import auth, errors, github_app, limits, live, tokens, workers
+from gateway import auth, ci as gci, errors, github_app, limits, live, tokens, workers
 from orchestrator import sandbox
-from shared import config, email, health, usage
+from shared import ci, config, email, health, usage
 from shared.accounts import deactivate, prune_unconfirmed, purge_deleted
-from shared.bus import (SESSIONS_QUEUE, actions_queue, chat_job, connect_with_backoff, results_queue, resume_job,
+from shared.bus import (CI_QUEUE, SESSIONS_QUEUE, actions_queue, chat_job, connect_with_backoff, results_queue, resume_job,
                         retry_job, start_job)
 from shared.db import get_db, get_engine, init_db
 from shared.events import append_event, client_message_seq, load_events, redact
@@ -85,6 +85,11 @@ def _purge_deleted():
         print(f"[gateway] purged {len(purged)} deleted account(s): {', '.join(purged)}", flush=True)
 
 
+def _prune_deliveries():
+    if pruned := ci.prune_deliveries():
+        print(f"[gateway] forgot {pruned} webhook delivery id(s) older than a week", flush=True)
+
+
 async def daily(fn):
     """fn (blocking) once a day, until cancelled; an error is logged and the next day tries again."""
     while True:
@@ -105,16 +110,17 @@ async def lifespan(app):
         print(f"[gateway] deleted {pruned} refresh token(s) that expired over a week ago", flush=True)
     _prune_unconfirmed()
     _purge_deleted()
+    _prune_deliveries()
     swept = sweep_stale_sessions()
     if swept:
         print(f"[gateway] marked {len(swept)} stale session(s) interrupted: {', '.join(swept)}", flush=True)
     # RabbitMQ is waited for only briefly: without it the gateway still serves (GET /health says
     # "bus": "down"), and whatever needs it answers 503 bus_unavailable until it connects
-    app.state.conn = app.state.ch = None
+    app.state.conn = app.state.ch = app.state.ci_consumer = None
     bus = asyncio.create_task(_connect_bus(app))
     await asyncio.wait({bus}, timeout=BUS_STARTUP_WAIT)
     listener = None
-    sweepers = [asyncio.create_task(daily(fn)) for fn in (_prune_unconfirmed, _purge_deleted)]
+    sweepers = [asyncio.create_task(daily(fn)) for fn in (_prune_unconfirmed, _purge_deleted, _prune_deliveries)]
     try:
         engine = get_engine()
         if engine.dialect.name == "postgresql":
@@ -124,8 +130,9 @@ async def lifespan(app):
         app.state.create_lock = asyncio.Lock()
         yield
     finally:
-        for task in (bus, *sweepers):
+        for task in (bus, *sweepers, *([app.state.ci_consumer] if app.state.ci_consumer else [])):
             task.cancel()
+        gci.stop_watching()
         if listener:
             await live.stop(listener)
         if app.state.conn:
@@ -139,6 +146,8 @@ async def _connect_bus(app):
     app.state.conn = conn
     ch = await conn.channel()
     await ch.declare_queue(SESSIONS_QUEUE, durable=True)
+    # CI news (pushes the brain announces, GitHub's webhooks), applied by this gateway: gateway/ci.py
+    app.state.ci_consumer = asyncio.create_task(gci.consume(await ch.declare_queue(CI_QUEUE, durable=True)))
     app.state.ch = ch
 
 
@@ -159,6 +168,7 @@ def _channel():
 app = FastAPI(title="Otto", lifespan=lifespan, **docs_urls())
 app.include_router(auth.router)
 app.include_router(github_app.router)
+app.include_router(gci.router)
 app.add_exception_handler(errors.Refused, errors.handle)
 
 
@@ -325,11 +335,15 @@ async def _status(sid) -> str:
         return "unknown"
 
 
-def _summary(row, ends=None) -> dict:
-    """A chat for the sidebar; ends: end_seqs of the listed sessions (one query for the list)."""
+def _summary(row, ends=None, cis=None) -> dict:
+    """A chat for the sidebar; ends, cis: end_seqs and ci.states of the listed sessions (one query
+    each for the list). ci: the state of its pushed head's CI (None: nothing pushed)."""
     ends = end_seqs([row.id]) if ends is None else ends
+    cis = ci.states([row.id]) if cis is None else cis
+    found = cis.get(row.id)
     return {"id": row.id, "title": row.title, "status": row.status, "repo": row.repo, "model": row.model,
-            "pr_url": row.pr_url, "updated_at": as_utc(row.updated_at), "attention": attention(row, ends.get(row.id))}
+            "pr_url": row.pr_url, "updated_at": as_utc(row.updated_at),
+            "attention": attention(row, ends.get(row.id), found), "ci": found[1] if found else None}
 
 
 def _within_limit(user):
@@ -486,8 +500,9 @@ def _created_already(user, body: NewSession) -> dict | None:
 def sessions(user: User = Depends(auth.verified_user)):
     """The user's chats for the sidebar, most recently active first, each with its `attention`."""
     rows = list_sessions(user.id)
-    ends = end_seqs([r.id for r in rows])
-    return [_summary(r, ends) for r in rows]
+    ids = [r.id for r in rows]
+    ends, cis = end_seqs(ids), ci.states(ids)
+    return [_summary(r, ends, cis) for r in rows]
 
 
 class Seen(BaseModel):
@@ -504,7 +519,11 @@ def seen(sid: str, body: Seen, user: User = Depends(auth.verified_user)):
 
 @app.get("/sessions/{sid}")
 async def session(sid: str, user: User = Depends(auth.verified_user)):
+    """The chat. Opening it reads its CI from GitHub again while that isn't final (in the
+    background: new results arrive as ci.updated events)."""
     row = _row(sid, user)
+    if row.head_sha and (ci.latest(sid) or {}).get("state") not in ci.FINAL:
+        gci.watch(sid)
     branch = row.work_branch or (work_branch(sid) if row.repo else None)
     return {**_summary(row), "task": row.task, "repo_url": row.repo_url, "work_branch": branch,
             "created_at": as_utc(row.created_at), "sandbox_status": await _status(sid) if row.repo else None}
@@ -798,6 +817,55 @@ async def retry(sid: str, body: Retry | None = None, user: User = Depends(auth.v
             _fail(sid, "sandbox", e)
     await _enqueue(ch, sid, retry_job(sid))
     return {"id": sid, "status": "queued"}
+
+
+@app.post("/sessions/{sid}/ci/fix", status_code=202)
+async def fix_ci(sid: str, user: User = Depends(auth.verified_user)):
+    """Fix CI: a follow-up turn on the failed CI of the chat's pushed head. The failing jobs' logs
+    (gateway/ci.py: trimmed, framed as untrusted data) go to the agent, which fixes the problem and
+    pushes to the same branch, so the PR updates and CI runs again. Like any turn: 503
+    workers_offline, 429 at the daily limit, 409 while the chat works (one turn at a time). Only
+    the user starts it: a failure after a fix starts nothing by itself."""
+    row = _row(sid, user)
+    snap = ci.latest(sid) if row.repo and row.head_sha else None
+    if snap is None or snap.get("sha") != row.head_sha or snap.get("state") != "failed":
+        raise HTTPException(409, "CI hasn't failed on Otto's latest push in this chat")
+    ch = _channel()
+    _healthy(row.model)
+    _within_limit(user)
+    await workers.require()
+    repo = await _repo_for(user, row.repo)
+    if row.status not in IDLE:
+        raise HTTPException(409, f"session {sid} is {row.status}; wait until it finishes")
+    logs = await asyncio.to_thread(gci.failing_logs, row, snap)
+    text = gci.fix_prompt(snap, logs, work_branch(sid))
+    async with app.state.create_lock:  # count + claim as one step within this gateway
+        _room_for_an_agent(user)
+        if not transition(sid, "provisioning", IDLE):
+            raise HTTPException(409, f"session {sid} is {_row(sid, user).status}; wait until it finishes")
+    # shown as the short request; the model gets the whole message
+    append_event(sid, "llm.message", {"message": {"role": "user", "content": text}, "display": gci.fix_display(logs),
+                                      "ci_fix": {"sha": snap["sha"], "checks": [l["name"] for l in logs]}})
+    try:
+        await _wake_sandbox(ch, sid, repo)
+    except HTTPException:
+        raise
+    except Exception as e:
+        _fail(sid, "sandbox", e)
+    await _enqueue(ch, sid, resume_job(sid, text))
+    return {"id": sid, "status": "queued"}
+
+
+@app.post("/sessions/{sid}/ci/check")
+async def check_ci(sid: str, user: User = Depends(auth.verified_user)):
+    """Check again: read the CI of the chat's latest push from GitHub once (the "CI status unknown"
+    row's link). {ci: the state now}; still "unknown" if GitHub had nothing new."""
+    row = _row(sid, user)
+    if not (row.repo and row.head_sha):
+        raise HTTPException(409, "Otto hasn't pushed anything in this chat")
+    await asyncio.to_thread(gci.reconcile, sid)
+    found = ci.states([sid]).get(sid)
+    return {"ci": found[1] if found else None}
 
 
 def _switch_model(sid, model):

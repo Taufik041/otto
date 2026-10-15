@@ -82,7 +82,9 @@ export function useSessionView(id: string): {
         // a model found unusable: the picker's list says so now (GET /models)
         if (events.some((e) => e.type === 'error' && e.payload.stage === 'model')) void qc.invalidateQueries({ queryKey: keys.models })
         if (title) qc.setQueryData<SessionDetail>(keys.session(id), (d) => (d ? { ...d, title } : d))
-        const listChanged = events.some((e) => e.type === 'session.status' || e.type === 'pr.opened' || e.type === 'session.titled')
+        const listChanged = events.some(
+          (e) => e.type === 'session.status' || e.type === 'pr.opened' || e.type === 'session.titled' || e.type === 'ci.updated',
+        )
         if (!visible()) {
           if (listChanged) refreshList() // not watching: the sidebar should show the dot
           return

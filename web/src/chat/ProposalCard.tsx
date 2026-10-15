@@ -4,8 +4,9 @@ import { ApiError, capitalize, messageOf } from '@/api/errors'
 import { GitHubIcon } from '@/components/brand'
 import { Glyph, IC } from './icons'
 import { PrActionsContext } from './prActions'
+import { CiRow } from './CiRow'
 import { passed, PR_PILL, PrFrame } from './PrCard'
-import type { Proposal } from './reduce'
+import type { Ci, Proposal } from './reduce'
 
 const GITHUB_SAID = "GitHub didn't open the pull request: "
 
@@ -28,12 +29,15 @@ export function ProposalCard({
   proposal,
   state,
   live,
+  ci = null,
 }: {
   sessionId: string
   proposal: Proposal
   state: 'proposed' | 'declined'
   /** Otto is working: nothing to create until it finishes */
   live: boolean
+  /** the CI of the pushed branch, as GitHub reports it */
+  ci?: Ci | null
 }) {
   const actions = useContext(PrActionsContext)
   const create = useMutation({ mutationFn: () => actions.create(sessionId) })
@@ -79,6 +83,7 @@ export function ProposalCard({
       base={proposal.base}
       counts={{ additions: proposal.additions, deletions: proposal.deletions, files: proposal.files, tests: passed(proposal.tests) }}
     >
+      {ci && <CiRow key={ci.sha} sessionId={sessionId} ci={ci} live={live} />}
       {(create.error || decline.error) && (
         <div role="alert" className="mt-3.5 flex items-start gap-2 rounded-xl bg-bad-bg px-3 py-2.5 text-sm leading-[1.45] text-bad">
           <Glyph d={IC.alert} size={15} width={1.8} className="mt-0.5 shrink-0" />

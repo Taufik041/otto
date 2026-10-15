@@ -142,6 +142,20 @@ function ModelDivider({ to }: { to: string }) {
   )
 }
 
+/** "CI failed · tests": a quiet divider where CI finished on Otto's push. */
+function CiDivider({ state, text }: { state: string; text: string }) {
+  return (
+    <div role="separator" aria-label={text} className="flex items-center gap-3 pb-6 text-[13px] text-muted animate-rise">
+      <span className="h-px flex-1 bg-hair" />
+      <span className="inline-flex items-center gap-1.5">
+        <span aria-hidden="true" className={state === 'failed' ? 'size-1.5 rounded-full bg-bad' : state === 'passed' ? 'size-1.5 rounded-full bg-ok' : 'size-1.5 rounded-full bg-ter'} />
+        {text}
+      </span>
+      <span className="h-px flex-1 bg-hair" />
+    </div>
+  )
+}
+
 export function Thread(p: ThreadProps) {
   const last = p.items.length - 1
   // the avatar that turns while Otto works: the latest one shown
@@ -187,15 +201,17 @@ export function Thread(p: ThreadProps) {
           case 'pr':
             return (
               <Otto key={it.id} avatar={false} spinning={false}>
-                <PrCard pr={it.pr} onSeeChanges={() => p.onSeeChanges(it.pr.firstFile!)} />
+                <PrCard pr={it.pr} ci={it.ci} sessionId={p.sessionId} live={p.live} onSeeChanges={() => p.onSeeChanges(it.pr.firstFile!)} />
               </Otto>
             )
           case 'model':
             return <ModelDivider key={it.id} to={it.to} />
+          case 'ci':
+            return <CiDivider key={it.id} state={it.state} text={it.text} />
           case 'proposal':
             return (
               <Otto key={it.id} avatar={false} spinning={false}>
-                <ProposalCard sessionId={p.sessionId} proposal={it.proposal} state={it.state} live={p.live} />
+                <ProposalCard sessionId={p.sessionId} proposal={it.proposal} state={it.state} live={p.live} ci={it.ci} />
               </Otto>
             )
           case 'stopped':

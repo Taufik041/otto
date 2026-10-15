@@ -23,9 +23,11 @@ export const useGitHub = () => useQuery({ queryKey: keys.github, queryFn: api.gi
 export const useUsage = () => useQuery({ queryKey: keys.usage, queryFn: api.usage })
 export const useSession = (id: string) => useQuery({ queryKey: keys.session(id), queryFn: () => api.session(id) })
 
-/** Poll the chat list every 10s while a chat is working (its dot changes when it ends); never otherwise. */
+/** Poll the chat list every 10s while a chat is working (its dot changes when it ends), and every
+ *  30s while CI runs on a chat's push (its dot turns red if CI fails); never otherwise. */
 export function sessionsRefetchInterval(data: SessionSummary[] | undefined): number | false {
-  return data?.some((s) => s.attention === 'working') ? 10_000 : false
+  if (data?.some((s) => s.attention === 'working')) return 10_000
+  return data?.some((s) => s.ci === 'queued' || s.ci === 'running') ? 30_000 : false
 }
 
 /** The sidebar's chats: fresh on window focus, and polled while one is at work. */

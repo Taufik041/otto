@@ -23,6 +23,8 @@
  * | sandbox.reused / .recreated| {} / {previous}                             | hidden (infrastructure) |
  * | session.model_changed      | {from, to}                                  | a quiet "Switched to …" divider before its message |
  * | session.titled             | {title, source}                             | not in the thread: useSessionView updates the chat's title |
+ * | ci.updated                 | {sha, state, checks, url, pushed_at, reason?} | the CI row on the latest PR card; a quiet divider when CI finishes |
+ * | llm.message (user, Fix CI) | {message, display, ci_fix}                  | the user message shows `display` ("Fix CI: tests"), not the logs |
  */
 
 export type SessionEvent = { seq: number; ts: string; type: string; payload: Record<string, unknown> }
@@ -96,20 +98,63 @@ export type PrCard = {
   firstFile: string | null
 }
 
+/** ci.updated: the CI of the commit Otto pushed last, as GitHub reports it */
+export type CiState = 'queued' | 'running' | 'passed' | 'failed' | 'cancelled' | 'none'
+export type CiCheck = {
+  name: string
+  status: string
+  conclusion: string | null
+  /** seconds, once complete */
+  duration: number | null
+  url: string | null
+}
+export type Ci = {
+  sha: string
+  state: CiState
+  checks: CiCheck[]
+  /** the run: the first failing check, else the workflow run, else the first check */
+  url: string | null
+  /** "unreadable": GitHub couldn't be asked (state none) */
+  reason: string | null
+  /** when this state was recorded: queued or running unchanged for 2 hours reads as unknown */
+  updatedAt: string
+}
+
+const CI_STATES: ReadonlySet<string> = new Set(['queued', 'running', 'passed', 'failed', 'cancelled', 'none'])
+/** CI finished: these get the thread's quiet divider */
+const CI_DONE: ReadonlySet<string> = new Set(['passed', 'failed', 'cancelled'])
+const CI_FAILED: ReadonlySet<string> = new Set(['failure', 'timed_out', 'action_required', 'startup_failure'])
+
+/** The first failing check's name, for "CI failed · tests". */
+export function firstFailing(ci: Pick<Ci, 'checks'>): string | null {
+  return ci.checks.find((c) => c.conclusion !== null && CI_FAILED.has(c.conclusion))?.name ?? null
+}
+
+/** The divider's words when CI finishes: "CI passed · 3 checks", "CI failed · tests". */
+export function ciDoneText(ci: Pick<Ci, 'state' | 'checks'>): string {
+  const n = ci.checks.length
+  if (ci.state === 'failed') return `CI failed${firstFailing(ci) ? ` · ${firstFailing(ci)}` : ''}`
+  if (ci.state === 'cancelled') return 'CI cancelled'
+  return `CI passed${n ? ` · ${n} ${n === 1 ? 'check' : 'checks'}` : ''}`
+}
+
 export type Item =
   | { kind: 'user'; id: string; text: string | null; repo: string | null }
   | { kind: 'prose'; id: string; text: string; avatar: boolean }
   | { kind: 'thinking'; id: string }
   | { kind: 'work'; id: string; block: WorkBlock; avatar: boolean }
-  | { kind: 'pr'; id: string; pr: PrCard }
+  /** ci: the CI row, on the latest card only */
+  | { kind: 'pr'; id: string; pr: PrCard; ci: Ci | null }
   | { kind: 'stopped'; id: string }
   | { kind: 'error'; id: string; title: string; message: string; switchModel: boolean }
   | { kind: 'limit'; id: string; used: number; limit: number; resetsAt: string }
   | { kind: 'nudge'; id: string }
   /** Otto's proposed pull request, waiting for the user: create it, or not now */
-  | { kind: 'proposal'; id: string; proposal: Proposal; state: 'proposed' | 'declined' }
+  | { kind: 'proposal'; id: string; proposal: Proposal; state: 'proposed' | 'declined'; ci: Ci | null }
   /** the chat moved to another model from here on: a quiet divider */
   | { kind: 'model'; id: string; to: string }
+  /** CI finished on Otto's push: a quiet divider ("CI failed · tests") */
+  | { kind: 'ci'; id: string; state: CiState; text: string }
 
 export type FileEntry =
   | { id: string; type: 'diff'; diff: string; truncated: boolean }
@@ -157,6 +202,8 @@ export type View = {
   files: FileChange[]
   terminal: TermEntry[]
   pr: { number: number; url: string; title: string | null } | null
+  /** the CI of the commit Otto pushed last (null: nothing pushed, or an older chat) */
+  ci: Ci | null
   /** a new turn is starting and its user message hasn't arrived yet (a follow-up being set up) */
   awaitingUser: boolean
 }
@@ -182,6 +229,8 @@ type Turn = {
   switchedTo: string | null
   /** pr.updated: this turn's push updated the open PR */
   prUpdate: { number: number | null; url: string; additions: number | null; deletions: number | null; files: number | null } | null
+  /** CI that finished while this turn was the latest: its dividers */
+  ciDone: { id: string; state: CiState; text: string }[]
 }
 
 type State = {
@@ -207,9 +256,12 @@ type State = {
   sent: { id: string; text: string; repo: string | null } | null
   /** the client_message_ids of the user messages folded in */
   clientIds: Set<string>
+  /** the latest ci.updated */
+  ci: Ci | null
 }
 
 export const emptyState = (): State => ({
+  ci: null,
   log: [],
   sent: null,
   clientIds: new Set(),
@@ -247,6 +299,7 @@ function newTurn(state: State, id: string, ts: string, user: Turn['user']): Turn
     stoppedHere: false,
     switchedTo: state.pendingModel,
     prUpdate: null,
+    ciDone: [],
   }
   state.pendingModel = null
   state.turns.push(t)
@@ -353,7 +406,9 @@ function apply(s: State, e: SessionEvent) {
         const startedAt = s.restart?.ts ?? e.ts
         const attached = s.restart !== null && t !== undefined && s.repo !== null && !t.agent
         s.restart = null
-        const nt = newTurn(s, `t${e.seq}`, startedAt, { text: content, repo: attached ? s.repo : null, confirmed: true })
+        // a Fix CI message carries the CI logs: the thread shows the request it stands for
+        const text = str(p.display) ?? content
+        const nt = newTurn(s, `t${e.seq}`, startedAt, { text, repo: attached ? s.repo : null, confirmed: true })
         nt.agent = s.repo !== null
         return
       }
@@ -404,6 +459,24 @@ function apply(s: State, e: SessionEvent) {
       const url = str(p.url)
       if (t && url) {
         t.prUpdate = { number: num(p.number), url, additions: num(p.additions), deletions: num(p.deletions), files: num(p.files) }
+      }
+      return
+    }
+    case 'ci.updated': {
+      const state = str(p.state)
+      const sha = str(p.sha)
+      if (!state || !CI_STATES.has(state) || !sha) return
+      const checks: CiCheck[] = (Array.isArray(p.checks) ? p.checks : []).map((c) => {
+        const r = rec(c)
+        return { name: str(r.name) ?? 'check', status: str(r.status) ?? 'queued', conclusion: str(r.conclusion), duration: num(r.duration), url: str(r.html_url) }
+      })
+      const prev = s.ci
+      const ci: Ci = { sha, state: state as CiState, checks, url: str(p.url), reason: str(p.reason), updatedAt: e.ts }
+      s.ci = ci
+      // finished just now (not the same result again): the divider, at the turn that's latest
+      const t = current(s)
+      if (t && CI_DONE.has(state) && !(prev?.sha === sha && prev.state === state)) {
+        t.ciDone.push({ id: `ci${e.seq}`, state: ci.state, text: ciDoneText(ci) })
       }
       return
     }
@@ -724,6 +797,7 @@ export function view(s: State): View {
       stoppedHere: false,
       switchedTo: s.pendingModel,
       prUpdate: null,
+      ciDone: [],
     })
   }
 
@@ -916,6 +990,7 @@ export function view(s: State): View {
         items.push({
           kind: 'pr',
           id: `${t.id}-pr`,
+          ci: null,
           pr: {
             id: t.id,
             updated: false,
@@ -934,7 +1009,7 @@ export function view(s: State): View {
         })
       } else {
         const state = s.declined !== null && s.declined > proposal.seq ? 'declined' : 'proposed'
-        items.push({ kind: 'proposal', id: `${t.id}-proposal`, proposal: prop, state })
+        items.push({ kind: 'proposal', id: `${t.id}-proposal`, proposal: prop, state, ci: null })
       }
     }
     // the push of this turn updated the open PR (pr.updated)
@@ -943,6 +1018,7 @@ export function view(s: State): View {
       items.push({
         kind: 'pr',
         id: `${t.id}-pr-updated`,
+        ci: null,
         pr: {
           id: t.id,
           updated: true,
@@ -968,6 +1044,7 @@ export function view(s: State): View {
       items.push({
         kind: 'pr',
         id: `${t.id}-pr`,
+        ci: null,
         pr: {
           id: t.id,
           updated,
@@ -987,6 +1064,18 @@ export function view(s: State): View {
     }
     const openedHere = opened as PrRef | null // assigned in the loop above; TS can't follow it
     if (openedHere) known.pr = { ...openedHere, title: openedHere.title ?? known.pr?.title ?? null }
+    for (const d of t.ciDone) items.push({ kind: 'ci', ...d })
+  }
+
+  // the CI row goes on the latest card: the one for the commit Otto pushed last
+  if (s.ci) {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i]!
+      if (it.kind === 'pr' || (it.kind === 'proposal' && it.state === 'proposed')) {
+        items[i] = { ...it, ci: s.ci }
+        break
+      }
+    }
   }
 
   // a PR opened without our seeing its action (older sessions): still known
@@ -1012,6 +1101,7 @@ export function view(s: State): View {
     files: [...files.values()].sort((a, b) => Number(a.kind === 'Read') - Number(b.kind === 'Read')),
     terminal,
     pr: known.pr,
+    ci: s.ci,
     awaitingUser: s.restart !== null && !s.restart.afterFailure,
   }
 }
@@ -1023,7 +1113,14 @@ export function reduce(prev: State, events: SessionEvent[]): State {
   const s: State = {
     ...prev,
     seen: new Set(prev.seen),
-    turns: prev.turns.map((t) => ({ ...t, user: t.user && { ...t.user }, intro: [...t.intro], rows: [...t.rows], reply: [...t.reply] })),
+    turns: prev.turns.map((t) => ({
+      ...t,
+      user: t.user && { ...t.user },
+      intro: [...t.intro],
+      rows: [...t.rows],
+      reply: [...t.reply],
+      ciDone: [...t.ciDone],
+    })),
     actions: new Map([...prev.actions].map(([k, a]) => [k, { ...a }])),
     clientIds: new Set(prev.clientIds),
     restart: prev.restart && { ...prev.restart },

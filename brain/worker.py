@@ -3,7 +3,7 @@ import asyncio, json, sys, traceback
 from aio_pika import connect_robust
 
 from shared import config
-from shared.bus import SESSIONS_QUEUE, actions_queue, connect_with_backoff, results_queue
+from shared.bus import CI_QUEUE, SESSIONS_QUEUE, actions_queue, connect_with_backoff, results_queue
 from shared.sessions import get_session, transition
 from brain.loop import chat_session, has_conversation, resume_session, retry_chat, start_session
 from brain.main import connect_db
@@ -112,6 +112,7 @@ async def main():
         ch = await conn.channel()
         await ch.set_qos(prefetch_count=config.WORKER_CONCURRENCY)
         queue = await ch.declare_queue(SESSIONS_QUEUE, durable=True)
+        await ch.declare_queue(CI_QUEUE, durable=True)  # pushes are announced on it (brain.loop)
         print(f"[worker] consuming {SESSIONS_QUEUE}, up to {config.WORKER_CONCURRENCY} sessions at once",
               flush=True)
         await consume(conn, queue, config.WORKER_CONCURRENCY)

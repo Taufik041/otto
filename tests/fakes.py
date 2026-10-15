@@ -317,7 +317,7 @@ def sign_out(client):
 class FakeResponse:
     def __init__(self, status_code, body, links=None):
         self.status_code, self._body, self.links = status_code, body, links or {}
-        self.text = json.dumps(body)
+        self.text = body if isinstance(body, str) else json.dumps(body)
 
     @property
     def ok(self):
@@ -345,6 +345,10 @@ class FakeGitHub:
         self.page_size = 100
         self.pulls = {}                # full name -> [{number, html_url, title, body, head, base, state}]
         self.pull_error = None         # (status, body): what POST .../pulls answers instead
+        self.check_runs = {}           # (full name, sha) -> check runs
+        self.statuses = {}             # (full name, sha) -> commit statuses (the latest per context)
+        self.job_logs = {}             # (full name, job id) -> an Actions job's log text
+        self.ci_error = None           # (status, body): what the CI endpoints answer instead
 
     def add_user(self, code, gid, login, emails=None, **extra):
         """emails: [(address, verified)] for GET /user/emails."""
@@ -415,7 +419,29 @@ class FakeGitHub:
             return self._page(url, self.repos[iid], "repositories", params)
         if path.startswith("/repos/") and path.endswith("/pulls"):
             return self._pulls(method, path.removeprefix("/repos/").removesuffix("/pulls"), token, json, params)
+        if path.startswith("/repos/") and ("/commits/" in path or "/actions/jobs/" in path):
+            return self._ci(url, path, token, params)
         return FakeResponse(404, {"message": f"FakeGitHub has no {method} {path}"})
+
+    def _ci(self, url, path, token, params):
+        """A commit's check runs and combined status, and an Actions job's log."""
+        if not token.startswith("ghs_inst"):
+            return FakeResponse(401, {"message": "Bad credentials"})
+        if self.ci_error:
+            return FakeResponse(*self.ci_error)
+        parts = path.split("/")  # "", repos, owner, name, ...
+        full_name, rest = f"{parts[2]}/{parts[3]}", parts[4:]
+        if rest[:1] == ["commits"] and rest[2:] == ["check-runs"]:
+            return self._page(url, self.check_runs.get((full_name, rest[1]), []), "check_runs", params)
+        if rest[:1] == ["commits"] and rest[2:] == ["status"]:
+            statuses = self.statuses.get((full_name, rest[1]), [])
+            state = "failure" if any(x["state"] in ("failure", "error") for x in statuses) else \
+                "pending" if any(x["state"] == "pending" for x in statuses) or not statuses else "success"
+            return FakeResponse(200, {"state": state, "sha": rest[1], "statuses": statuses})
+        if rest[:2] == ["actions", "jobs"] and rest[3:] == ["logs"]:
+            log = self.job_logs.get((full_name, int(rest[2])))
+            return FakeResponse(200, log) if log is not None else FakeResponse(404, {"message": "Not Found"})
+        return FakeResponse(404, {"message": f"FakeGitHub has no GET {path}"})
 
     def _pulls(self, method, full_name, token, body, params):
         """POST: open a PR (422 if one is open for the head already); GET: list by head/state."""
