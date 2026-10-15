@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
@@ -7,12 +7,11 @@ import { MemoryRouter } from 'react-router'
 import { API, server } from '@/test/server'
 import { ThemeProvider } from '@/theme/ThemeProvider'
 import { Landing, LandingNotFound } from './Landing'
-import { CLICK_AT, LOOP_MS, OPENED_AT, seedCatalog } from './replay'
+import { landingQueryClient, LOOP_MS, T } from './replay'
 import { Replay } from './Replay'
 
 function page(ui: ReactElement) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  seedCatalog(qc) // as main.tsx does: an unexpected request fails the test (MSW)
+  const qc = landingQueryClient() // as main.tsx does: an unexpected request fails the test (MSW)
   return render(
     <ThemeProvider fixed="system">
       <QueryClientProvider client={qc}>
@@ -32,47 +31,157 @@ function media(...on: string[]) {
 const workers = (w: 'online' | 'offline') =>
   server.use(http.get(`${API}/health`, () => HttpResponse.json({ status: 'up', workers: w, version: 't' })))
 
+/** An IntersectionObserver the test moves: `show(false)` scrolls the hero away. */
+function observer() {
+  const real = globalThis.IntersectionObserver
+  let notify: (on: boolean) => void = () => {}
+  globalThis.IntersectionObserver = class {
+    constructor(cb: IntersectionObserverCallback) {
+      notify = (on) => cb([{ isIntersecting: on } as IntersectionObserverEntry], this as unknown as IntersectionObserver)
+    }
+    observe() {}
+    disconnect() {}
+  } as unknown as typeof IntersectionObserver
+  return { show: (on: boolean) => act(() => notify(on)), restore: () => (globalThis.IntersectionObserver = real) }
+}
+
+function tabHidden(hidden: boolean) {
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (hidden ? 'hidden' : 'visible') })
+  act(() => void document.dispatchEvent(new Event('visibilitychange')))
+}
+
 describe('the replay', () => {
   beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] }))
   afterEach(() => vi.useRealTimers())
   const tick = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms))
+  const hero = () => screen.getByRole('img', { name: /A replay of Otto at work/ })
+  /** plays to `t` ms into the loop, from `from`: a render a tick (200ms), as a browser would */
+  const playTo = async (t: number, from: number) => {
+    for (let left = t - from + 100; left > 0; left -= 200) await tick(Math.min(200, left))
+  }
 
-  it('plays the session in the real app components, clicks Create, and loops', async () => {
+  it('plays the issue in the real app components: picker, card, PR, CI, Fix CI; then loops', async () => {
     page(<Replay width={1112} />)
-    const replay = screen.getByRole('img', { name: /A replay of Otto at work/ })
-    expect(within(replay).getByText(/two tests are failing/)).toBeInTheDocument()
+    const r = within(hero())
+    expect(r.getByText('What should we build today?')).toBeInTheDocument()
+    expect(r.getByText('Message Otto. Type @ to mention a repo.')).toBeInTheDocument()
 
-    await tick(5_000)
-    expect(within(replay).getAllByText('2 failed, 7 passed').length).toBeGreaterThan(0)
+    await playTo(T.hash, 0)
+    expect(r.getByText('Open issues in acme/shop')).toBeInTheDocument()
+    expect(r.getAllByRole('option')).toHaveLength(3)
 
-    await tick(CLICK_AT - 5_000 + 200)
-    expect(within(replay).getByText('Creating pull request…')).toBeInTheDocument()
-    expect(replay.querySelector('[data-cursor]')).not.toBeNull()
+    await playTo(T.move, T.hash)
+    expect(r.getAllByRole('option')).toHaveLength(2)
+    expect(r.getByRole('option', { selected: true })).toHaveTextContent('#12Bulk discount not applied at exactly 10 units')
 
-    await tick(OPENED_AT - CLICK_AT)
-    expect(within(replay).getByText('Pull request opened')).toBeInTheDocument()
-    expect(within(replay).getByText('#9')).toBeInTheDocument()
+    await playTo(T.pick, T.move)
+    expect(r.queryByRole('listbox')).not.toBeInTheDocument()
+    expect(r.getByRole('button', { name: 'Remove issue #12' })).toBeInTheDocument()
 
-    await tick(LOOP_MS - OPENED_AT + 500) // the next loop starts over
-    expect(within(replay).queryByText('Pull request opened')).not.toBeInTheDocument()
-    expect(within(replay).getByText(/two tests are failing/)).toBeInTheDocument()
-  })
+    await playTo(T.send, T.pick)
+    const card = r.getByRole('region', { name: 'Issue #12' })
+    expect(within(card).getByText('Open')).toBeInTheDocument()
+    expect(within(card).getByText('bug')).toBeInTheDocument()
 
-  it('reduced motion: the final state, still', async () => {
+    await playTo(T.proposed, T.send)
+    expect(r.getByRole('link', { name: 'Closes #12' })).toBeInTheDocument()
+    expect(r.getAllByText('9 tests passed').length).toBeGreaterThan(0)
+
+    await playTo(T.click, T.proposed)
+    expect(r.getByText('Creating pull request…')).toBeInTheDocument()
+    expect(hero().querySelector('[data-cursor]')).not.toBeNull()
+
+    await playTo(T.opened, T.click)
+    expect(r.getByRole('region', { name: 'Pull request opened' })).toHaveTextContent('Open')
+
+    await playTo(T.ciWaiting, T.opened)
+    expect(r.getByText('Waiting for CI')).toBeInTheDocument()
+    await playTo(T.ciRunning, T.ciWaiting)
+    expect(r.getByText('CI running · 2 checks')).toBeInTheDocument()
+    await playTo(T.ciFailed, T.ciRunning)
+    expect(r.getAllByText('CI failed · tests').length).toBeGreaterThan(0)
+    expect(r.getByRole('button', { name: 'Fix CI' })).toBeEnabled()
+
+    await playTo(T.fixClick, T.ciFailed)
+    expect(r.getByRole('button', { name: 'Fixing CI…' })).toBeInTheDocument()
+
+    await playTo(T.fixing, T.fixClick)
+    expect(r.getByText('Fix CI: tests')).toBeInTheDocument()
+
+    await playTo(T.ciPassed, T.fixing)
+    const updated = r.getByRole('region', { name: 'Pull request updated' })
+    expect(within(updated).getByText('CI passed')).toBeInTheDocument()
+    expect(within(updated).getByRole('link', { name: 'Closes #12' })).toBeInTheDocument()
+
+    await playTo(LOOP_MS, T.ciPassed) // the next loop starts over
+    expect(r.queryByText('CI passed')).not.toBeInTheDocument()
+    expect(r.getByText('What should we build today?')).toBeInTheDocument()
+  }, 30_000) // ~250 renders
+
+  it('reduced motion: one still frame, the PR with CI passed and Closes #12', async () => {
     const restore = media('prefers-reduced-motion')
     const intervals = vi.spyOn(globalThis, 'setInterval')
     try {
       page(<Replay width={1112} />)
-      const replay = screen.getByRole('img', { name: /A replay of Otto at work/ })
-      expect(within(replay).getByText('Pull request opened')).toBeInTheDocument()
-      expect(replay.querySelector('[data-cursor]')).toBeNull()
+      const r = within(hero())
+      const updated = r.getByRole('region', { name: 'Pull request updated' })
+      expect(within(updated).getByText('CI passed')).toBeInTheDocument()
+      expect(within(updated).getByRole('link', { name: 'Closes #12' })).toBeInTheDocument()
+      expect(hero().querySelector('[data-cursor]')).toBeNull()
       await tick(LOOP_MS)
-      expect(within(replay).getByText('Pull request opened')).toBeInTheDocument() // nothing moved
+      expect(within(updated).getByText('CI passed')).toBeInTheDocument() // nothing moved
       expect(intervals).not.toHaveBeenCalled() // no clock: nothing plays
     } finally {
       restore()
     }
   })
+
+  it('pauses off screen and in a hidden tab, and resumes where it left off', async () => {
+    const io = observer()
+    try {
+      page(<Replay width={1112} />)
+      const r = within(hero())
+      await playTo(T.hash, 0)
+      expect(r.getAllByRole('option')).toHaveLength(3)
+
+      await io.show(false) // scrolled away: it holds
+      await tick(30_000)
+      expect(r.getAllByRole('option')).toHaveLength(3)
+      expect(r.queryByRole('region', { name: 'Issue #12' })).not.toBeInTheDocument()
+      await io.show(true)
+      await playTo(T.move, T.hash)
+      expect(r.getAllByRole('option')).toHaveLength(2) // from where it was, not 30s on
+
+      tabHidden(true) // another tab: it holds
+      await tick(30_000)
+      expect(r.getAllByRole('option')).toHaveLength(2)
+      tabHidden(false)
+      await playTo(T.send, T.move)
+      expect(r.getByRole('region', { name: 'Issue #12' })).toBeInTheDocument()
+    } finally {
+      io.restore()
+      tabHidden(false)
+    }
+  })
+
+  it('makes no network request, all the way round', async () => {
+    const requests: string[] = []
+    const log = ({ request }: { request: Request }) => void requests.push(request.url)
+    server.events.on('request:start', log)
+    const fetches = vi.spyOn(globalThis, 'fetch')
+    try {
+      page(<Replay width={1112} />)
+      await playTo(T.fixing, 0) // both pretend clicks included
+      expect(screen.getByText('Fix CI: tests')).toBeInTheDocument()
+      await playTo(LOOP_MS, T.fixing)
+      expect(screen.getByText('What should we build today?')).toBeInTheDocument() // it went round
+      expect(requests).toEqual([])
+      expect(fetches).not.toHaveBeenCalled()
+    } finally {
+      server.events.removeListener('request:start', log)
+      fetches.mockRestore()
+    }
+  }, 30_000)
 })
 
 describe('the status pill and the way in', () => {

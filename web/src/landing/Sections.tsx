@@ -1,7 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import type { Repo } from '@/api/types'
-import { Glyph, IC } from '@/chat/icons'
-import { PrActionsContext } from '@/chat/prActions'
+import { PrActionsContext, type PrActions } from '@/chat/prActions'
 import { PrCard } from '@/chat/PrCard'
 import { ProposalCard } from '@/chat/ProposalCard'
 import { emptyState, reduce, view, type Item } from '@/chat/reduce'
@@ -9,15 +7,19 @@ import { WorkBlock } from '@/chat/WorkBlock'
 import { Workspace } from '@/chat/Workspace'
 import { GitHubIcon } from '@/components/brand'
 import { RepoIcon } from '@/components/icons'
+import { IssueChip } from '@/composer/IssueChip'
+import { IssueMenu } from '@/composer/IssueMenu'
 import { MentionMenu } from '@/composer/MentionMenu'
 import { ModelMenu } from '@/composer/ModelMenu'
-import { BRANCH, MODELS, REPO } from '@/fixtures/session.js'
+import { MODELS } from '@/fixtures/session.js'
 import { cn } from '@/utils/cn'
+import { filterIssues } from '@/utils/issue'
 import { CODE_URL } from './config'
-import { finalFrame, frameAt, PROPOSED_AT } from './replay'
+import { finalFrame, frameAt, T } from './replay'
+import { BRANCH, ISSUE, ISSUES, REPO, REPOS, TYPED_QUERY } from './scene'
 
 const noop = () => {}
-const STILL = { create: () => new Promise<never>(() => {}), decline: () => new Promise<never>(() => {}) }
+const STILL: PrActions = { create: () => new Promise<never>(() => {}), decline: () => new Promise<never>(() => {}), fixCi: () => new Promise<never>(() => {}) }
 
 /** The replay's session at `t` ms (Infinity: all of it), as the app's view; it began `t` ago. */
 function useViewAt(t: number) {
@@ -49,12 +51,6 @@ function Vignette({ children, className }: { children: ReactNode; className?: st
     </div>
   )
 }
-
-const ago = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString()
-const REPOS: Repo[] = [
-  { full_name: REPO, private: true, updated_at: ago(2), default_branch: 'main', installation_id: 1 },
-  { full_name: 'Taufik041/portfolio', private: false, updated_at: ago(72), default_branch: 'main', installation_id: 1 },
-]
 
 // --- the stack marquee ---------------------------------------------------------------------
 
@@ -104,8 +100,8 @@ function Step({ n, title, body, reverse, mobile, children }: {
 }
 
 export function HowItWorks({ mobile }: { mobile: boolean }) {
-  const working = useViewAt(9_500)
-  const proposed = useViewAt(PROPOSED_AT + 100)
+  const working = useViewAt(T.passed + 300)
+  const proposed = useViewAt(T.proposed + 100)
   const block = find(working.items, 'work')
   const proposal = find(proposed.items, 'proposal')
   return (
@@ -119,7 +115,7 @@ export function HowItWorks({ mobile }: { mobile: boolean }) {
             </div>
             <div className="mt-2.5 rounded-[18px] border border-solid border-line bg-card px-3.5 py-3 text-[15px]">
               <span className="mr-1.5 inline-flex items-center gap-1 rounded-md bg-accent-bg px-1.5 font-medium text-accent">
-                <RepoIcon size={12} />@otto_test
+                <RepoIcon size={12} />@shop
               </span>
               fix the failing tests
             </div>
@@ -129,7 +125,7 @@ export function HowItWorks({ mobile }: { mobile: boolean }) {
               <WorkBlock block={block.block} repo={REPO} branch={BRANCH} selected={null} onOpenStep={noop} onOpenWorkspace={noop} />
             )}
           </Step>
-          <Step n="03" title="Approve the PR" body="Nothing reaches GitHub until you say so." mobile={mobile}>
+          <Step n="03" title="Approve the PR" body="Nothing reaches GitHub until you say so. Then Otto watches its CI." mobile={mobile}>
             {proposal && <ProposalCard sessionId="still" proposal={proposal.proposal} state="proposed" live={false} />}
           </Step>
         </div>
@@ -160,11 +156,13 @@ function Tile({ big, title, body, mobile, children, art }: {
 }
 
 export function Bento({ mobile }: { mobile: boolean }) {
-  const changes = useViewAt(11_500)
-  const opened = useViewAt(Infinity)
-  const setup = useViewAt(0)
-  const pr = find(opened.items, 'pr')
+  const changes = useViewAt(T.diff + 100)
+  const failed = useViewAt(T.ciFailed + 100)
+  const setup = useViewAt(T.send)
+  const pr = find(failed.items, 'pr')
   const sandbox = find(setup.items, 'work')
+  // the tile is narrow: the titles, without their labels
+  const picked = filterIssues(ISSUES, TYPED_QUERY).map((i) => ({ ...i, labels: [] }))
   return (
     <section className={cn('border-0 border-b border-solid border-hair', mobile ? 'py-[72px]' : 'py-[120px]')}>
       <div className={cn('mx-auto max-w-[1200px]', mobile ? 'px-5' : 'px-12')}>
@@ -176,15 +174,18 @@ export function Bento({ mobile }: { mobile: boolean }) {
                 state={{ tab: 'changes', path: null, entry: null }} onState={noop} onClose={noop} mobile={false} />
             </div>
           </Tile>
-          <Tile big mobile={mobile} title="You approve every PR" body="Otto proposes the change. It only opens on GitHub when you click Create."
+          <Tile big mobile={mobile} title="Reads your CI" body="Sees the checks on its pull request and fixes failures in one click."
             art="items-center justify-center p-6 min-h-[244px]">
-            <div className="w-full max-w-[420px]">{pr && <PrCard pr={pr.pr} onSeeChanges={noop} />}</div>
+            <div className="w-full max-w-[420px] [&_section]:!animate-none">
+              {pr && <PrCard pr={pr.pr} ci={pr.ci} sessionId="still" live={false} onSeeChanges={noop} />}
+            </div>
           </Tile>
-          <Tile mobile={mobile} title="Pick up weeks later" body="A follow-up adds commits to the same PR." art="flex-col justify-center gap-2.5 p-[22px] min-h-[180px]">
-            <div className="max-w-[90%] self-end rounded-2xl bg-card px-3.5 py-2 text-[13.5px] shadow-[0_0_0_1px_var(--hair)]">also add a test for exactly 11 units</div>
-            <div className="flex items-center gap-2 text-[13px] text-muted">
-              <Glyph d={IC.pr} size={14} className="text-ok" />
-              Pull request updated · #9 · <span className="font-mono text-ok">+4</span>
+          <Tile mobile={mobile} title="Fix issues" body="Type # to pick an issue. The pull request closes it." art="flex-col justify-center gap-2.5 p-[22px] min-h-[180px]">
+            <div className="w-full rounded-[14px] border border-solid border-line bg-card p-1.5">
+              <IssueMenu repo={REPO} issues={picked} query={TYPED_QUERY} active={picked.findIndex((i) => i.number === ISSUE.number)} mobile={false} onPick={noop} onHover={noop} />
+            </div>
+            <div className="flex min-w-0 rounded-[18px] border border-solid border-line bg-card px-3 py-2.5">
+              <IssueChip issue={ISSUE} onRemove={noop} />
             </div>
           </Tile>
           <Tile mobile={mobile} title="Your choice of model" body="Switch models in the composer, even mid-chat." art="items-center p-[22px] min-h-[180px]">

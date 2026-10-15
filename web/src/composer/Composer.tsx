@@ -7,10 +7,10 @@ import { messageOf } from '@/api/errors'
 import { keys, useHealth, useIssues, useModels, useRepos } from '@/api/queries'
 import type { Issue, Repo } from '@/api/types'
 import { rememberReturn, useMe } from '@/auth/auth'
-import { Glyph, IC } from '@/chat/icons'
 import { RepoIcon } from '@/components/icons'
 import { activeIssue, filterIssues, typedIssue } from '@/utils/issue'
 import { activeMention, extractRepo, filterRepos, removeMention, shortName, type ActiveMention } from '@/utils/mention'
+import { IssueChip } from './IssueChip'
 import { IssueMenu } from './IssueMenu'
 import { MentionMenu, NoRepos } from './MentionMenu'
 import { ModelMenu } from './ModelMenu'
@@ -388,26 +388,13 @@ export function Composer({
               </span>
             )}
             {picked && (
-              <span
-                title={picked.title}
-                className="inline-flex h-7 min-w-0 max-w-full shrink items-center gap-1 rounded-lg bg-accent-bg pl-[9px] pr-1.5 text-[15px] font-medium text-accent"
-              >
-                <Glyph d={IC.issue} size={13} width={1.9} className="shrink-0" />
-                <span className="shrink-0">#{picked.number}</span>
-                <span className="min-w-0 max-w-[260px] truncate font-normal">{picked.title}</span>
-                <button
-                  type="button"
-                  title="Remove"
-                  aria-label={`Remove issue #${picked.number}`}
-                  onClick={() => {
-                    setIssue(null)
-                    ta.current?.focus()
-                  }}
-                  className="flex size-[18px] shrink-0 items-center justify-center rounded-[5px] border-0 bg-transparent p-0 text-inherit"
-                >
-                  <X size={11} strokeWidth={2.4} />
-                </button>
-              </span>
+              <IssueChip
+                issue={picked}
+                onRemove={() => {
+                  setIssue(null)
+                  ta.current?.focus()
+                }}
+              />
             )}
             <textarea
               ref={ta}
