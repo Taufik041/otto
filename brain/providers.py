@@ -49,6 +49,10 @@ async def _unless_stopped(aw, stopped):
             task.cancel()
 
 
+class RateLimited(LLMError):
+    """The provider rate-limited the call more times than the caller allows (rate_limit_tries)."""
+
+
 class ProviderUnusable(LLMError):
     """No key of the provider can serve this model, and no wait would change that: reason is
     "quota" (out of credit), "auth" (a bad key) or "model" (an unknown model; model is set)."""
@@ -230,7 +234,7 @@ def reset_delay(source) -> float | None:
     return None
 
 
-async def complete(provider, record, stopped=None, **kwargs):
+async def complete(provider, record, stopped=None, rate_limit_tries=None, rate_limit_wait=0.0, **kwargs):
     """One chat completion from `provider`, rotating between its keys.
 
     A key that is rate limited, answers without a usable choice, or fails with a server error
@@ -245,12 +249,16 @@ async def complete(provider, record, stopped=None, **kwargs):
     never the key).
 
     stopped(), if given, is checked while the call waits: a stop ends it at once with Stopped.
+
+    rate_limit_tries, if given, changes what a 429 does: no key cools down (the limit is the
+    model's, not the key's); the call waits rate_limit_wait seconds and tries again, up to
+    rate_limit_tries more times, then raises RateLimited so the caller can go elsewhere.
     """
     pool = _pool(provider)
     model = kwargs.get("model")
     attempts = max(MIN_ATTEMPTS, 2 * len(pool["keys"]))
     failed = None  # (index, reason) of the last failure
-    tries, problem, waited = 0, None, 0.0
+    tries, problem, waited, limited = 0, None, 0.0, 0
     while tries < attempts:
         i, wait = _next_key(pool, model)
         if wait > 0 and waited + wait > config.MODEL_WAIT_BUDGET_SECONDS:
@@ -274,6 +282,13 @@ async def complete(provider, record, stopped=None, **kwargs):
                 _drop(pool, i, model, reason)
                 failed = (i, reason)
                 continue  # no wait, and no attempt used: the next key, or ProviderUnusable
+            if isinstance(e, RateLimitError) and rate_limit_tries is not None:
+                limited += 1
+                if limited > rate_limit_tries:
+                    raise RateLimited(f"{provider} model {model!r} is rate limited") from None
+                print(f"[brain] {provider} {model}: rate limited; trying again in {rate_limit_wait:.0f}s", flush=True)
+                await _unless_stopped(sleep(rate_limit_wait), stopped)
+                continue
             if isinstance(e, RateLimitError):
                 reason, problem, cooldown = "rate_limited", "rate limited", reset_delay(e) or RATE_LIMIT_COOLDOWN
             elif isinstance(e, InternalServerError):

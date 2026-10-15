@@ -1,6 +1,7 @@
 import type { SessionEvent } from '@/chat/reduce'
 import { createClient } from './client'
 import type {
+  AutoReview,
   Created,
   GitHubStatus,
   Health,
@@ -80,6 +81,12 @@ export const api = {
   repos: () => client.request<Repo[]>('/repos'),
   /** the repo's open issues, for the # picker (403 issues_permission: the App can't read issues) */
   issues: (repo: string) => client.request<Issue[]>(`/repos/${repo.split('/').map(encodeURIComponent).join('/')}/issues`),
+  /** review the repo's new pull requests automatically (on this user's daily limit), or not */
+  setAutoReview: (repo: string, enabled: boolean) =>
+    client.request<{ full_name: string; auto_review: AutoReview | null }>(
+      `/repos/${repo.split('/').map(encodeURIComponent).join('/')}/auto-review`,
+      { method: 'PUT', body: { enabled } },
+    ),
   github: () => client.request<GitHubStatus>('/github'),
   unlinkInstallation: (id: number) => client.request<Unlinked>(`/github/installations/${id}`, { method: 'DELETE' }),
   usage: () => client.request<Usage>('/usage'),

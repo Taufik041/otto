@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { BarChart3, ChevronsUpDown, Ellipsis, FileText, LogOut, Palette, PanelLeft, Search, Settings, SquarePen, Trash2, X } from 'lucide-react'
+import { BarChart3, ChevronsUpDown, Ellipsis, FileText, LogOut, Palette, PanelLeft, ScanEye, Search, Settings, SquarePen, Trash2, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { client } from '@/api'
@@ -206,7 +206,12 @@ function ChatRow({
           aria-label={dot ? DOT_LABEL[dot] : undefined}
         />
         <span className="min-w-0 flex-1">
-          <span className={cn('block truncate text-sm', current ? 'font-medium' : 'font-normal')}>{chat.title}</span>
+          <span className={cn('flex items-center gap-1.5 text-sm', current ? 'font-medium' : 'font-normal')}>
+            {chat.kind === 'review' && (
+              <ScanEye size={14} strokeWidth={1.8} role="img" aria-label="Review" className="shrink-0 text-muted" />
+            )}
+            <span className="min-w-0 truncate">{chat.title}</span>
+          </span>
           {chat.repo && <span className="block truncate text-xs text-muted">{chat.repo}</span>}
         </span>
       </Link>

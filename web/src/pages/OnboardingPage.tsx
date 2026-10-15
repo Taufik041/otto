@@ -132,22 +132,28 @@ export function RepoRow({
   priv,
   meta,
   pad = 'px-[18px]',
+  children,
 }: {
   full: string
   first: boolean
   priv?: boolean
   meta?: string
   pad?: string
+  /** under the name: the repo's settings */
+  children?: React.ReactNode
 }) {
   const Icon = priv === false ? Globe : Lock
   return (
-    <div className={`flex items-center gap-3 py-3.5 ${pad}`} style={{ borderTop: first ? 'none' : '1px solid var(--hair)' }}>
-      {priv !== undefined && <Icon size={16} strokeWidth={1.6} className="shrink-0 text-muted" />}
-      <span className="min-w-0 flex-1 truncate text-[15px]">
-        <span className="text-muted">{ownerOf(full)}/</span>
-        {shortName(full)}
-      </span>
-      {meta && <span className="shrink-0 text-[12.5px] text-muted">{meta}</span>}
+    <div className={`py-3.5 ${pad}`} style={{ borderTop: first ? 'none' : '1px solid var(--hair)' }}>
+      <div className="flex items-center gap-3">
+        {priv !== undefined && <Icon size={16} strokeWidth={1.6} className="shrink-0 text-muted" />}
+        <span className="min-w-0 flex-1 truncate text-[15px]">
+          <span className="text-muted">{ownerOf(full)}/</span>
+          {shortName(full)}
+        </span>
+        {meta && <span className="shrink-0 text-[12.5px] text-muted">{meta}</span>}
+      </div>
+      {children}
     </div>
   )
 }

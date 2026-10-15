@@ -114,6 +114,9 @@ def launch_settings(monkeypatch):
     monkeypatch.setattr(config, "LANDING_ORIGINS", [])
     monkeypatch.setattr(config, "PRODUCTION", False)
     monkeypatch.setattr(config, "GITHUB_CALLBACK_URL", "")
+    monkeypatch.setattr(config, "REVIEW_REACTION", False)
+    monkeypatch.setattr(config, "REVIEW_MODEL", "")  # reviews on the user's default; tests set it
+    monkeypatch.setattr(config, "REVIEW_MAX_TOKENS", 2000)
     limits.reset()
     # no email goes anywhere: no key (development prints); tests that send install a fake
     from shared import email

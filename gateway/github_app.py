@@ -565,5 +565,11 @@ def unlink_installation(installation_id: int, user: User = Depends(auth.current_
 
 @router.get("/repos")
 def repos(user: User = Depends(auth.current_user)):
-    """The user's repos across their installations, for the @ mention: newest first."""
-    return user_repos(user.id)
+    """The user's repos across their installations, for the @ mention: newest first. auto_review:
+    who turned on reviewing its new pull requests ({by, mine}), or None while it's off."""
+    from gateway.reviews import setting_json
+    from shared.review import auto_reviews
+
+    found = user_repos(user.id)
+    on = auto_reviews([r["full_name"] for r in found])
+    return [{**r, "auto_review": setting_json(on.get(r["full_name"].lower()), user)} for r in found]

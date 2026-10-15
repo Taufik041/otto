@@ -73,3 +73,36 @@ export function mainRun() {
     .status('done')
 }
 
+
+export const REVIEW_PR = {
+  repo: 'Taufik041/otto_test', number: 7, title: 'Add a widget', url: 'https://github.com/Taufik041/otto_test/pull/7',
+  author: 'contributor', head: 'feature', base: 'main', head_sha: 'c0ffee', trigger: 'mention', requested_by: 'taufik',
+  additions: 2, deletions: 1, total_files: 2, truncated: false, skipped: [{ path: 'package-lock.json', reason: 'lockfile' }],
+  files: [{ path: 'app/widget.py', status: 'modified', additions: 2, deletions: 1, patch: '@@ -1,3 +1,4 @@' }],
+}
+export const REVIEW = {
+  summary: 'Adds a widget. **One problem.**',
+  comments: [{
+    path: 'app/widget.py', line: 3, body: 'This can be `None`.',
+    excerpt: [{ line: 2, text: 'w = get()', added: true }, { line: 3, text: 'return w.size', added: true }],
+  }],
+  dropped: 1,
+  usage: { prompt_tokens: 1900, completion_tokens: 160 },
+}
+
+/** A review chat: "@ottoci review" on GitHub, the brain's review, and (posted) it on GitHub. */
+export function reviewRun(posted = true) {
+  const l = log()
+    .add('session.created', { task: 'Review Taufik041/otto_test#7: Add a widget', repo: null, model: 'openrouter:openrouter/free', kind: 'review' })
+    .status('provisioning')
+    .add('review.requested', REVIEW_PR)
+    .status('queued')
+    .status('running')
+    .msg('system', 'You are Otto...')
+    .add('llm.message', { message: { role: 'user', content: '<untrusted kind="pull-request">…</untrusted>' }, review_request: true, display: 'Review #7' })
+    .add('review.drafted', REVIEW)
+    .add('llm.message', { message: { role: 'assistant', content: 'Adds a widget.\n\n**app/widget.py:3**: This can be `None`.' }, review: true })
+    .status('done')
+  if (posted) l.add('review.posted', { review_id: 9001, url: 'https://github.com/Taufik041/otto_test/pull/7#pullrequestreview-9001', comments: 1 })
+  return l
+}

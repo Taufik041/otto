@@ -280,13 +280,13 @@ def connected(client, fake_github, me):
 def test_repos_merges_every_installation_newest_first(client, connected):
     assert client.get("/repos").json() == [
         {"full_name": "Taufik041/otto_test", "private": True, "updated_at": "2026-09-29T10:00:00Z",
-         "default_branch": "main", "installation_id": INST},
+         "default_branch": "main", "installation_id": INST, "auto_review": None},
         {"full_name": "some-org/api", "private": True, "updated_at": "2026-09-28T10:00:00Z",
-         "default_branch": "main", "installation_id": 777},
+         "default_branch": "main", "installation_id": 777, "auto_review": None},
         {"full_name": "Taufik041/portfolio", "private": False, "updated_at": "2026-09-27T10:00:00Z",
-         "default_branch": "main", "installation_id": INST},
+         "default_branch": "main", "installation_id": INST, "auto_review": None},
         {"full_name": "Taufik041/petal", "private": True, "updated_at": "2026-09-20T10:00:00Z",
-         "default_branch": "trunk", "installation_id": INST},
+         "default_branch": "trunk", "installation_id": INST, "auto_review": None},
     ]
 
 

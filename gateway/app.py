@@ -24,12 +24,12 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.exc import IntegrityError
 
 from brain.bus import bus_call, start_consumer, stop_consumer
-from gateway import auth, ci as gci, errors, github_app, issues, limits, live, tokens, workers
+from gateway import auth, ci as gci, errors, github_app, issues, limits, live, reviews, tokens, workers
 from orchestrator import sandbox
-from shared import ci, config, email, health, usage
+from shared import ci, config, email, health, review, usage
 from shared.accounts import deactivate, prune_unconfirmed, purge_deleted
-from shared.bus import (CI_QUEUE, SESSIONS_QUEUE, actions_queue, chat_job, connect_with_backoff, results_queue, resume_job,
-                        retry_job, start_job)
+from shared.bus import (CI_QUEUE, REVIEWS_QUEUE, SESSIONS_QUEUE, actions_queue, chat_job, connect_with_backoff,
+                        results_queue, resume_job, retry_job, review_job, reviewed_job, start_job)
 from shared.db import get_db, get_engine, init_db
 from shared.events import append_event, client_message_seq, load_events, redact
 from shared.models import User, as_utc, utcnow
@@ -44,6 +44,7 @@ IDLE = ("pending", "done", "failed", "interrupted", "stopped", "limited")  # sta
 RETRYABLE = ("failed", "interrupted")  # a turn that ended in an error, which POST .../retry runs again
 REPO_NAME = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+")
 NEW_REPO = "Start a new chat for a different repo."
+REVIEW_ONLY = "A review chat can't change code yet. Start a new chat and mention the repo with @."
 UNAVAILABLE = "Unavailable right now. Try again later."  # the picker's hint for a model without a key
 DAY = 24 * 3600  # seconds between sweeps of unconfirmed sign-ups and deleted accounts
 BUS_STARTUP_WAIT = 5  # seconds the gateway waits for RabbitMQ before it serves without it
@@ -116,7 +117,7 @@ async def lifespan(app):
         print(f"[gateway] marked {len(swept)} stale session(s) interrupted: {', '.join(swept)}", flush=True)
     # RabbitMQ is waited for only briefly: without it the gateway still serves (GET /health says
     # "bus": "down"), and whatever needs it answers 503 bus_unavailable until it connects
-    app.state.conn = app.state.ch = app.state.ci_consumer = None
+    app.state.conn = app.state.ch = app.state.ci_consumer = app.state.review_consumer = None
     bus = asyncio.create_task(_connect_bus(app))
     await asyncio.wait({bus}, timeout=BUS_STARTUP_WAIT)
     listener = None
@@ -130,7 +131,8 @@ async def lifespan(app):
         app.state.create_lock = asyncio.Lock()
         yield
     finally:
-        for task in (bus, *sweepers, *([app.state.ci_consumer] if app.state.ci_consumer else [])):
+        consumers = [t for t in (app.state.ci_consumer, app.state.review_consumer) if t]
+        for task in (bus, *sweepers, *consumers):
             task.cancel()
         gci.stop_watching()
         if listener:
@@ -148,6 +150,9 @@ async def _connect_bus(app):
     await ch.declare_queue(SESSIONS_QUEUE, durable=True)
     # CI news (pushes the brain announces, GitHub's webhooks), applied by this gateway: gateway/ci.py
     app.state.ci_consumer = asyncio.create_task(gci.consume(await ch.declare_queue(CI_QUEUE, durable=True)))
+    # review requests from GitHub, and the brain's reviews to post: gateway/reviews.py
+    app.state.review_consumer = asyncio.create_task(
+        reviews.consume(await ch.declare_queue(REVIEWS_QUEUE, durable=True), ch))
     app.state.ch = ch
 
 
@@ -170,6 +175,7 @@ app.include_router(auth.router)
 app.include_router(github_app.router)
 app.include_router(gci.router)
 app.include_router(issues.router)
+app.include_router(reviews.router)
 app.add_exception_handler(errors.Refused, errors.handle)
 
 
@@ -292,6 +298,8 @@ async def _facts(row) -> dict:
     """What a plain chat's model is told is true right now: whether the workers are up (as /health
     says) and the names of the user's repos (left out if GitHub can't say)."""
     facts = {"workers": "online" if await workers.online() else "offline"}
+    if row.kind == "review" and (req := review.latest(row.id, review.EVENT_REQUESTED)):
+        facts["review"] = {"repo": req["repo"], "number": req["number"]}
     try:
         facts["repos"] = [r["full_name"] for r in await asyncio.to_thread(github_app.user_repos, row.user_id)]
     except github_app.GitHubError as e:
@@ -345,7 +353,7 @@ def _summary(row, ends=None, cis=None) -> dict:
     cis = ci.states([row.id]) if cis is None else cis
     found = cis.get(row.id)
     return {"id": row.id, "title": row.title, "status": row.status, "repo": row.repo, "model": row.model,
-            "pr_url": row.pr_url, "updated_at": as_utc(row.updated_at),
+            "kind": row.kind, "pr_url": row.pr_url, "updated_at": as_utc(row.updated_at),
             "attention": attention(row, ends.get(row.id), found), "ci": found[1] if found else None}
 
 
@@ -709,6 +717,8 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.verified
     # the model this message would run on: one asked for, else the chat's own
     _usable(body.model) if body.model is not None else _healthy(row.model)
     _within_limit(user)
+    if row.kind == "review" and (body.repo or body.issue):
+        raise errors.Refused(409, "review_chat", REVIEW_ONLY)
     if body.repo and row.repo and body.repo.lower() != row.repo.lower():
         raise HTTPException(409, NEW_REPO)
     if row.repo or body.repo:
@@ -819,6 +829,8 @@ async def retry(sid: str, body: Retry | None = None, user: User = Depends(auth.v
     error card's Retry, optionally on another model. Other statuses are 409."""
     ch = _channel()
     row = _row(sid, user)
+    if row.kind == "review" and row.status in RETRYABLE and review.latest(sid, review.EVENT_DRAFTED):
+        return await _retry_review(ch, sid)
     model = body.model if body else None
     _usable(model) if model is not None else _healthy(row.model)  # the model the retry would run on
     _within_limit(user)
@@ -840,8 +852,20 @@ async def retry(sid: str, body: Retry | None = None, user: User = Depends(auth.v
             raise
         except Exception as e:
             _fail(sid, "sandbox", e)
-    await _enqueue(ch, sid, retry_job(sid))
+    # a review chat whose review was never written: write it (it's posted when it is)
+    unwritten = row.kind == "review" and review.latest(sid, review.EVENT_DRAFTED) is None
+    await _enqueue(ch, sid, review_job(sid) if unwritten else retry_job(sid))
     return {"id": sid, "status": "queued"}
+
+
+async def _retry_review(ch, sid) -> dict:
+    """Retry in a review chat whose review is written: never a model call, never a second review
+    on GitHub. Posted already: the chat is rebuilt from what's stored. Not posted yet: it's
+    queued for posting (gateway/reviews.post looks on GitHub first)."""
+    if not await asyncio.to_thread(reviews.rebuild, sid):
+        await ch.default_exchange.publish(Message(json.dumps(reviewed_job(sid, "drafted")).encode(),
+                                                  delivery_mode=DeliveryMode.PERSISTENT), routing_key=REVIEWS_QUEUE)
+    return {"id": sid, "status": get_session(sid).status}
 
 
 @app.post("/sessions/{sid}/ci/fix", status_code=202)

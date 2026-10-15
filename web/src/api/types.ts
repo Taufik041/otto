@@ -51,7 +51,12 @@ export type Repo = {
   updated_at: string | null
   default_branch: string
   installation_id: number
+  /** reviewing its new pull requests automatically: who turned it on (mine: this user, on whose
+   *  daily limit they run); null while off. Older gateways leave it out */
+  auto_review?: AutoReview | null
 }
+
+export type AutoReview = { by: string | null; mine: boolean }
 
 export type SessionStatus =
   | 'pending'
@@ -71,6 +76,8 @@ export type SessionSummary = {
   repo: string | null
   model: string | null
   pr_url: string | null
+  /** "review": a pull request review asked for on GitHub (older gateways leave it out) */
+  kind?: 'chat' | 'review'
   updated_at: string
   /** the sidebar's dot: Otto works, or a turn ended done/failed (or CI failed) since the user last saw the chat */
   attention: 'working' | 'done' | 'failed' | null

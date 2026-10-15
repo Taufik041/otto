@@ -48,3 +48,14 @@ it('the sidebar wears a Beta pill beside the wordmark', async () => {
   await row()
   expect(screen.getByText('Beta')).toBeInTheDocument()
 })
+
+it('a review chat has the review icon; a plain chat has none', async () => {
+  server.use(http.get(`${API}/sessions`, () => HttpResponse.json([
+    { ...session({ id: 's1', title: 'Review: Add a widget' }), kind: 'review' },
+    { ...session({ id: 's2', title: 'A chat' }), kind: 'chat' },
+  ])))
+  renderSignedIn(<Sidebar mobile={false} collapsed={false} onToggle={() => {}} onNavigate={() => {}} />)
+  const review = (await screen.findByText('Review: Add a widget')).closest('a')!
+  expect(within(review).getByRole('img', { name: 'Review' })).toBeInTheDocument()
+  expect(within((await screen.findByText('A chat')).closest('a')!).queryByRole('img', { name: 'Review' })).not.toBeInTheDocument()
+})

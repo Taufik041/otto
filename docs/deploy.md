@@ -700,7 +700,12 @@ The gateway's environment (the workers need `DATABASE_URL`, `BUS_URL`, the provi
 | `OTTO_OPENAI_MODELS` | `gpt-4.1-mini,gpt-4.1` | The OpenAI models to offer, comma-separated. Without it, none are offered even with a key. Recreate the gateway and the worker after a change. |
 | `OTTO_ACCEPTING` | `true` | `false` pauses every signup; `GET /health` says `paused`. |
 | `OTTO_GITHUB_CALLBACK_URL` | `https://ottoci-api.taufi.dev/auth/github/callback` | Must be one of the App's callback URLs. |
-| `OTTO_GITHUB_WEBHOOK_SECRET` | 64 hex characters | The App's webhook secret, for CI results. See "CI results". Unset: `POST /github/webhook` answers 503 and CI is read by polling alone. |
+| `OTTO_GITHUB_WEBHOOK_SECRET` | 64 hex characters | The App's webhook secret, for CI results and review requests. See "CI results". Unset: `POST /github/webhook` answers 503, CI is read by polling alone, and no review is asked for. |
+| `OTTO_REVIEW_MODEL` | `openai:gpt-4.1-mini` (the default) | The model every review runs on, whatever the user's default. Empty: the user's default, else the server's. A model that isn't available (not in `/models`, or no key) falls back the same way, with a log line. See "Pull request reviews". |
+| `OTTO_OPENROUTER_MODELS` | `<OpenRouter model id>` | OpenRouter models to offer besides the router, by OpenRouter's id, comma-separated; each is `openrouter:<id>` in `/models` and in the picker. Name the review model here. |
+| `OTTO_REVIEW_RATE_LIMIT_WAIT` | `5` (the default) | Seconds a rate-limited (429) review model waits before its one retry; still limited, the review goes to the router (`openrouter:openrouter/free`). |
+| `OTTO_REVIEW_MAX_TOKENS` | `2000` (the default) | Output tokens each review answer may use. |
+| `OTTO_REVIEW_REACTION` | `false` | 👀 on "@ottoci review" comments. Leave it off unless the App has Issues: Read and write. See "Pull request reviews". |
 | `GITHUB_APP_ID`, `GITHUB_APP_KEY_PATH`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_APP_SLUG` | | As in `docs/dev.md`. |
 | `OTTO_SANDBOX_KUBECONFIG` | `/etc/otto/sandbox.kubeconfig` | See "The sandbox cluster". |
 | `OTTO_SANDBOX_NAMESPACE` | `otto-sandboxes` | |
@@ -711,7 +716,7 @@ The gateway's environment (the workers need `DATABASE_URL`, `BUS_URL`, the provi
 
 ### The GitHub App
 
-As in `docs/dev.md`, except that the webhook is on for CI results ("CI results" has the exact
+As in `docs/dev.md`, except that the webhook is on for CI results and reviews ("CI results" has the exact
 settings), and the **Callback URL** is the gateway's public one,
 `https://ottoci-api.taufi.dev/auth/github/callback`. Keep `http://localhost:8000/auth/github/callback`
 as a second callback URL if the same App serves development. `OTTO_GITHUB_CALLBACK_URL` picks the
@@ -822,6 +827,175 @@ What the gateway refuses, with nothing stored and no turn started:
 | An issue with no repo mentioned | 422 `issue_needs_repo` |
 
 A closed issue is allowed: its card says it's closed, and the agent is told so.
+
+## Pull request reviews
+
+Someone comments `@ottoci review` (the App's slug, `GITHUB_APP_SLUG`, as whole words, any case)
+on a pull request, and Otto posts one code review: a summary and up to 10 inline comments, always
+as event `COMMENT` (never Approve or Request changes). It reads only the diff (no sandbox, no code
+run), skips lockfiles, generated, minified and binary files, and reads at most 40 files and about
+60 KB of diff (the summary says when it stopped early). The review also shows in Otto, in a chat
+titled "Review: <PR title>" where the user can ask follow-up questions (that chat can't change
+code). Settings → GitHub has a per-repo switch, **Review new pull requests automatically** (off
+by default), which reviews pull requests when they are opened or marked ready for review (never
+drafts, never new pushes) on the daily limit of whoever turned it on.
+
+Who can ask: the repo's owner, a member or a collaborator (the comment's `author_association`),
+whose GitHub account is linked to an Otto account that has the repo in its installations. Bots
+(our own App included) and anyone else are ignored without a reply; the gateway logs why
+(`[review] ignored ...`). Over the daily limit, Otto comments once: "Otto's daily limit is
+reached. Try again tomorrow."
+
+### The GitHub App's settings for reviews
+
+On GitHub, open **Settings** → **Developer settings** → **GitHub Apps** → your App → **Edit**.
+
+No permission changes: the existing ones cover reviews. Pull requests (Read and write) covers
+reading the pull request and its files, posting the review (`POST /repos/{repo}/pulls/{n}/reviews`)
+and the limit comment (`POST /repos/{repo}/issues/{n}/comments`, which takes Issues or Pull
+requests write). Issues stays **Read-only**.
+
+1. **Permissions & events** → **Subscribe to events**: tick **Issue comment** (it needs Issues
+   read, which the App has) and **Pull request** (it needs Pull requests read, which it has). Keep
+   the four CI events.
+2. The webhook as in "CI results" (Active, `https://ottoci-api.taufi.dev/github/webhook`, the
+   secret). Reviews need it: unlike CI there's no polling fallback, so without the webhook no
+   review is ever asked for.
+3. Click **Save changes**. New events ask nothing of the installations: no permission to accept.
+
+**The 👀 reaction is off** (`OTTO_REVIEW_REACTION`, default `false`): with it off, Otto makes no
+reaction call at all. GitHub files reactions on a pull request's conversation comments under
+Issues (`POST /repos/{repo}/issues/comments/{id}/reactions` needs **Issues: Read and write**;
+Pull requests write doesn't cover it). To turn it on, change the App's Issues permission to
+**Read and write**, have every installation accept it, then set `OTTO_REVIEW_REACTION=true` and
+recreate the gateway. Where the permission isn't accepted, the reaction fails, the gateway logs
+`no 👀 on comment ...`, and the review still happens.
+
+### How the gateway takes them
+
+- `POST /github/webhook` checks `X-Hub-Signature-256` against the secret in constant time
+  (401 when it's missing or wrong), takes each `X-GitHub-Delivery` once (`webhook_deliveries`,
+  kept a week; a redelivery is a no-op), puts a small message on the `otto.ci` queue, and answers
+  202 at once. The gateway's own consumer applies it.
+- A delivery maps to a chat by its commit: the chat whose latest push (`sessions.head_sha`) is
+  that SHA, whether CI ran on the push or on the pull request. Anything else is ignored.
+- Late or repeated news never moves CI backwards: a completed check stays completed, an older
+  status never replaces a newer one, and a rerun replaces the run it reruns. A new push starts
+  over for the new commit.
+- CI still queued or running with no change for 2 hours shows as "CI status unknown", with a
+  "Check again" link that reads it from GitHub once; nothing polls it any more.
+- Fix CI (`POST /sessions/{id}/ci/fix`) is a follow-up turn like any other: refused while the
+  workers are offline, counted against the daily limit, one turn per chat at a time. The failing
+  jobs' logs are trimmed to their tail and the lines around errors, about 20 KB in all, and the
+  agent is told they're untrusted data. Otto never starts it by itself.
+
+## GitHub issues
+
+In a repo chat, typing **#** opens a picker with the repo's open issues; a typed `#12` or
+`issue #12` works too. Otto reads the issue (title, body, labels, state and the latest 10
+comments, about 8 KB in all) and gives it to the agent as untrusted data, the way Fix CI gives it
+the CI logs. The thread shows the issue's card, never its text. The pull request Otto proposes
+ends with `Fixes #12`, so merging it closes the issue, and GitHub lists the PR on the issue's page
+by itself: Otto never writes to issues.
+
+### The GitHub App's setting for issues
+
+On GitHub, open **Settings** → **Developer settings** → **GitHub Apps** → your App → **Edit** →
+**Permissions & events** → **Repository permissions** → **Issues**: **Read-only**. Click **Save
+changes**.
+
+That's all: no write access, and no new events to subscribe to. As with CI, **every installation
+must accept the new permission** (GitHub emails each account that installed the App, and shows a
+banner on `github.com/settings/installations/<id>`, or the organization's). Until it's accepted,
+the picker and a message naming an issue say "Allow Otto to read issues: update the app's
+permissions on GitHub." and no turn starts.
+
+What the gateway refuses, with nothing stored and no turn started:
+
+| Case | Answer |
+|---|---|
+| The number is a pull request | 409 `issue_is_pull_request` |
+| No such issue in the repo | 404 `issue_not_found` |
+| The App can't read issues (the permission is missing or not accepted yet) | 403 `issues_permission` |
+| Issues are turned off in the repo | 409 `issues_disabled` |
+| An issue with no repo mentioned | 422 `issue_needs_repo` |
+
+A closed issue is allowed: its card says it's closed, and the agent is told so.
+
+## Pull request reviews
+
+Someone comments `@ottoci review` (the App's slug, `GITHUB_APP_SLUG`, as whole words, any case)
+on a pull request, and Otto posts one code review: a summary and up to 10 inline comments, always
+as event `COMMENT` (never Approve or Request changes). It reads only the diff (no sandbox, no code
+run), skips lockfiles, generated, minified and binary files, and reads at most 40 files and about
+60 KB of diff (the summary says when it stopped early). The review also shows in Otto, in a chat
+titled "Review: <PR title>" where the user can ask follow-up questions (that chat can't change
+code). Settings → GitHub has a per-repo switch, **Review new pull requests automatically** (off
+by default), which reviews pull requests when they are opened or marked ready for review (never
+drafts, never new pushes) on the daily limit of whoever turned it on.
+
+Who can ask: the repo's owner, a member or a collaborator (the comment's `author_association`),
+whose GitHub account is linked to an Otto account that has the repo in its installations. Bots
+(our own App included) and anyone else are ignored without a reply; the gateway logs why
+(`[review] ignored ...`). Over the daily limit, Otto comments once: "Otto's daily limit is
+reached. Try again tomorrow."
+
+### The GitHub App's settings for reviews
+
+On GitHub, open **Settings** → **Developer settings** → **GitHub Apps** → your App → **Edit**.
+
+1. **Permissions & events** → **Repository permissions** → **Issues**: change **Read-only** to
+   **Read and write**. That's needed for the 👀 reaction only: GitHub files reactions on a pull
+   request's conversation comments under Issues
+   (`POST /repos/{repo}/issues/comments/{id}/reactions` needs Issues: write); Pull requests: write
+   doesn't cover it. Without it, the reaction fails, the gateway logs `no 👀 on comment ...`, and
+   the review still happens. Otto writes nothing else to issues.
+2. Keep **Pull requests: Read and write**. It covers reading the pull request and its files,
+   posting the review (`POST /repos/{repo}/pulls/{n}/reviews`) and the limit comment
+   (`POST /repos/{repo}/issues/{n}/comments`, which takes Issues or Pull requests write).
+3. **Subscribe to events**: tick **Issue comment** (needs Issues read, which the App has) and
+   **Pull request** (needs Pull requests read, which it has). Keep the four CI events.
+4. The webhook as in "CI results" (Active, `https://ottoci-api.taufi.dev/github/webhook`, the
+   secret). Reviews need it: unlike CI there's no polling fallback, so without the webhook no
+   review is ever asked for.
+5. Click **Save changes**. **Every installation must accept the new Issues permission** (the
+   banner on `github.com/settings/installations/<id>`, or the organization's). Until then,
+   reviews still work, without the 👀.
+
+### How the gateway takes them
+
+- `POST /github/webhook` takes `issue_comment` and `pull_request` deliveries like the CI ones
+  (signed, each `X-GitHub-Delivery` once), keeps only a new comment asking for a review or a
+  non-draft pull request `opened` / `ready_for_review`, puts it on the `otto.reviews` queue and
+  answers 202 at once.
+- The gateway's consumer checks who asked, then claims the request once in `pr_reviews` (keyed by
+  the comment id, or by repo, number and head commit for auto-review), so a redelivery never
+  reviews or posts twice. It reacts 👀 (only with `OTTO_REVIEW_REACTION` on), checks the daily limit, reads the pull request and its
+  files with the installation token, and makes the review chat, queued for a brain worker.
+- The brain asks `OTTO_REVIEW_MODEL` (default `openai:gpt-4.1-mini`: it keeps to JSON-only
+  answers and doesn't spend tokens reasoning; empty or unavailable, the user's default, else the
+  server's), at most `OTTO_REVIEW_MAX_TOKENS` (2000) output tokens per answer, in JSON mode
+  (`response_format`; OpenRouter drops it for models without it). Without an OpenAI key, set
+  `OTTO_REVIEW_MODEL=openrouter:<id>` and name the same `<id>` in `OTTO_OPENROUTER_MODELS`: that
+  model gets reasoning turned off (`reasoning: {effort: "none"}`, so pick one where it isn't
+  mandatory). A 429 from it is retried once after `OTTO_REVIEW_RATE_LIMIT_WAIT` seconds; still
+  limited, the review goes to the router (the chat says "Switched to Otto"), with no reasoning
+  setting. The pull request is framed as
+  untrusted data, checks the JSON it answers (once more if it isn't valid; then a summary-only
+  review), drops inline comments that aren't on an added or context line of the diff (logged as
+  `[review] ... dropped N comment(s)`), logs the review's tokens (`[review] <chat>: N prompt + M
+  completion tokens on <model>`; the review chat's header card shows the total), and says
+  "drafted" on `otto.reviews`. Reviews count against the asking user's daily limit (auto-review:
+  the user who turned it on). An answer cut off at the cap is invalid JSON: the one retry, then
+  the summary-only fallback, handle it.
+- The gateway posts the review, moving the request to `posting` first so it posts at most once.
+  If GitHub refuses the inline comments (the pull request moved on), they go into the summary.
+  Each review's body ends with a hidden `<!-- otto-review:<key> -->`, and the gateway looks for
+  it on the pull request before posting, so a post GitHub took without answering is found, not
+  repeated.
+- **Retry** in a failed review chat never makes a second review: with the review written, it
+  makes no model call, rebuilds the chat from what's stored, and posts only if nothing was
+  posted yet (looking on GitHub first). Without one, it writes the review again.
 
 ## Signups
 
@@ -1291,6 +1465,9 @@ a minute without a broker, and its Job ends.
    at `https://ottoci-api.taufi.dev/github/webhook` with `OTTO_GITHUB_WEBHOOK_SECRET`, and
    Cloudflare's Bot Fight Mode off ("CI results").
    For issues: the Issues read-only permission, accepted by every installation ("GitHub issues").
+   For reviews: the **Issue comment** and **Pull request** events, and no permission changes
+   ("Pull request reviews"); a test `@ottoci review` on a pull request gets a review.
+   `OTTO_REVIEW_REACTION` stays off unless Issues is Read and write.
 5. `OTTO_ENV=production`, `FRONTEND_URL`, `AUTH_SECRET`, the signup settings.
 6. `curl https://ottoci-api.taufi.dev/health` says `"workers": "online"` and
    `"password_reset": true` (`RESEND_API_KEY` and `OTTO_NOTIFY_TO` set; "Email (Resend)").

@@ -1,4 +1,5 @@
 import { screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { Route, Routes } from 'react-router'
 import { rememberReturn } from '@/auth/auth'
@@ -69,5 +70,52 @@ describe('a GitHub link or install that failed', () => {
     rememberReturn('/welcome')
     page('/settings/github')
     expect(await screen.findByText('onboarding')).toBeInTheDocument()
+  })
+})
+
+describe('reviewing new pull requests automatically', () => {
+  const repo = (auto_review: unknown) => ({
+    full_name: 'Taufik041/otto_test', private: true, updated_at: '2026-10-01T00:00:00Z', default_branch: 'main',
+    installation_id: 555, auto_review,
+  })
+  const connected = (auto_review: unknown, put?: (enabled: boolean) => void) =>
+    server.use(
+      http.get(`${API}/github`, () => HttpResponse.json({ connected: true, login: 'taufik', avatar_url: null, installations: [{ id: 555, account_login: 'Taufik041', uninstall_url: 'u' }] })),
+      http.get(`${API}/repos`, () => HttpResponse.json([repo(auto_review)])),
+      http.put(`${API}/repos/Taufik041/otto_test/auto-review`, async ({ request }) => {
+        const { enabled } = (await request.json()) as { enabled: boolean }
+        put?.(enabled)
+        return HttpResponse.json({ full_name: 'Taufik041/otto_test', auto_review: enabled ? { by: 'taufik', mine: true } : null })
+      }),
+    )
+  const name = 'Review new pull requests automatically in Taufik041/otto_test'
+
+  it('is off by default, and turning it on saves it', async () => {
+    const puts: boolean[] = []
+    connected(null, (e) => puts.push(e))
+    page('/settings/github')
+    const toggle = await screen.findByRole('switch', { name })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByText('Review new pull requests automatically')).toBeInTheDocument()
+    await userEvent.click(toggle)
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'))
+    expect(puts).toEqual([true])
+  })
+
+  it('on: turning it off saves that', async () => {
+    const puts: boolean[] = []
+    connected({ by: 'taufik', mine: true }, (e) => puts.push(e))
+    page('/settings/github')
+    const toggle = await screen.findByRole('switch', { name })
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    await userEvent.click(toggle)
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'))
+    expect(puts).toEqual([false])
+  })
+
+  it('turned on by someone else: it says who', async () => {
+    connected({ by: 'octo', mine: false })
+    page('/settings/github')
+    expect(await screen.findByText('Turned on by @octo')).toBeInTheDocument()
   })
 })

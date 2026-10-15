@@ -25,7 +25,8 @@ def fake_llm(monkeypatch, responses):
     class Completions:
         async def create(self, **kw):
             requests.append({"messages": json.loads(json.dumps(kw["messages"])), "tools": kw.get("tools"),
-                             "model": kw.get("model")})
+                             "model": kw.get("model"), "max_tokens": kw.get("max_tokens"),
+                             "response_format": kw.get("response_format"), "extra_body": kw.get("extra_body")})
             r = responses.pop(0)
             if isinstance(r, BaseException):
                 raise r
