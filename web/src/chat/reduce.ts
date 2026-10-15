@@ -25,6 +25,8 @@
  * | session.titled             | {title, source}                             | not in the thread: useSessionView updates the chat's title |
  * | ci.updated                 | {sha, state, checks, url, pushed_at, reason?} | the CI row on the latest PR card; a quiet divider when CI finishes |
  * | llm.message (user, Fix CI) | {message, display, ci_fix}                  | the user message shows `display` ("Fix CI: tests"), not the logs |
+ * | llm.message (user, issue)  | {message, display, issue}                   | the user message shows `display` and the issue's card, never the issue's text |
+ * | pr.proposed                | {title, body, head, base, …, issues?}       | the proposal; with issues, it and its PR card say "Closes #12" |
  */
 
 export type SessionEvent = { seq: number; ts: string; type: string; payload: Record<string, unknown> }
@@ -81,6 +83,11 @@ export type WorkBlock = {
   committed: boolean
 }
 
+/** An issue a message linked (the # picker): its card, never its text */
+export type IssueRef = { number: number; title: string; state: 'open' | 'closed'; labels: string[]; url: string | null; repo: string | null }
+/** An issue the pull request closes when merged ("Fixes #12" in its body) */
+export type IssueLink = { number: number; url: string | null }
+
 export type PrCard = {
   id: string
   updated: boolean
@@ -96,6 +103,8 @@ export type PrCard = {
   tests: TestSummary | null
   /** "See changes" opens the first edited file */
   firstFile: string | null
+  /** the issues it closes when merged */
+  issues: IssueLink[]
 }
 
 /** ci.updated: the CI of the commit Otto pushed last, as GitHub reports it */
@@ -139,7 +148,7 @@ export function ciDoneText(ci: Pick<Ci, 'state' | 'checks'>): string {
 }
 
 export type Item =
-  | { kind: 'user'; id: string; text: string | null; repo: string | null }
+  | { kind: 'user'; id: string; text: string | null; repo: string | null; issue: IssueRef | null }
   | { kind: 'prose'; id: string; text: string; avatar: boolean }
   | { kind: 'thinking'; id: string }
   | { kind: 'work'; id: string; block: WorkBlock; avatar: boolean }
@@ -189,6 +198,8 @@ export type Proposal = {
   files: number | null
   tests: { passed: number; failed: number; text: string } | null
   repo: string
+  /** the issues it closes when merged */
+  issues: IssueLink[]
 }
 
 export type View = {
@@ -214,7 +225,7 @@ type Action = { id: string; kind: string; args: Record<string, unknown>; ts: str
 
 type Turn = {
   id: string
-  user: { text: string | null; repo: string | null; confirmed: boolean } | null
+  user: { text: string | null; repo: string | null; confirmed: boolean; issue?: IssueRef | null } | null
   agent: boolean
   intro: string[]
   rows: ({ action: string } | Note)[]
@@ -282,6 +293,23 @@ export const emptyState = (): State => ({
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null)
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
 const rec = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {})
+
+/** A linked issue's card from an event, or null if it isn't one. */
+function issueOf(v: unknown): IssueRef | null {
+  const r = rec(v)
+  const n = num(r.number)
+  if (n === null) return null
+  const labels = Array.isArray(r.labels) ? r.labels.filter((l): l is string => typeof l === 'string') : []
+  return { number: n, title: str(r.title) ?? '', state: r.state === 'closed' ? 'closed' : 'open', labels, url: str(r.url), repo: str(r.repo) }
+}
+
+/** pr.proposed's issues: the ones its PR closes. */
+function issueLinks(v: unknown): IssueLink[] {
+  return (Array.isArray(v) ? v : []).flatMap((x) => {
+    const n = num(rec(x).number)
+    return n === null ? [] : [{ number: n, url: str(rec(x).url) }]
+  })
+}
 
 function newTurn(state: State, id: string, ts: string, user: Turn['user']): Turn {
   const t: Turn = {
@@ -399,16 +427,19 @@ function apply(s: State, e: SessionEvent) {
           if (s.sent?.id === id) s.sent = null // the server's copy replaces the optimistic one
         }
         const t = current(s)
-        if (t?.user && !t.user.confirmed && t.user.text === content && t.outcome === null && !s.restart) {
+        // a Fix CI message carries the CI logs, and one that links an issue the issue's text: the
+        // thread shows what the user asked for (and the issue's card)
+        const text = str(p.display) ?? content
+        const issue = issueOf(p.issue)
+        if (t?.user && !t.user.confirmed && t.user.text === text && t.outcome === null && !s.restart) {
           t.user.confirmed = true // the task's own echo
+          t.user.issue = issue
           return
         }
         const startedAt = s.restart?.ts ?? e.ts
         const attached = s.restart !== null && t !== undefined && s.repo !== null && !t.agent
         s.restart = null
-        // a Fix CI message carries the CI logs: the thread shows the request it stands for
-        const text = str(p.display) ?? content
-        const nt = newTurn(s, `t${e.seq}`, startedAt, { text, repo: attached ? s.repo : null, confirmed: true })
+        const nt = newTurn(s, `t${e.seq}`, startedAt, { text, repo: attached ? s.repo : null, confirmed: true, issue })
         nt.agent = s.repo !== null
         return
       }
@@ -804,6 +835,7 @@ export function view(s: State): View {
   const turnIndex = new Map(turns.map((t, i) => [t.id, i]))
   const proposal = s.proposal
   const proposalTitle = proposal ? str(proposal.payload.title) : null
+  const proposalIssues = proposal ? issueLinks(proposal.payload.issues) : []
   const openedPr = proposal ? s.prs.find((p) => p.seq > proposal.seq) ?? null : null
 
   for (const [ti, t] of turns.entries()) {
@@ -813,7 +845,7 @@ export function view(s: State): View {
     const prBefore = s.prs.filter((p) => (turnIndex.get(p.turn) ?? Infinity) < ti).at(-1)
     if (prBefore && !known.pr) known.pr = { number: prBefore.number, url: prBefore.url, title: proposalTitle }
     if (t.switchedTo) items.push({ kind: 'model', id: `${t.id}-model`, to: t.switchedTo })
-    if (t.user) items.push({ kind: 'user', id: `${t.id}-u`, text: t.user.text, repo: t.user.repo })
+    if (t.user) items.push({ kind: 'user', id: `${t.id}-u`, text: t.user.text, repo: t.user.repo, issue: t.user.issue ?? null })
     let avatar = true
     const otto = () => {
       const a = avatar
@@ -985,6 +1017,7 @@ export function view(s: State): View {
           return num(tq.passed) === null ? null : { passed: num(tq.passed)!, failed: num(tq.failed) ?? 0, text: str(tq.text) ?? '' }
         })(),
         repo: s.repo,
+        issues: proposalIssues,
       }
       if (openedPr) {
         items.push({
@@ -1005,6 +1038,7 @@ export function view(s: State): View {
             files: prop.files,
             tests: prop.tests && !prop.tests.failed ? { ...prop.tests, errors: 0, duration: null } : null,
             firstFile: firstEdited,
+            issues: prop.issues,
           },
         })
       } else {
@@ -1033,6 +1067,7 @@ export function view(s: State): View {
           files: u.files,
           tests: latestTests && !latestTests.failed && !latestTests.errors ? latestTests : null,
           firstFile: firstEdited,
+          issues: proposalIssues,
         },
       })
     }
@@ -1059,6 +1094,7 @@ export function view(s: State): View {
           files: pushStat?.files ?? null,
           tests: latestTests && !latestTests.failed && !latestTests.errors ? latestTests : null,
           firstFile: firstEdited,
+          issues: [],
         },
       })
     }
@@ -1083,7 +1119,7 @@ export function view(s: State): View {
   if (!known.pr && lastPr) known.pr = { number: lastPr.number, url: lastPr.url, title: null }
 
   // a message just sent whose turn hasn't started: it goes last
-  if (s.sent && !pending) items.push({ kind: 'user', id: `sent-${s.sent.id}`, text: s.sent.text, repo: s.sent.repo })
+  if (s.sent && !pending) items.push({ kind: 'user', id: `sent-${s.sent.id}`, text: s.sent.text, repo: s.sent.repo, issue: null })
 
   // a plain chat that has answered: the gentle nudge to mention a repo
   const last = items[items.length - 1]

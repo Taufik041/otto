@@ -257,3 +257,149 @@ describe('workers offline (GET /health)', () => {
     expect(screen.queryByText(/model isn.t available/)).not.toBeInTheDocument()
   })
 })
+
+describe('# picks an issue of the mentioned repo', () => {
+  const ISSUES = [
+    { number: 12, title: 'Login button does nothing', labels: ['bug', 'ui'], updated_at: '2026-10-10T00:00:00Z' },
+    { number: 7, title: 'Add dark mode', labels: [], updated_at: '2026-10-09T00:00:00Z' },
+    { number: 120, title: 'Crash on empty cart', labels: ['bug'], updated_at: '2026-10-08T00:00:00Z' },
+  ]
+
+  function issuesApi(answer: () => Response = () => HttpResponse.json(ISSUES)) {
+    const asked: string[] = []
+    server.use(
+      http.get(`${API}/repos/:owner/:name/issues`, ({ params }) => {
+        asked.push(`${params.owner}/${params.name}`)
+        return answer()
+      }),
+    )
+    return asked
+  }
+
+  async function withRepo() {
+    await userEvent.type(box(), '@otto')
+    await userEvent.keyboard('{Enter}')
+  }
+
+  it('without a repo, # is just text', async () => {
+    api()
+    const asked = issuesApi()
+    await ready()
+    await userEvent.type(box(), 'make it #')
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    expect(asked).toEqual([])
+  })
+
+  it('lists the open issues, filters by title or number, and Enter inserts the chip', async () => {
+    const sent = api()
+    const asked = issuesApi()
+    await ready()
+    await withRepo()
+    expect(box()).toHaveAttribute('placeholder', 'Message Otto. Type # to pick an issue.')
+    await userEvent.type(box(), '#')
+
+    const list = await screen.findByRole('listbox')
+    expect(asked).toEqual(['Taufik041/otto_test'])
+    expect(screen.getByText('Open issues in Taufik041/otto_test')).toBeInTheDocument()
+    expect(within(list).getAllByRole('option')).toHaveLength(3)
+    expect(within(list).getByText('ui')).toBeInTheDocument()
+
+    await userEvent.type(box(), 'login')
+    expect(within(list).getAllByRole('option').map((o) => o.textContent)).toEqual([expect.stringContaining('#12')])
+    await userEvent.clear(box())
+    await userEvent.type(box(), '#12')
+    expect(within(await screen.findByRole('listbox')).getAllByRole('option').map((o) => o.textContent)).toEqual([
+      expect.stringContaining('Login button does nothing'),
+      expect.stringContaining('Crash on empty cart'),
+    ])
+    await userEvent.keyboard('{ArrowDown}{ArrowUp}{Enter}')
+
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove issue #12' })).toBeInTheDocument()
+    expect(box()).toHaveValue('')
+    await userEvent.type(box(), 'fix this please{Enter}')
+
+    await waitFor(() => expect(sent).toHaveLength(1))
+    expect(sent[0]).toMatchObject({ message: 'fix this please', repo: 'Taufik041/otto_test', issue: 12 })
+  })
+
+  it('a picked issue alone asks Otto to fix it; Escape closes the picker', async () => {
+    const sent = api()
+    issuesApi()
+    await ready()
+    await withRepo()
+    await userEvent.type(box(), '#')
+    await screen.findByRole('listbox')
+    await userEvent.keyboard('{Escape}')
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+
+    await userEvent.type(box(), '7')
+    await userEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: /Add dark mode/ }))
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() => expect(sent).toHaveLength(1))
+    expect(sent[0]).toMatchObject({ message: 'Fix #7', issue: 7 })
+  })
+
+  it('a typed "#12" or "issue #12" after a repo mention is recognised', async () => {
+    const sent = api()
+    issuesApi()
+    await ready()
+    await userEvent.type(box(), 'fix issue #12 in @petal {Escape}')
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() => expect(sent).toHaveLength(1))
+    expect(sent[0]).toMatchObject({ message: 'fix issue #12 in', repo: 'Taufik041/petal', issue: 12 })
+  })
+
+  it('a typed #12 with no repo sends no issue', async () => {
+    const sent = api()
+    await ready()
+    await userEvent.type(box(), 'what is #12{Enter}')
+    await waitFor(() => expect(sent).toHaveLength(1))
+    expect(sent[0]).not.toHaveProperty('issue')
+  })
+
+  it("says how to fix it when the App can't read issues", async () => {
+    api()
+    issuesApi(() =>
+      HttpResponse.json(
+        { error: 'issues_permission', detail: "Allow Otto to read issues: update the app's permissions on GitHub." },
+        { status: 403 },
+      ),
+    )
+    await ready()
+    await withRepo()
+    await userEvent.type(box(), '#')
+    expect(await screen.findByRole('alert')).toHaveTextContent("Allow Otto to read issues: update the app's permissions on GitHub.")
+  })
+
+  it('a refused issue is said plainly, and nothing starts', async () => {
+    api({
+      create: () =>
+        HttpResponse.json(
+          { error: 'issue_is_pull_request', detail: '#3 in Taufik041/otto_test is a pull request, not an issue. Mention an issue, or describe the change.' },
+          { status: 409 },
+        ),
+    })
+    await ready()
+    await withRepo()
+    await userEvent.type(box(), 'fix #3{Escape}{Enter}')
+    expect(await screen.findByText(/#3 in Taufik041\/otto_test is a pull request, not an issue/)).toBeInTheDocument()
+    expect(screen.getByTestId('where')).toHaveTextContent(/^\/$/)
+  })
+
+  it('on a phone the picker is a sheet whose rows are tapped', async () => {
+    const sent = api()
+    issuesApi()
+    renderSignedIn(<Composer mobile hero />)
+    await screen.findByRole('button', { name: /OpenRouter Free/ })
+    await withRepo()
+    await userEvent.type(box(), '#')
+    const sheet = await screen.findByRole('dialog', { name: 'Pick an issue' })
+    expect(within(sheet).queryByText(/↑↓ to move/)).not.toBeInTheDocument()
+    await userEvent.click(within(sheet).getByRole('option', { name: /Crash on empty cart/ }))
+    await userEvent.type(box(), 'go{Enter}')
+    await waitFor(() => expect(sent[0]).toMatchObject({ issue: 120 }))
+  })
+})

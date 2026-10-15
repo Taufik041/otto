@@ -790,6 +790,39 @@ would fail. The same goes for "I'm Under Attack" mode, or any WAF rule that chal
   jobs' logs are trimmed to their tail and the lines around errors, about 20 KB in all, and the
   agent is told they're untrusted data. Otto never starts it by itself.
 
+## GitHub issues
+
+In a repo chat, typing **#** opens a picker with the repo's open issues; a typed `#12` or
+`issue #12` works too. Otto reads the issue (title, body, labels, state and the latest 10
+comments, about 8 KB in all) and gives it to the agent as untrusted data, the way Fix CI gives it
+the CI logs. The thread shows the issue's card, never its text. The pull request Otto proposes
+ends with `Fixes #12`, so merging it closes the issue, and GitHub lists the PR on the issue's page
+by itself: Otto never writes to issues.
+
+### The GitHub App's setting for issues
+
+On GitHub, open **Settings** → **Developer settings** → **GitHub Apps** → your App → **Edit** →
+**Permissions & events** → **Repository permissions** → **Issues**: **Read-only**. Click **Save
+changes**.
+
+That's all: no write access, and no new events to subscribe to. As with CI, **every installation
+must accept the new permission** (GitHub emails each account that installed the App, and shows a
+banner on `github.com/settings/installations/<id>`, or the organization's). Until it's accepted,
+the picker and a message naming an issue say "Allow Otto to read issues: update the app's
+permissions on GitHub." and no turn starts.
+
+What the gateway refuses, with nothing stored and no turn started:
+
+| Case | Answer |
+|---|---|
+| The number is a pull request | 409 `issue_is_pull_request` |
+| No such issue in the repo | 404 `issue_not_found` |
+| The App can't read issues (the permission is missing or not accepted yet) | 403 `issues_permission` |
+| Issues are turned off in the repo | 409 `issues_disabled` |
+| An issue with no repo mentioned | 422 `issue_needs_repo` |
+
+A closed issue is allowed: its card says it's closed, and the agent is told so.
+
 ## Signups
 
 `OTTO_SIGNUP_MODE` decides who may make a **new** account. Signing in to an existing account
@@ -1257,6 +1290,7 @@ a minute without a broker, and its Job ends.
    For CI: the Checks, Commit statuses and Actions read permissions, the four events, the webhook
    at `https://ottoci-api.taufi.dev/github/webhook` with `OTTO_GITHUB_WEBHOOK_SECRET`, and
    Cloudflare's Bot Fight Mode off ("CI results").
+   For issues: the Issues read-only permission, accepted by every installation ("GitHub issues").
 5. `OTTO_ENV=production`, `FRONTEND_URL`, `AUTH_SECRET`, the signup settings.
 6. `curl https://ottoci-api.taufi.dev/health` says `"workers": "online"` and
    `"password_reset": true` (`RESEND_API_KEY` and `OTTO_NOTIFY_TO` set; "Email (Resend)").

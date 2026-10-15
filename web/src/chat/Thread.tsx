@@ -12,7 +12,7 @@ import { Glyph, IC } from './icons'
 import { Markdown } from './Markdown'
 import { PrCard } from './PrCard'
 import { ProposalCard } from './ProposalCard'
-import type { Item, Step } from './reduce'
+import type { IssueRef, Item, Step } from './reduce'
 import { WorkBlock } from './WorkBlock'
 
 export type ThreadProps = {
@@ -30,9 +30,9 @@ export type ThreadProps = {
   onMention: () => void
 }
 
-function UserBubble({ text, repo }: { text: string; repo: string | null }) {
+function UserBubble({ text, repo, issue }: { text: string; repo: string | null; issue: IssueRef | null }) {
   return (
-    <div className="flex justify-end pb-6 animate-rise">
+    <div className="flex flex-col items-end gap-2 pb-6 animate-rise">
       <div className="max-w-[82%] whitespace-pre-wrap rounded-[20px] bg-bg2 px-4 py-2.5 text-base leading-[1.55] text-pretty [overflow-wrap:anywhere]">
         {repo && (
           <>
@@ -41,7 +41,51 @@ function UserBubble({ text, repo }: { text: string; repo: string | null }) {
         )}
         {text}
       </div>
+      {issue && <IssueCard issue={issue} />}
     </div>
+  )
+}
+
+/** The issue a message linked: number, title, state, labels and a link. Never the issue's text
+ *  (the agent gets that, as untrusted data). */
+export function IssueCard({ issue }: { issue: IssueRef }) {
+  const closed = issue.state === 'closed'
+  const title = (
+    <>
+      <span className="text-muted">#{issue.number}</span> {issue.title || 'Issue'}
+    </>
+  )
+  return (
+    <section
+      aria-label={`Issue #${issue.number}`}
+      className="w-full max-w-[min(82%,420px)] rounded-2xl border border-solid border-line bg-card px-3.5 py-3"
+    >
+      <div className="flex items-start gap-2.5">
+        <Glyph d={closed ? IC.checkCircle : IC.issue} size={16} width={1.8} className={`mt-[3px] shrink-0 ${closed ? 'text-muted' : 'text-ok'}`} />
+        <div className="min-w-0 flex-1">
+          <div className="text-[15px] font-medium leading-[1.4] [overflow-wrap:anywhere]">
+            {issue.url ? (
+              <a href={issue.url} target="_blank" rel="noopener noreferrer" className="text-text hover:text-accent">
+                {title}
+              </a>
+            ) : (
+              title
+            )}
+          </div>
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            <span className={closed ? 'rounded-full bg-tag px-2 py-px text-xs font-medium text-muted' : 'rounded-full bg-ok-bg px-2 py-px text-xs font-medium text-ok'}>
+              {closed ? 'Closed' : 'Open'}
+            </span>
+            {issue.labels.map((l) => (
+              <span key={l} className="max-w-[160px] truncate rounded-full bg-tag px-2 py-px text-xs text-muted">
+                {l}
+              </span>
+            ))}
+          </div>
+          {closed && <p className="mb-0 mt-2 text-[13px] leading-[1.45] text-muted">This issue is closed on GitHub. Otto works on it anyway.</p>}
+        </div>
+      </div>
+    </section>
   )
 }
 
@@ -171,7 +215,7 @@ export function Thread(p: ThreadProps) {
         switch (it.kind) {
           case 'user': {
             if (it.text === null) return null // a follow-up being set up that this client didn't send
-            return <UserBubble key={it.id} text={it.text} repo={it.repo} />
+            return <UserBubble key={it.id} text={it.text} repo={it.repo} issue={it.issue} />
           }
           case 'prose':
             return (

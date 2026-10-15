@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.exc import IntegrityError
 
 from brain.bus import bus_call, start_consumer, stop_consumer
-from gateway import auth, ci as gci, errors, github_app, limits, live, tokens, workers
+from gateway import auth, ci as gci, errors, github_app, issues, limits, live, tokens, workers
 from orchestrator import sandbox
 from shared import ci, config, email, health, usage
 from shared.accounts import deactivate, prune_unconfirmed, purge_deleted
@@ -169,6 +169,7 @@ app = FastAPI(title="Otto", lifespan=lifespan, **docs_urls())
 app.include_router(auth.router)
 app.include_router(github_app.router)
 app.include_router(gci.router)
+app.include_router(issues.router)
 app.add_exception_handler(errors.Refused, errors.handle)
 
 
@@ -230,6 +231,7 @@ class NewSession(BaseModel):
     model: str | None = None  # a catalog id (GET /models); None: the user's default, else the server's
     # posting it again returns the chat the first post made
     client_message_id: str | None = Field(default=None, pattern=CLIENT_MESSAGE_ID)
+    issue: int | None = Field(default=None, ge=1, le=10**9)  # an issue of the repo to work on (# in the composer)
 
     _repo = field_validator("repo")(repo_name)
 
@@ -246,6 +248,7 @@ class FollowUp(BaseModel):
     repo: str | None = None  # attaches a repo to a plain chat; the chat's own repo is fine too
     model: str | None = None  # a catalog id: the chat continues on it from this message on
     client_message_id: str | None = Field(default=None, pattern=CLIENT_MESSAGE_ID)
+    issue: int | None = Field(default=None, ge=1, le=10**9)  # an issue of the chat's repo to work on
 
     _repo = field_validator("repo")(repo_name)
 
@@ -372,6 +375,24 @@ async def _repo_for(user, name) -> dict:
     return found
 
 
+async def _issue_for(repo, number) -> dict | None:
+    """Issue #number of repo, read from GitHub (gateway/issues.py), or None with no number. Refused,
+    with nothing stored, for an issue without a repo, a pull request, a number that doesn't exist,
+    or the App without the Issues permission."""
+    if number is None:
+        return None
+    if repo is None:
+        raise errors.Refused(422, "issue_needs_repo", "Mention a repo with @ to work on one of its issues.")
+    return await asyncio.to_thread(issues.fetch, repo["installation_id"], repo["full_name"], number)
+
+
+def _issue_message(text, issue) -> dict:
+    """The llm.message payload of a user message that links an issue: the agent gets the issue
+    (framed as untrusted data), the thread shows the user's words and the issue's card."""
+    return {"message": {"role": "user", "content": issues.agent_message(text, issue)}, "display": text,
+            "issue": issues.card(issue)}
+
+
 def _room_for_an_agent(user):
     """429 unless the user, and the cluster, can take one more agent session at work. Plain chats
     have no sandbox and don't count. Call it under app.state.create_lock, with the claim."""
@@ -465,6 +486,7 @@ async def create(body: NewSession, response: Response, user: User = Depends(auth
     if body.repo:
         await workers.require()  # 503 workers_offline before anything is created
     repo = await _repo_for(user, body.repo) if body.repo else None
+    issue = await _issue_for(repo, body.issue)
     async with app.state.create_lock:  # count + insert as one step within this gateway
         if again := _created_already(user, body):  # the same chat, posted while its first post was at work
             response.status_code = 200
@@ -480,6 +502,8 @@ async def create(body: NewSession, response: Response, user: User = Depends(auth
                 response.status_code = 200
                 return again
             raise
+    if issue:  # the first message, as the agent gets it (brain.loop.start_session uses it)
+        append_event(sid, "llm.message", _issue_message(row.task, issue))
     if repo:
         try:
             await _create_sandbox(sid, repo)
@@ -690,6 +714,7 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.verified
     if row.repo or body.repo:
         await workers.require()  # 503 workers_offline, with nothing stored
     repo = await _repo_for(user, row.repo or body.repo) if row.repo or body.repo else None
+    issue = await _issue_for(repo, body.issue)
     async with app.state.create_lock:  # count + claim as one step within this gateway
         if repo and row.status in IDLE:
             _room_for_an_agent(user)
@@ -711,7 +736,7 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.verified
             transition(sid, row.status, {"provisioning"})
             raise HTTPException(409, NEW_REPO)
     _switch_model(sid, body.model)
-    _store_follow_up(sid, body)  # after repo.attached, so the message belongs to the agent's turn
+    text = _store_follow_up(sid, body, issue)  # after repo.attached, so the message belongs to the agent's turn
     try:
         if attaching:
             await _create_sandbox(sid, repo)
@@ -721,7 +746,7 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.verified
         raise
     except Exception as e:
         _fail(sid, "sandbox", e)
-    await _enqueue(ch, sid, resume_job(sid, body.text))
+    await _enqueue(ch, sid, resume_job(sid, text))
     return {"id": sid, "status": "queued", "repo": repo["full_name"]}
 
 
@@ -879,13 +904,15 @@ def _posted_already(sid, body: FollowUp) -> bool:
     return body.client_message_id is not None and client_message_seq(sid, body.client_message_id) is not None
 
 
-def _store_follow_up(sid, body: FollowUp):
+def _store_follow_up(sid, body: FollowUp, issue=None) -> str:
     """Store the follow-up as the conversation's next user message now, so every client sees it at
     once (live, via NOTIFY); the worker continues from it without adding it again. Its
-    client_message_id goes with the event, so the client that sent it can tell it's that one."""
+    client_message_id goes with the event, so the client that sent it can tell it's that one. With
+    an issue, the agent gets it too (_issue_message). The message's text, as the model gets it."""
     cid = body.client_message_id
-    append_event(sid, "llm.message", {"message": {"role": "user", "content": body.text},
-                                      **({"client_message_id": cid} if cid else {})}, client_message_id=cid)
+    payload = _issue_message(body.text, issue) if issue else {"message": {"role": "user", "content": body.text}}
+    append_event(sid, "llm.message", {**payload, **({"client_message_id": cid} if cid else {})}, client_message_id=cid)
+    return payload["message"]["content"]
 
 
 async def _wake_sandbox(ch, sid, repo):

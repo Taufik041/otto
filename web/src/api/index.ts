@@ -4,6 +4,7 @@ import type {
   Created,
   GitHubStatus,
   Health,
+  Issue,
   Me,
   Models,
   NewSession,
@@ -77,6 +78,8 @@ export const api = {
   health: () => client.request<Health>('/health'),
   models: () => client.request<Models>('/models'),
   repos: () => client.request<Repo[]>('/repos'),
+  /** the repo's open issues, for the # picker (403 issues_permission: the App can't read issues) */
+  issues: (repo: string) => client.request<Issue[]>(`/repos/${repo.split('/').map(encodeURIComponent).join('/')}/issues`),
   github: () => client.request<GitHubStatus>('/github'),
   unlinkInstallation: (id: number) => client.request<Unlinked>(`/github/installations/${id}`, { method: 'DELETE' }),
   usage: () => client.request<Usage>('/usage'),
@@ -88,7 +91,10 @@ export const api = {
     client.request<SessionEvent[]>(`/sessions/${encodeURIComponent(id)}/events?after_seq=${afterSeq}`),
   wsTicket: (id: string) => post<{ ticket: string }>(`/sessions/${encodeURIComponent(id)}/ws-ticket`),
   /** client_message_id: posting the same one again stores nothing (a retry, a double click) */
-  followUp: (id: string, body: { text: string; repo?: string | null; model?: string | null; client_message_id?: string }) =>
+  followUp: (
+    id: string,
+    body: { text: string; repo?: string | null; model?: string | null; client_message_id?: string; issue?: number | null },
+  ) =>
     post<{ id: string; status: string; repo: string | null }>(`/sessions/${encodeURIComponent(id)}/messages`, body),
   stop: (id: string) => post<{ id: string; status: string }>(`/sessions/${encodeURIComponent(id)}/stop`),
   /** the user saw the chat up to event `seq` (its finished turn stops wanting attention) */

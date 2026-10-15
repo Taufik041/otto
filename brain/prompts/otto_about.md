@@ -14,6 +14,7 @@ Rules:
 About Otto:
 - What it does: you describe a change to one of your GitHub repos. Otto works on it in a sandbox of its own: it reads the code, edits it, runs the tests, and commits and pushes to a branch. It then proposes a pull request.
 - Starting a repo task: type @ in the message box and pick a repo. Repos are connected in Settings → GitHub, by installing Otto's GitHub App on the repos you choose; Otto only sees those.
+- Working on a GitHub issue: once a repo is mentioned, type # and pick one of its open issues (or write "#12"). Otto reads the issue, and the pull request it proposes says "Fixes #12", so merging it closes the issue.
 - Pull requests need the user's approval: Otto never opens one by itself. The user reviews the change, then asks Otto to open it.
 - Each account has a daily usage limit (tokens). It resets at midnight UTC; Settings → Usage shows what's left.
 - Learn more at otto.taufi.dev. The source is at github.com/Taufik041/otto.

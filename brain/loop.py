@@ -73,10 +73,17 @@ async def run_session(ch, results, sid, task):
 
 
 async def start_session(ch, results, sid, task):
-    """Run the first turn of a session whose row already exists. Returns the final messages list."""
+    """Run the first turn of a session whose row already exists. Returns the final messages list.
+    A first message the gateway stored already (one that links an issue) is the task as the model
+    gets it."""
     messages = []
     add_message(sid, messages, {"role": "system", "content": SYSTEM})
-    add_message(sid, messages, {"role": "user", "content": task})
+    stored = next((e.payload["message"] for e in load_events(sid)
+                   if e.type == "llm.message" and e.payload["message"].get("role") == "user"), None)
+    if stored is not None:
+        messages.append(stored)
+    else:
+        add_message(sid, messages, {"role": "user", "content": task})
     return await run_loop(ch, results, sid, messages)
 
 
@@ -250,14 +257,33 @@ async def propose(sid, record, messages):
     row = get_session(sid)
     push = _latest_push(sid)
     body = _last(messages, "assistant") or f"Changes by Otto for: {row.task}"
+    linked = linked_issues(sid)
     record("pr.proposed", {
         "title": await _proposal_title(sid, record, row.task, body),
-        "body": body,
+        "body": with_fixes(body, linked),
         "head": work_branch(sid),
         "base": push.get("base"),
         **_push_stat(sid),
         "tests": _last_tests(sid),
+        # the cards' "Closes #12"
+        **({"issues": [{"number": i["number"], "url": i.get("url")} for i in linked]} if linked else {}),
     })
+
+
+def linked_issues(sid) -> list[dict]:
+    """The issues the chat's messages linked (their cards, from the gateway), first link first."""
+    found = {}
+    for e in load_events(sid):
+        issue = e.payload.get("issue") if e.type == "llm.message" else None
+        if isinstance(issue, dict) and isinstance(issue.get("number"), int):
+            found.setdefault(issue["number"], issue)
+    return list(found.values())
+
+
+def with_fixes(body, issues) -> str:
+    """The PR body, ending with "Fixes #12" for each linked issue: merging the PR closes them."""
+    fixes = [f"Fixes #{i['number']}" for i in issues if f"Fixes #{i['number']}" not in body]
+    return f"{body.rstrip()}\n\n" + "\n".join(fixes) if fixes else body
 
 
 async def _proposal_title(sid, record, task, body) -> str:
