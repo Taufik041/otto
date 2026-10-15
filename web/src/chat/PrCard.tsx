@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react'
 import { GitHubIcon } from '@/components/brand'
+import { CiRow } from './CiRow'
 import { Glyph, IC } from './icons'
-import type { PrCard as Pr, TestSummary } from './reduce'
+import type { Ci, PrCard as Pr, TestSummary } from './reduce'
 
 type Counts = { additions: number | null; deletions: number | null; files: number | null; tests: number | null }
 
@@ -85,7 +86,21 @@ export function passed(tests: TestSummary | { passed: number; failed: number } |
 }
 
 /** The payoff: the pull request on GitHub, opened (or updated by a follow-up's push). */
-export function PrCard({ pr, onSeeChanges }: { pr: Pr; onSeeChanges: () => void }) {
+export function PrCard({
+  pr,
+  onSeeChanges,
+  ci = null,
+  sessionId = '',
+  live = false,
+}: {
+  pr: Pr
+  onSeeChanges: () => void
+  /** the CI of the branch Otto pushed last (on the latest card only) */
+  ci?: Ci | null
+  sessionId?: string
+  /** Otto is working: Fix CI waits */
+  live?: boolean
+}) {
   return (
     <PrFrame
       label={pr.updated ? 'Pull request updated' : 'Pull request opened'}
@@ -99,6 +114,7 @@ export function PrCard({ pr, onSeeChanges }: { pr: Pr; onSeeChanges: () => void 
       base={pr.base}
       counts={{ additions: pr.additions, deletions: pr.deletions, files: pr.files, tests: passed(pr.tests) }}
     >
+      {ci && <CiRow key={ci.sha} sessionId={sessionId} ci={ci} live={live} />}
       <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2.5">
         <a href={pr.url} target="_blank" rel="noopener noreferrer" className={PR_PILL}>
           <GitHubIcon size={15} />

@@ -4,7 +4,8 @@ import asyncio
 
 import pytest
 
-from shared.bus import make_result, results_queue
+from shared import ci
+from shared.bus import CI_QUEUE, make_result, results_queue
 from shared.events import load_events
 from shared.models import make_title
 from shared.sessions import create_session, get_session, record_pr
@@ -20,8 +21,10 @@ class Runner:
     """A fake sandbox that keeps the git state the finish looks at: uncommitted changes, commits
     not on the remote, and the branch's commits. fail: a kind whose action fails."""
 
-    def __init__(self, ch, results, dirty=False, ahead=0, work=0, fail=None, shell=None):
+    def __init__(self, ch, results, dirty=False, ahead=0, work=0, fail=None, shell=None, sha=None):
         self.git = {"dirty": dirty, "ahead": ahead, "work": work}
+        self.sha = sha  # what git.push reports it pushed (a sandbox from before CI awareness: none)
+        self.ci = []  # what the brain told the gateway on otto.ci
         self.actions = []
         self.fail = fail
         self.shell = shell  # what shell.exec prints
@@ -33,6 +36,9 @@ class Runner:
         return [a["kind"] for a in self.actions]
 
     def on_publish(self, key, action):
+        if key == CI_QUEUE:
+            self.ci.append(action)
+            return
         kind, g = action["kind"], self.git
         self.actions.append(action)
         out = {"exit_code": 0, "stdout": f"ran {kind}", "stderr": ""}
@@ -48,7 +54,7 @@ class Runner:
             g.update(dirty=False, ahead=g["ahead"] + 1, work=g["work"] + 1)
         elif kind == "git.push":
             g["ahead"] = 0
-            out.update(branch="otto/s1", base="main",
+            out.update(branch="otto/s1", base="main", **({"sha": self.sha} if self.sha else {}),
                        diffstat={"files": g["work"], "additions": 2 * g["work"], "deletions": g["work"]})
         elif kind == "git.open_pr":
             out.update(number=5, html_url=PR_URL, title=action["payload"]["title"], base="main")
@@ -317,3 +323,48 @@ async def test_the_daily_limit_falls_back_to_the_task(monkeypatch):
     assert len(runner.calls) == 2  # no title call was made
     assert _gs("s1").status == "done"
     assert not [e for e in load_events("s1") if e.type == "usage.limit_reached"]  # the turn wasn't limited
+
+
+# --- CI: a push hands its commit to the gateway, which reads its CI from GitHub -------------------
+
+SHA = "c0ffee" * 6 + "abcd"
+
+
+@pytest.mark.asyncio
+async def test_the_finishs_push_makes_its_commit_the_chats_and_tells_the_gateway(monkeypatch):
+    ch, results, runner = setup(monkeypatch, [llm_tool_calls(EDIT), llm_final("Fixed."), llm_final("Fix it")], sha=SHA)
+    await run(ch, results)
+    assert get_session("s1").head_sha == SHA
+    assert ci.latest("s1")["sha"] == SHA and ci.latest("s1")["state"] == "queued"
+    assert runner.ci == [{"type": "pushed", "session_id": "s1", "sha": SHA}]
+    assert get_session("s1").status == "done"
+
+
+@pytest.mark.asyncio
+async def test_the_models_own_push_counts_too(monkeypatch):
+    ch, results, runner = setup(monkeypatch, [llm_tool_calls(EDIT), llm_tool_calls(("git_commit", {"message": "m"})),
+                                              llm_tool_calls(("git_push", {})), llm_final("Fixed."), llm_final("Fix it")],
+                                sha=SHA)
+    await run(ch, results)
+    assert runner.kinds.count("git.push") == 1  # the finish found nothing left to push
+    assert runner.ci == [{"type": "pushed", "session_id": "s1", "sha": SHA}]
+    assert [e.payload["sha"] for e in load_events("s1") if e.type == "ci.updated"] == [SHA]
+
+
+@pytest.mark.asyncio
+async def test_a_push_without_a_sha_announces_nothing(monkeypatch):
+    ch, results, runner = setup(monkeypatch, [llm_tool_calls(EDIT), llm_final("Fixed."), llm_final("Fix it")])
+    await run(ch, results)
+    assert runner.ci == [] and get_session("s1").head_sha is None and "ci.updated" not in types()
+
+
+@pytest.mark.asyncio
+async def test_announcing_a_push_never_fails_the_turn(monkeypatch):
+    ch, results, runner = setup(monkeypatch, [llm_tool_calls(EDIT), llm_final("Fixed."), llm_final("Fix it")], sha=SHA)
+
+    def broken(*a, **kw):
+        raise RuntimeError("database hiccup")
+
+    monkeypatch.setattr(ci, "pushed", broken)
+    await run(ch, results)
+    assert get_session("s1").status == "done" and proposals()

@@ -37,6 +37,8 @@ class Session(SQLModel, table=True):
     model: str
     work_branch: str | None = None  # otto/<id>, set once the session opens a PR
     pr_url: str | None = None
+    # the commit Otto pushed last to otto/<id>: CI results for it are the chat's (shared/ci.py)
+    head_sha: str | None = Field(default=None, index=True)
     # the first message's id from the client that sent it: posting it again returns this chat
     client_message_id: str | None = None
     created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
@@ -170,6 +172,16 @@ class ProviderHealth(SQLModel, table=True):
     key: str = Field(primary_key=True)  # a provider ("openrouter") or a catalog model id ("openai:gpt-4.1")
     reason: str  # "quota", "auth" or "model"
     updated_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
+
+
+class WebhookDelivery(SQLModel, table=True):
+    """A GitHub webhook delivery taken in (X-GitHub-Delivery): a redelivery of it is a duplicate.
+    Pruned after a week."""
+    __tablename__ = "webhook_deliveries"
+
+    id: str = Field(primary_key=True)  # GitHub's delivery GUID
+    event: str  # X-GitHub-Event
+    received_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True), index=True)
 
 
 ACCESS_STATUSES = ("pending", "approved")

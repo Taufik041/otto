@@ -102,6 +102,10 @@ export const api = {
   declinePr: (id: string) => post<{ ok: true }>(`/sessions/${encodeURIComponent(id)}/pr/decline`),
   rename: (id: string, title: string) =>
     client.request<SessionSummary>(`/sessions/${encodeURIComponent(id)}`, { method: 'PATCH', body: { title } }),
+  /** Fix CI: a follow-up turn on the failed CI of Otto's latest push (the gateway sends the logs) */
+  fixCi: (id: string) => post<{ id: string; status: string }>(`/sessions/${encodeURIComponent(id)}/ci/fix`),
+  /** Check again: read the latest push's CI from GitHub once; the state now ("unknown": nothing new) */
+  checkCi: (id: string) => post<{ ci: string | null }>(`/sessions/${encodeURIComponent(id)}/ci/check`),
   retry: (id: string, model?: string) =>
     post<{ id: string; status: string }>(`/sessions/${encodeURIComponent(id)}/retry`, model ? { model } : undefined),
   deleteSession: (id: string) => client.request<{ id: string }>(`/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }),

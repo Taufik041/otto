@@ -51,6 +51,14 @@ def retry_job(sid: str) -> dict:
     return {"type": "retry", "session_id": sid}
 
 
+CI_QUEUE = "otto.ci"  # -> the gateway: commits to read CI for, and GitHub's webhooks to apply
+
+
+def pushed_job(sid: str, sha: str) -> dict:
+    """The brain pushed sha to the chat's branch: the gateway watches its CI."""
+    return {"type": "pushed", "session_id": sid, "sha": sha}
+
+
 async def connect_with_backoff(connect, url, name, max_delay=RECONNECT_MAX, sleep=asyncio.sleep):
     """connect(url) (aio_pika's connect_robust), retried with exponential backoff until the broker
     answers: connect_robust reconnects by itself, but only after a first successful connect. The

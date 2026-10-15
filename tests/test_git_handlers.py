@@ -248,7 +248,14 @@ def test_push_reports_the_base_and_the_branchs_diffstat(repo):
 def test_a_failed_push_has_no_diffstat(repo, monkeypatch):
     monkeypatch.setattr(config, "GITHUB_TOKEN", None)
     r = REGISTRY["git.push"]({})
-    assert r["exit_code"] == 1 and "diffstat" not in r
+    assert r["exit_code"] == 1 and "diffstat" not in r and "sha" not in r
+
+
+def test_push_reports_the_commit_it_pushed(repo):
+    """CI results map to the pushed commit (shared/ci.py)."""
+    ws, origin = repo
+    r = REGISTRY["git.push"]({})
+    assert r["sha"] == git("rev-parse", "HEAD", cwd=ws) == git("rev-parse", "refs/heads/otto/s1", cwd=origin)
 
 
 # --- git.status for the brain's finish: dirty, and commits ahead of the remote ------------------

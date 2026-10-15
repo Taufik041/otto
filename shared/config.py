@@ -233,5 +233,8 @@ GITHUB_APP_KEY_PATH = os.environ.get("GITHUB_APP_KEY_PATH", "")
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID")          # the App's user OAuth: sign-in, installs
 GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET")
 GITHUB_APP_SLUG = os.environ.get("GITHUB_APP_SLUG")            # github.com/apps/<slug>
+# the App's webhook secret: POST /github/webhook takes only deliveries signed with it (CI results).
+# Unset: the webhook is refused, and CI is read by polling alone
+GITHUB_WEBHOOK_SECRET = os.environ.get("OTTO_GITHUB_WEBHOOK_SECRET", "").strip() or None
 # the gateway's /auth/github/callback as GitHub reaches it; sent as redirect_uri when set
 GITHUB_CALLBACK_URL = os.environ.get("OTTO_GITHUB_CALLBACK_URL", "").strip()

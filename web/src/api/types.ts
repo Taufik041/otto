@@ -72,8 +72,11 @@ export type SessionSummary = {
   model: string | null
   pr_url: string | null
   updated_at: string
-  /** the sidebar's dot: Otto works, or a turn ended done/failed since the user last saw the chat */
+  /** the sidebar's dot: Otto works, or a turn ended done/failed (or CI failed) since the user last saw the chat */
   attention: 'working' | 'done' | 'failed' | null
+  /** the CI of Otto's latest push (null: nothing pushed; older gateways leave it out). unknown:
+   *  queued or running with no change for 2 hours, so the list stops refreshing for it */
+  ci?: 'queued' | 'running' | 'passed' | 'failed' | 'cancelled' | 'none' | 'unknown' | null
 }
 
 export type SessionDetail = SessionSummary & {

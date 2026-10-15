@@ -574,3 +574,79 @@ describe('pull requests: Otto proposes, the user decides', () => {
     expect(steps(items, 1).at(-1)).toMatchObject({ verb: 'Pushed to pull request', code: '#3' })
   })
 })
+
+describe('CI on the commit Otto pushed', () => {
+  const PROPOSAL = { title: 'Fix failing pricing tests', body: 'Found it.', head: 'otto/s1', base: 'main', additions: 1, deletions: 1, files: 1, tests: null }
+  const SHA = 'a'.repeat(40)
+  const check = (name: string, status = 'completed', conclusion: string | null = 'success', duration: number | null = 42) => ({
+    key: `run:${name}`, name, status, conclusion, duration, html_url: `https://github.com/o/r/actions/runs/7/job/${name}`,
+  })
+  const ci = (state: string, checks: unknown[] = [], extra: Record<string, unknown> = {}) => ({
+    sha: SHA, state, checks, url: 'https://github.com/o/r/actions/runs/7', pushed_at: '2026-10-02T14:02:00Z', ...extra,
+  })
+  function pushed() {
+    return log().created('fix the tests').status('running')
+      .act('git.push', {}, { exit_code: 0, stdout: '', stderr: '', branch: 'otto/s1', base: 'main', sha: SHA, diffstat: { files: 1, additions: 1, deletions: 1 } })
+      .add('ci.updated', ci('queued'))
+      .msg('assistant', 'Found it.')
+      .add('pr.proposed', PROPOSAL)
+      .status('done')
+  }
+  const card = (items: Item[]) => items.find((i) => i.kind === 'proposal' || i.kind === 'pr')!
+
+  it('the latest card carries the CI row', () => {
+    const l = pushed().add('ci.updated', ci('running', [check('tests', 'in_progress', null, null), check('lint')]))
+    const view_ = v(l.events)
+    expect(card(view_.items)).toMatchObject({
+      kind: 'proposal',
+      ci: { sha: SHA, state: 'running', url: 'https://github.com/o/r/actions/runs/7', reason: null,
+            checks: [{ name: 'tests', status: 'in_progress', conclusion: null, duration: null }, { name: 'lint', conclusion: 'success', duration: 42 }] },
+    })
+    expect(view_.ci?.state).toBe('running')
+    expect(kinds(view_.items)).toEqual(['user', 'work', 'prose', 'proposal']) // no divider while it runs
+  })
+
+  it('a quiet divider when CI finishes, once per result', () => {
+    const l = pushed()
+      .add('ci.updated', ci('failed', [check('tests', 'completed', 'failure'), check('lint')]))
+      .add('ci.updated', ci('failed', [check('tests', 'completed', 'failure'), check('lint'), check('docs')]))
+    const items = v(l.events).items
+    expect(kinds(items)).toEqual(['user', 'work', 'prose', 'proposal', 'ci'])
+    expect(items.at(-1)).toMatchObject({ kind: 'ci', state: 'failed', text: 'CI failed · tests' })
+    expect(card(items)).toMatchObject({ ci: { state: 'failed' } })
+  })
+
+  it('passed says how many checks; "none" is no divider', () => {
+    expect(v(pushed().add('ci.updated', ci('passed', [check('tests'), check('lint')])).events).items.at(-1))
+      .toMatchObject({ kind: 'ci', state: 'passed', text: 'CI passed · 2 checks' })
+    const none = v(pushed().add('ci.updated', ci('none', [], { reason: 'unreadable' })).events)
+    expect(kinds(none.items)).toEqual(['user', 'work', 'prose', 'proposal'])
+    expect(none.ci).toMatchObject({ state: 'none', reason: 'unreadable' })
+  })
+
+  it('Fix CI: the message shows its request, not the logs; the new push resets the row', () => {
+    const l = pushed().add('ci.updated', ci('failed', [check('tests', 'completed', 'failure')]))
+      .add('pr.opened', { number: 3, html_url: 'https://github.com/o/r/pull/3' })
+      .status('provisioning')
+      .add('llm.message', { message: { role: 'user', content: 'CI failed on GitHub ... <ci-log check="tests">secret-looking log</ci-log>' },
+                            display: 'Fix CI: tests', ci_fix: { sha: SHA, checks: ['tests'] } })
+      .status('queued').status('running')
+      .act('git.push', {}, { exit_code: 0, stdout: '', stderr: '', branch: 'otto/s1', base: 'main', sha: 'b'.repeat(40) })
+      .add('ci.updated', { ...ci('queued'), sha: 'b'.repeat(40) })
+      .msg('assistant', 'Fixed the test.')
+      .add('pr.updated', { number: 3, url: 'https://github.com/o/r/pull/3', additions: 2, deletions: 1, files: 1 })
+      .status('done')
+    const items = v(l.events).items
+    const users = items.filter((i) => i.kind === 'user')
+    expect(users.map((u) => (u.kind === 'user' ? u.text : null))).toEqual(['fix the tests', 'Fix CI: tests'])
+    expect(JSON.stringify(items)).not.toContain('secret-looking log')
+    const prs = items.filter((i) => i.kind === 'pr')
+    expect(prs.map((p) => (p.kind === 'pr' ? p.ci?.state ?? null : null))).toEqual([null, 'queued']) // the latest card only
+    expect(kinds(items)).toEqual(['user', 'work', 'prose', 'pr', 'ci', 'user', 'work', 'prose', 'pr'])
+  })
+
+  it('a malformed ci.updated is ignored', () => {
+    const view_ = v(pushed().add('ci.updated', { state: 'exploded', sha: SHA }).add('ci.updated', { state: 'passed' }).events)
+    expect(view_.ci?.state).toBe('queued')
+  })
+})

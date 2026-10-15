@@ -173,11 +173,15 @@ def end_seqs(sids) -> dict[str, int]:
 ATTENTION_ENDS = {"done": "done", "failed": "failed", "interrupted": "failed"}
 
 
-def attention(row, end_seq) -> str | None:
+def attention(row, end_seq, ci=None) -> str | None:
     """The sidebar's dot: "working" while Otto works; "done" or "failed" when the latest turn ended
-    so after the last event the user saw; None otherwise (stopped by the user, seen, and the rest)."""
+    so after the last event the user saw, or "failed" when CI failed since then (ci: the chat's
+    latest (seq, state) from shared.ci.states); None otherwise (stopped by the user, seen, and the
+    rest)."""
     if row.status in ACTIVE:
         return "working"
+    if ci and ci[1] == "failed" and ci[0] > (row.last_seen_seq or 0):
+        return "failed"
     kind = ATTENTION_ENDS.get(row.status)
     return kind if kind and (end_seq or 0) > (row.last_seen_seq or 0) else None
 

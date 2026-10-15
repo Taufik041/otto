@@ -154,9 +154,9 @@ You need Docker, [kind](https://kind.sigs.k8s.io/), kubectl, Python 3.12 or newe
 
 - **Callback URL:** `http://localhost:8000/auth/github/callback`
 - **Request user authorization (OAuth) during installation:** on
-- **Webhook:** off (uncheck "Active")
+- **Webhook:** off (uncheck "Active"); locally Otto reads CI by polling
 - **Repository permissions:** Contents read and write, Pull requests read and write, Metadata
-  read-only
+  read-only, and for CI: Checks, Commit statuses and Actions read-only
 - Then note the **App ID** and **Client ID**, generate a **client secret**, and generate a
   **private key**. Save the key as `otto-secrets/otto.pem` (`otto-secrets/` and `*.pem` are
   gitignored).

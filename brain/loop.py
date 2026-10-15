@@ -1,10 +1,12 @@
 import json, asyncio, re
-from shared import config, health, usage
+from aio_pika import DeliveryMode, Message
+from shared import ci, config, health, usage
 from brain.providers import LLMError, ProviderUnusable, Stopped, complete
 from brain.prompts import SYSTEM, chat_system
 from brain.tools import TOOLS, KIND, missing_args
 from brain.bus import bus_call, start_consumer, stop_consumer
 from brain.resume import rebuild_messages
+from shared.bus import CI_QUEUE, pushed_job
 from shared.events import append_event, load_events
 from shared.github import parse_repo
 from shared.models import TITLE_LENGTH, make_title
@@ -213,6 +215,7 @@ async def finish(ch, pending, sid, messages, record):
     pushed = None
     if dirty or ahead is None or ahead > 0:
         pushed = await act("git.push", {})
+        await announce_push(ch, sid, pushed)
     row = get_session(sid)
     if row.pr_url:
         if pushed is not None:  # the push updated the open PR
@@ -220,6 +223,21 @@ async def finish(ch, pending, sid, messages, record):
             record("pr.updated", {"number": _pr_number(sid, row.pr_url), "url": row.pr_url, **stat})
     elif work > 0:
         await propose(sid, record, messages)
+
+
+async def announce_push(ch, sid, result):
+    """A push landed: CI results for its commit are this chat's from now on (shared/ci.py), and the
+    gateway is told on otto.ci to watch them. Never fails the turn."""
+    sha = result.get("sha") if result.get("exit_code") == 0 else None
+    if not isinstance(sha, str) or not sha:
+        return  # a sandbox from before CI awareness doesn't say what it pushed
+    try:
+        if ci.pushed(sid, sha):
+            await ch.default_exchange.publish(
+                Message(json.dumps(pushed_job(sid, sha)).encode(), delivery_mode=DeliveryMode.PERSISTENT),
+                routing_key=CI_QUEUE)
+    except Exception as e:
+        print(f"[brain] couldn't announce {sid}'s push of {sha[:7]}: {type(e).__name__}: {e}", flush=True)
 
 
 PR_TITLE_PROMPT = ("Write a pull request title for the changes below: in the imperative mood, " + STYLE + ", "
@@ -494,6 +512,8 @@ async def _steps(ch, pending, sid, messages, record) -> tuple[bool, bool]:
                     else:
                         changed = changed or kind in CHANGES
                         result = await bus_call(ch, pending, sid, kind, args, record=record)
+                        if kind == "git.push":
+                            await announce_push(ch, sid, result)
                 except Exception as e:
                     result = {"exit_code": 1, "stdout": "", "stderr": str(e)}
             print(f"[exit {result.get('exit_code')}] {(result.get('stdout') or result.get('stderr') or '')[:200]}")
