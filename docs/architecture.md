@@ -17,7 +17,7 @@ and settings in full; `web/README.md` has the frontend.
 | Postgres | | Users, chats, the event log, usage, refresh tokens, provider health. `LISTEN/NOTIFY` carries new-event signals to the gateway. |
 | RabbitMQ | | The session queue (gateway → brain) and each chat's action and result queues (brain ↔ runner). |
 | Kubernetes | | One Job per working chat (kind locally). |
-| GitHub | | Sign-in, the App's installations, clone and push with short-lived installation tokens, pull requests, and the CI of Otto's pushes (webhooks and polling, read-only). |
+| GitHub | | Sign-in, the App's installations, clone and push with short-lived installation tokens, pull requests, issues (read-only), and the CI of Otto's pushes (webhooks and polling, read-only). |
 
 ```mermaid
 flowchart LR
@@ -25,8 +25,11 @@ flowchart LR
   G --> PG[(Postgres<br/>event log)]
   G -- "otto.sessions" --> MQ{{RabbitMQ}}
   G -- "Jobs" --> K8S[Kubernetes]
-  G -- "OAuth, installs, PRs" --> GH[GitHub]
+  G -- "OAuth, installs, issues, CI, PRs" --> GH[GitHub]
+  GH -- "webhooks" --> G
+  G <-- "otto.ci" --> MQ
   W[Brain worker] --> PG
+  W -- "pushed" --> MQ
   MQ -- "turns" --> W
   W <-- "actions / results" --> MQ
   MQ <-- "actions / results" --> R[Runner pod]
@@ -150,6 +153,65 @@ The finish is skipped for plain chats, stopped turns, and turns that ran nothing
 the workspace. A failed step ends the turn `failed` with `error {stage: "finish", step}`, and
 Retry runs it again.
 
+## Issues and CI
+
+Both are read by the gateway with the installation's token, never by the brain, and both reach the
+model as untrusted data: wrapped in tags (`<issue>`, `<ci-log>`), after a note that says what they
+are and that anything inside them is material to work with, not instructions.
+
+```mermaid
+sequenceDiagram
+  actor U as User
+  participant G as Gateway
+  participant GH as GitHub
+  participant Q as RabbitMQ
+  participant B as Brain worker
+  participant DB as Postgres
+
+  U->>G: message naming #12
+  G->>GH: GET the issue and its latest comments
+  GH-->>G: title, body, labels, state
+  G->>DB: llm.message (the issue, untrusted; the card for the thread)
+  G->>Q: start or resume on otto.sessions
+  Note over B: the turn runs; the finish pushes
+  B->>Q: {type: pushed, sha} on otto.ci
+  Q->>G: pushed
+  loop every 30 s for 30 min, until CI is final
+    G->>GH: check runs + combined status of sha
+    G->>DB: ci.updated
+  end
+  GH->>G: POST /github/webhook (signed)
+  G->>G: check the signature, take the delivery once
+  G->>Q: {type: webhook, repo, sha, checks} on otto.ci
+  Q->>G: webhook
+  G->>DB: ci.updated (the chat whose head is sha)
+  U->>G: Fix CI
+  G->>GH: the failing jobs' logs
+  G->>DB: llm.message (the logs, untrusted)
+  G->>Q: resume on otto.sessions
+```
+
+- **An issue.** Typing `#` lists the repo's open issues (`GET /repos/{owner}/{name}/issues`). A
+  message that names one (`{"issue": 12}`) makes the gateway read it in `gateway/issues.py`: the
+  title, body, labels, state and the latest 10 comments, about 8 KB in all. A pull request, a
+  missing issue, a repo with issues off, or a missing permission is refused before anything is
+  stored. The thread shows the issue's card; the agent gets its text. The finish adds
+  `Fixes #12` to the proposed PR's body. Otto never writes to issues.
+- **CI, from the webhook.** `POST /github/webhook` checks `X-Hub-Signature-256` in constant time,
+  records `X-GitHub-Delivery` in `webhook_deliveries` so a redelivery is a no-op, boils the
+  delivery (`check_run`, `check_suite`, `workflow_run`, `status`) down to `{repo, sha, checks}`,
+  puts it on `otto.ci` and answers 202. The gateway's consumer applies it to the chat whose latest
+  push (`sessions.head_sha`) is that SHA and ignores the rest.
+- **CI, by polling.** The fallback for when the webhook is off or a delivery is lost. The brain
+  announces each push on `otto.ci`; the gateway reads the commit's check runs and combined status
+  every 30 seconds for 30 minutes, and once more when the chat is opened while CI isn't final.
+- **One record.** Both paths end in `shared.ci.record`, which writes `ci.updated` only when
+  something changed, and never moves CI backwards: a completed check stays completed, an older
+  status never replaces a newer one, and a new push starts over.
+- **Fix CI.** `POST /sessions/{id}/ci/fix` is a follow-up turn whose message carries the failing
+  jobs' logs (at most 4 jobs, trimmed to the tail and the lines around errors, about 20 KB). Otto
+  never starts it by itself.
+
 ## The event log
 
 `session_events (session_id, seq, ts, type, payload)`, with `(session_id, seq)` as the primary
@@ -164,7 +226,7 @@ then streams. A client that reconnects passes the last seq it has and misses not
 | `session.model_changed` | `{from, to}` | gateway |
 | `session.titled` | `{title, source}` | brain |
 | `repo.attached` | `{repo}` | gateway |
-| `llm.message` | `{message}`: an OpenAI-format chat message (system, user, assistant, tool) | gateway (user follow-ups), brain |
+| `llm.message` | `{message, display?, issue?}`: an OpenAI-format chat message (system, user, assistant, tool); a user message the thread shows differently (one that links an issue, Fix CI) has `display`, and one that links an issue has its card (`issue`) | gateway (user follow-ups), brain |
 | `llm.usage` | the call's token counts | brain |
 | `llm.key_rotated` | `{provider, from_index, to_index, reason}` (indexes, never keys) | brain |
 | `bus.action` | `{action_id, kind, payload}` | brain |

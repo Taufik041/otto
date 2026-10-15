@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useId, useRef, useState } from 'react'
+import { useContext, useEffect, useId, useRef, useState } from 'react'
 import { api } from '@/api'
 import { keys, useHealth } from '@/api/queries'
 import { WORKERS_OFFLINE } from '@/composer/WorkersOffline'
@@ -7,6 +7,7 @@ import { sendProblem } from '@/composer/sendErrors'
 import { cn } from '@/utils/cn'
 import { Glyph, IC } from './icons'
 import { checkResult, ciLabel, ciStale, duration, TONE, type Tone } from './ci'
+import { PrActionsContext } from './prActions'
 import type { Ci } from './reduce'
 
 function ToneGlyph({ tone, size = 15 }: { tone: Tone; size?: number }) {
@@ -24,11 +25,12 @@ function ToneGlyph({ tone, size = 15 }: { tone: Tone; size?: number }) {
  */
 export function CiRow({ sessionId, ci, live }: { sessionId: string; ci: Ci; live: boolean }) {
   const qc = useQueryClient()
+  const actions = useContext(PrActionsContext)
   const health = useHealth()
   const [open, setOpen] = useState(false)
   const listId = useId()
   const fix = useMutation({
-    mutationFn: () => api.fixCi(sessionId),
+    mutationFn: () => actions.fixCi(sessionId),
     onError: (e) => {
       if (sendProblem(e).kind === 'offline') void qc.invalidateQueries({ queryKey: keys.health })
     },

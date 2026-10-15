@@ -7,6 +7,7 @@ import { API_URL, APP_URL, CODE_URL, CONTACT_EMAIL, DEMO_BOOKING_URL, GITHUB_URL
 import { OfflineDialog } from './OfflineDialog'
 import { INNER_W } from './replay'
 import { Replay } from './Replay'
+import { ISSUE, PR_NUMBER, PR_TITLE, REPO } from './scene'
 import { Architecture, Bento, HowItWorks, Marquee, TwoTone } from './Sections'
 import { useStatus, type Status } from './status'
 
@@ -309,7 +310,7 @@ function Page({ entry, mobile }: { entry: (e: MouseEvent) => void; mobile: boole
   )
 }
 
-/** The blurred PR card over the window's right edge (desktop). */
+/** The blurred PR card over the window's right edge (desktop): where the replay ends. */
 function FloatingPr() {
   return (
     <div
@@ -319,16 +320,20 @@ function FloatingPr() {
       <div className="flex items-center gap-[7px] text-xs text-muted">
         <Glyph d={IC.pr} size={13} className="text-ok" />
         <span className="font-medium text-ok">PR open</span>
-        <span>· Taufik041/otto_test #9</span>
+        <span>· {REPO} #{PR_NUMBER}</span>
       </div>
-      <div className="mt-2 text-[19px] leading-[1.2] tracking-[-0.03em]">Fix bulk discount threshold</div>
-      <div className="mt-1.5 font-mono text-[11.5px] text-muted">
-        otto/4299fa2c3f → main · <span className="text-ok">+1</span> <span className="text-bad">−1</span>
+      <div className="mt-2 text-[19px] leading-[1.2] tracking-[-0.03em]">{PR_TITLE}</div>
+      <div className="mt-1.5 flex items-center gap-1.5 text-[12.5px] text-muted">
+        <Glyph d={IC.issue} size={13} width={1.8} className="text-ok" />
+        Closes #{ISSUE.number}
       </div>
       <div className="mt-3 border-0 border-t border-solid border-hair pt-3 text-[13px] leading-normal text-muted">
-        An order of exactly 10 units now gets the bulk discount, matching docs/PRICING.md.
+        An order of exactly 10 units now gets the bulk discount, as the issue asks.
       </div>
-      <div className="mt-2.5 text-[13px] font-medium text-ok">✓ 9 tests passed</div>
+      <div className="mt-2.5 flex items-center gap-1.5 text-[13px] font-medium text-ok">
+        <Glyph d={IC.checkCircle} size={14} width={1.8} />
+        CI passed
+      </div>
     </div>
   )
 }

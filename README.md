@@ -12,7 +12,7 @@
 <!-- TODO: add the demo GIF at docs/media/demo.gif, then uncomment the next line -->
 <!-- <p align="center"><img src="docs/media/demo.gif" alt="Otto fixing two failing tests and proposing a pull request" width="900"></p> -->
 
-Full demo video: <!-- TODO: add the link -->
+<!-- demo video -->
 
 ## What it does
 
@@ -26,6 +26,10 @@ Full demo video: <!-- TODO: add the link -->
   line counts and the test result. Nothing is opened on GitHub until you click Create.
 - **Follow up weeks later.** A follow-up continues the same chat on the same branch, in the warm
   sandbox or a new one rebuilt from the branch, and updates the open PR.
+- **Fix GitHub issues.** Type `#` to pick one of the repo's open issues; Otto reads it, works on
+  it, and the PR it proposes ends with `Fixes #12`, so merging closes the issue.
+- **Reads CI on its pull requests.** The PR card shows the CI of Otto's latest push, and when it
+  fails, **Fix CI** starts a follow-up that gets the failing jobs' logs.
 - **Pick the model.** Choose a model per chat and switch on any message (OpenRouter, OpenAI, or any
   OpenAI-compatible endpoint), with a daily token limit per user and a usage page.
 
@@ -49,7 +53,8 @@ flowchart LR
   G --> PG[(Postgres<br/>event log)]
   G -- "turns" --> MQ{{RabbitMQ}}
   G -- "sandbox Jobs" --> K8S[Kubernetes]
-  G -- "OAuth, installs, PRs" --> GH[GitHub]
+  G -- "OAuth, installs, issues, CI, PRs" --> GH[GitHub]
+  GH -- "signed webhooks" --> G
   MQ -- "turns" --> W[Brain worker]
   W --> PG
   W <-- "actions / results" --> MQ
@@ -68,6 +73,11 @@ flowchart LR
   answers actions: shell, file reads and edits, search, git.
 - **Postgres** holds the event log; **RabbitMQ** carries turns to the workers and actions between
   the brain and each sandbox.
+
+CI results come in through the GitHub App's webhook, signed and checked against a shared secret,
+each delivery taken once, and polled for 30 minutes after each push as a fallback, so CI still
+shows when the webhook is off. Issue text and CI logs are passed to the model as untrusted data,
+framed so it reads them as material to work with, never as instructions.
 
 One agent turn:
 
@@ -146,6 +156,25 @@ flows, is in [docs/architecture.md](docs/architecture.md).
 - **Testing:** pytest, pytest-asyncio, Vitest, Testing Library, MSW, Playwright (screenshots and an
   end-to-end script)
 
+## GitHub App permissions
+
+Otto asks for these, and no more:
+
+| Permission | Access | Why |
+|---|---|---|
+| Contents | Read and write | Clone the repo into the sandbox and push Otto's branch. |
+| Pull requests | Read and write | Open the PR when you click Create. |
+| Metadata | Read-only | Required by every GitHub App: list the repos an installation covers. |
+| Issues | Read-only | The `#` picker, and reading the issue you hand Otto. It never writes to issues. |
+| Checks | Read-only | Read the check runs on Otto's pushes. |
+| Commit statuses | Read-only | Read a commit's combined status, for CI that reports statuses instead of checks. |
+| Actions | Read-only | Read a failed job's log for Fix CI. |
+| Email addresses (account) | Read-only | Learn your verified email when you sign in with GitHub. |
+
+Webhook events: **Check run** and **Status** carry CI results; **Check suite** and **Workflow
+run** say a whole run finished and give its link. They come with the permissions above. The
+webhook is optional: without it, Otto reads CI by polling.
+
 ## Running locally
 
 You need Docker, [kind](https://kind.sigs.k8s.io/), kubectl, Python 3.12 or newer, and Node 22.
@@ -156,7 +185,7 @@ You need Docker, [kind](https://kind.sigs.k8s.io/), kubectl, Python 3.12 or newe
 - **Request user authorization (OAuth) during installation:** on
 - **Webhook:** off (uncheck "Active"); locally Otto reads CI by polling
 - **Repository permissions:** Contents read and write, Pull requests read and write, Metadata
-  read-only, and for CI: Checks, Commit statuses and Actions read-only
+  read-only, Issues read-only, and for CI: Checks, Commit statuses and Actions read-only
 - Then note the **App ID** and **Client ID**, generate a **client secret**, and generate a
   **private key**. Save the key as `otto-secrets/otto.pem` (`otto-secrets/` and `*.pem` are
   gitignored).
