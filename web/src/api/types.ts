@@ -86,8 +86,18 @@ export type SessionDetail = SessionSummary & {
   created_at: string
 }
 
-/** client_message_id: posting the same one again returns the chat the first post made */
-export type NewSession = { message: string; repo?: string | null; model?: string | null; client_message_id?: string }
+/** client_message_id: posting the same one again returns the chat the first post made; issue: a
+ *  number of the repo's issues to work on (the # picker) */
+export type NewSession = {
+  message: string
+  repo?: string | null
+  model?: string | null
+  client_message_id?: string
+  issue?: number | null
+}
+
+/** GET /repos/{owner}/{name}/issues: a repo's open issues, for the # picker */
+export type Issue = { number: number; title: string; labels: string[]; updated_at: string | null }
 export type Created = { id: string; status: string; title: string; repo: string | null }
 
 export type GitHubStatus = {

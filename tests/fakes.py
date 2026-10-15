@@ -349,6 +349,9 @@ class FakeGitHub:
         self.statuses = {}             # (full name, sha) -> commit statuses (the latest per context)
         self.job_logs = {}             # (full name, job id) -> an Actions job's log text
         self.ci_error = None           # (status, body): what the CI endpoints answer instead
+        self.issues = {}               # full name -> issues (a pull request has a pull_request key)
+        self.comments = {}             # (full name, issue number) -> comments, oldest first
+        self.issues_error = None       # (status, body): what the issue endpoints answer instead
 
     def add_user(self, code, gid, login, emails=None, **extra):
         """emails: [(address, verified)] for GET /user/emails."""
@@ -417,6 +420,8 @@ class FakeGitHub:
             if iid is None:
                 return FakeResponse(401, {"message": "Bad credentials"})
             return self._page(url, self.repos[iid], "repositories", params)
+        if path.startswith("/repos/") and "/issues" in path:
+            return self._issues(path, token, params)
         if path.startswith("/repos/") and path.endswith("/pulls"):
             return self._pulls(method, path.removeprefix("/repos/").removesuffix("/pulls"), token, json, params)
         if path.startswith("/repos/") and ("/commits/" in path or "/actions/jobs/" in path):
@@ -442,6 +447,40 @@ class FakeGitHub:
             log = self.job_logs.get((full_name, int(rest[2])))
             return FakeResponse(200, log) if log is not None else FakeResponse(404, {"message": "Not Found"})
         return FakeResponse(404, {"message": f"FakeGitHub has no GET {path}"})
+
+    def add_issue(self, full_name, number, title="Bug", body="It breaks.", state="open", labels=(), comments=(),
+                  pull=False, **extra):
+        issue = {"number": number, "title": title, "body": body, "state": state, "user": {"login": "reporter"},
+                 "labels": [{"name": l} for l in labels], "comments": len(comments),
+                 "html_url": f"https://github.com/{full_name}/{'pull' if pull else 'issues'}/{number}",
+                 "updated_at": f"2026-10-{number % 28 + 1:02d}T00:00:00Z", **extra}
+        if pull:
+            issue["pull_request"] = {"url": f"{self.API}/repos/{full_name}/pulls/{number}"}
+        self.issues.setdefault(full_name, []).append(issue)
+        self.comments[(full_name, number)] = [
+            {"user": {"login": f"user{i}"}, "created_at": f"2026-10-01T00:{i % 60:02d}:00Z", "body": c}
+            for i, c in enumerate(comments)]
+        return issue
+
+    def _issues(self, path, token, params):
+        """A repo's issues (state=open), one issue, and an issue's comments (paged by per_page)."""
+        if not token.startswith("ghs_inst"):
+            return FakeResponse(401, {"message": "Bad credentials"})
+        if self.issues_error:
+            return FakeResponse(*self.issues_error)
+        parts = path.split("/")  # "", repos, owner, name, issues, ...
+        full_name, rest = f"{parts[2]}/{parts[3]}", parts[5:]
+        issues = self.issues.get(full_name, [])
+        if not rest:
+            state = (params or {}).get("state", "open")
+            return FakeResponse(200, [i for i in issues if state == "all" or i["state"] == state])
+        found = next((i for i in issues if i["number"] == int(rest[0])), None)
+        if found is None:
+            return FakeResponse(404, {"message": "Not Found"})
+        if rest[1:] == ["comments"]:
+            size, page = int(params.get("per_page", 30)), int(params.get("page", 1))
+            return FakeResponse(200, self.comments[(full_name, found["number"])][(page - 1) * size: page * size])
+        return FakeResponse(200, found)
 
     def _pulls(self, method, full_name, token, body, params):
         """POST: open a PR (422 if one is open for the head already); GET: list by head/state."""

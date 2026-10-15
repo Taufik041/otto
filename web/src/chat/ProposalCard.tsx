@@ -82,6 +82,7 @@ export function ProposalCard({
       branch={proposal.head}
       base={proposal.base}
       counts={{ additions: proposal.additions, deletions: proposal.deletions, files: proposal.files, tests: passed(proposal.tests) }}
+      issues={proposal.issues}
     >
       {ci && <CiRow key={ci.sha} sessionId={sessionId} ci={ci} live={live} />}
       {(create.error || decline.error) && (

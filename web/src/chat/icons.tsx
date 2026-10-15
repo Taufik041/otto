@@ -20,6 +20,7 @@ export const IC = {
   box: 'M12 3l8 4.5v9L12 21l-8-4.5v-9zM4 7.5l8 4.5 8-4.5M12 12v9',
   stop: 'M7 7h10v10H7z',
   more: 'M5.5 12h.01M12 12h.01M18.5 12h.01',
+  issue: 'M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17zM12 10.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3z',
 } as const
 
 export function Glyph({

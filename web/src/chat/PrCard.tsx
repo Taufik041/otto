@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { GitHubIcon } from '@/components/brand'
 import { CiRow } from './CiRow'
 import { Glyph, IC } from './icons'
-import type { Ci, PrCard as Pr, TestSummary } from './reduce'
+import type { Ci, IssueLink, PrCard as Pr, TestSummary } from './reduce'
 
 type Counts = { additions: number | null; deletions: number | null; files: number | null; tests: number | null }
 
@@ -21,6 +21,7 @@ export function PrFrame({
   branch,
   base,
   counts,
+  issues = [],
   children,
 }: {
   /** the region's name for screen readers */
@@ -35,6 +36,8 @@ export function PrFrame({
   branch: string | null
   base: string | null
   counts: Counts
+  /** the issues merging it closes ("Fixes #12" in its body) */
+  issues?: IssueLink[]
   children: ReactNode
 }) {
   const files = counts.files === null ? null : `${counts.files} ${counts.files === 1 ? 'file' : 'files'}`
@@ -58,6 +61,20 @@ export function PrFrame({
       <div className="mt-1.5 font-mono text-[12.5px] leading-[1.7] text-muted">
         {[repo, branch && (base ? `${branch} → ${base}` : branch)].filter(Boolean).join(' · ')}
       </div>
+      {issues.length > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[13.5px] text-muted">
+          <Glyph d={IC.issue} size={14} width={1.8} className="shrink-0 text-ok" />
+          {issues.map((i) =>
+            i.url ? (
+              <a key={i.number} href={i.url} target="_blank" rel="noopener noreferrer">
+                Closes #{i.number}
+              </a>
+            ) : (
+              <span key={i.number}>Closes #{i.number}</span>
+            ),
+          )}
+        </div>
+      )}
       {(counts.additions !== null || counts.tests !== null) && (
         <div className="mt-4 flex flex-wrap items-center gap-x-3.5 gap-y-2 border-0 border-t border-solid border-hair pt-3.5">
           {counts.additions !== null && <span className="font-mono text-[13px] text-ok">+{counts.additions}</span>}
@@ -113,6 +130,7 @@ export function PrCard({
       branch={pr.branch}
       base={pr.base}
       counts={{ additions: pr.additions, deletions: pr.deletions, files: pr.files, tests: passed(pr.tests) }}
+      issues={pr.issues}
     >
       {ci && <CiRow key={ci.sha} sessionId={sessionId} ci={ci} live={live} />}
       <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2.5">

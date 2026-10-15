@@ -4,11 +4,14 @@ import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useSt
 import { useNavigate } from 'react-router'
 import { api, goToGitHub } from '@/api'
 import { messageOf } from '@/api/errors'
-import { keys, useHealth, useModels, useRepos } from '@/api/queries'
-import type { Repo } from '@/api/types'
+import { keys, useHealth, useIssues, useModels, useRepos } from '@/api/queries'
+import type { Issue, Repo } from '@/api/types'
 import { rememberReturn, useMe } from '@/auth/auth'
+import { Glyph, IC } from '@/chat/icons'
 import { RepoIcon } from '@/components/icons'
+import { activeIssue, filterIssues, typedIssue } from '@/utils/issue'
 import { activeMention, extractRepo, filterRepos, removeMention, shortName, type ActiveMention } from '@/utils/mention'
+import { IssueMenu } from './IssueMenu'
 import { MentionMenu, NoRepos } from './MentionMenu'
 import { ModelMenu } from './ModelMenu'
 import { initialModel } from './models'
@@ -74,8 +77,10 @@ export function Composer({
   const [draft, setDraft] = useState('')
   const [repo, setRepo] = useState<Repo | null>(null)
   const [model, setModel] = useState<string | null>(null)
-  const [open, setOpen] = useState<'mention' | 'model' | null>(null)
+  const [open, setOpen] = useState<'mention' | 'issue' | 'model' | null>(null)
   const [mention, setMention] = useState<ActiveMention | null>(null)
+  /** the issue picked with # (one per message), with the repo it belongs to */
+  const [issue, setIssue] = useState<(Issue & { repo: string }) | null>(null)
   const [active, setActive] = useState(0)
   const [problem, setProblem] = useState<SendProblem | null>(null)
   const [installing, setInstalling] = useState(false)
@@ -106,15 +111,35 @@ export function Composer({
   const matches = useMemo(() => filterRepos(repos.data ?? [], mention?.query ?? ''), [repos.data, mention])
   const selectedModel = models.data?.models.find((m) => m.id === current)
 
+  // the repo the message goes to: its chip, an @repo typed in it, or the chat's own
+  const typed = extractRepo(draft, repos.data ?? [])
+  const target = repo ?? typed.repo
+  const repoName = target?.full_name ?? reply?.repo ?? null
+  const issues = useIssues(open === 'issue' ? repoName : null)
+  const issueMatches = useMemo(() => filterIssues(issues.data ?? [], mention?.query ?? ''), [issues.data, mention])
+  // the issue picked for this repo, else one typed as "#12" or "issue #12"
+  const picked = issue && repoName && issue.repo.toLowerCase() === repoName.toLowerCase() ? issue : null
+
   const send = useMutation({
-    mutationFn: async ({ id, ...body }: { id: string; message: string; repo: string | null; model: string | null }) => {
-      if (!reply) return (await api.createSession({ ...body, client_message_id: id })).id
+    mutationFn: async ({
+      id,
+      ...body
+    }: {
+      id: string
+      message: string
+      repo: string | null
+      model: string | null
+      issue: number | null
+    }) => {
+      const { issue: number, ...rest } = body
+      if (!reply) return (await api.createSession({ ...rest, client_message_id: id, ...(number ? { issue: number } : {}) })).id
       reply.onSending({ id, text: body.message, repo: body.repo })
       await api.followUp(reply.sessionId, {
         client_message_id: id,
         text: body.message,
         ...(body.repo ? { repo: body.repo } : {}),
         ...(body.model ? { model: body.model } : {}),
+        ...(number ? { issue: number } : {}),
       })
       return reply.sessionId
     },
@@ -124,6 +149,7 @@ export function Composer({
       if (!reply) return navigate(`/c/${id}`)
       setDraft('')
       setRepo(null)
+      setIssue(null)
       setModel(null) // the chat is on the picked model now (session.model_changed)
     },
     onError: (e, body) => {
@@ -135,14 +161,15 @@ export function Composer({
     },
   })
 
-  const typed = extractRepo(draft, repos.data ?? [])
   const message = repo ? draft.trim() : typed.text
-  const target = repo ?? typed.repo
+  // a picked issue with no words of the user's own: ask for it by number
+  const words = message || (picked ? `Fix #${picked.number}` : '')
+  const issueNumber = repoName ? (picked?.number ?? typedIssue(message)) : null
   const working = reply?.live === true
   // the workers are offline: plain chat works, a repo task (or a repo chat's follow-up) can't go
   const offline = health.data?.workers === 'offline' || problem?.kind === 'offline'
   const blocked = offline && !!(target || reply?.repo)
-  const canSend = message.length > 0 && !send.isPending && !working && !blocked
+  const canSend = words.length > 0 && !send.isPending && !working && !blocked
   const stop = useMutation({
     mutationFn: () => api.stop(reply!.sessionId),
     onError: (e) => setProblem({ kind: 'other', message: messageOf(e) }),
@@ -154,15 +181,32 @@ export function Composer({
     setOpen(null)
     // a reply names a model only to switch to it
     const switchTo = reply ? (model && model !== reply.model ? model : null) : model
-    send.mutate({ id: clientMessageId(), message, repo: target?.full_name ?? null, model: switchTo })
+    send.mutate({ id: clientMessageId(), message: words, repo: target?.full_name ?? null, model: switchTo, issue: issueNumber })
   }
 
   function onChange(value: string, caret: number) {
     setDraft(value)
-    const m = activeMention(value, caret)
+    const at = activeMention(value, caret)
+    // # picks an issue once the message has a repo (its chip, a typed @repo, or the chat's)
+    const hash = at ? null : activeIssue(value, caret)
+    const hasRepo = !!(repo ?? extractRepo(value, repos.data ?? []).repo ?? reply?.repo)
+    const m = at ?? (hash && hasRepo ? hash : null)
     setMention(m)
     setActive(0)
-    setOpen(m ? 'mention' : open === 'mention' ? null : open)
+    const kind = at ? 'mention' : m ? 'issue' : null
+    setOpen(kind ?? (open === 'mention' || open === 'issue' ? null : open))
+  }
+
+  function pickIssue(i: Issue) {
+    if (mention) {
+      const next = removeMention(draft, mention)
+      caretAfter.current = next.caret
+      setDraft(next.text)
+    }
+    setIssue({ ...i, repo: repoName! })
+    setMention(null)
+    setOpen(null)
+    ta.current?.focus()
   }
 
   function pick(r: Repo) {
@@ -192,16 +236,19 @@ export function Composer({
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.nativeEvent.isComposing) return
-    if (open === 'mention' && matches.length) {
+    const list = open === 'mention' ? matches : open === 'issue' ? issueMatches : []
+    if (list.length) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault()
         const step = e.key === 'ArrowDown' ? 1 : -1
-        setActive((i) => (i + step + matches.length) % matches.length)
+        setActive((i) => (i + step + list.length) % list.length)
         return
       }
       if (e.key === 'Enter' || e.key === 'Tab') {
         e.preventDefault()
-        pick(matches[Math.min(active, matches.length - 1)]!)
+        const i = Math.min(active, list.length - 1)
+        if (open === 'mention') pick(matches[i]!)
+        else pickIssue(issueMatches[i]!)
         return
       }
     }
@@ -215,7 +262,8 @@ export function Composer({
       submit()
       return
     }
-    if (e.key === 'Backspace' && !draft && repo) setRepo(null)
+    if (e.key === 'Backspace' && !draft && picked) setIssue(null)
+    else if (e.key === 'Backspace' && !draft && repo) setRepo(null)
   }
 
   async function install() {
@@ -274,6 +322,27 @@ export function Composer({
             )}
           </ComposerPopover>
         )}
+        {open === 'issue' && repoName && (
+          <ComposerPopover mobile={mobile} below={below} width={460} onClose={() => setOpen(null)} label="Pick an issue">
+            {issues.isPending ? (
+              <div className="px-3 py-3.5 text-sm text-muted">Loading issues…</div>
+            ) : issues.isError ? (
+              <div role="alert" className="px-3 py-3.5 text-sm text-bad">
+                {messageOf(issues.error)}
+              </div>
+            ) : (
+              <IssueMenu
+                repo={repoName}
+                issues={issueMatches}
+                query={mention?.query ?? ''}
+                active={active}
+                mobile={mobile}
+                onPick={pickIssue}
+                onHover={setActive}
+              />
+            )}
+          </ComposerPopover>
+        )}
         {open === 'model' && models.data && (
           <ComposerPopover mobile={mobile} below={below} width={340} onClose={() => setOpen(null)} label="Choose a model">
             <ModelMenu
@@ -318,15 +387,53 @@ export function Composer({
                 </button>
               </span>
             )}
+            {picked && (
+              <span
+                title={picked.title}
+                className="inline-flex h-7 min-w-0 max-w-full shrink items-center gap-1 rounded-lg bg-accent-bg pl-[9px] pr-1.5 text-[15px] font-medium text-accent"
+              >
+                <Glyph d={IC.issue} size={13} width={1.9} className="shrink-0" />
+                <span className="shrink-0">#{picked.number}</span>
+                <span className="min-w-0 max-w-[260px] truncate font-normal">{picked.title}</span>
+                <button
+                  type="button"
+                  title="Remove"
+                  aria-label={`Remove issue #${picked.number}`}
+                  onClick={() => {
+                    setIssue(null)
+                    ta.current?.focus()
+                  }}
+                  className="flex size-[18px] shrink-0 items-center justify-center rounded-[5px] border-0 bg-transparent p-0 text-inherit"
+                >
+                  <X size={11} strokeWidth={2.4} />
+                </button>
+              </span>
+            )}
             <textarea
               ref={ta}
               rows={1}
               value={draft}
               aria-label="Message Otto"
-              aria-controls={open === 'mention' ? 'mention-list' : undefined}
-              aria-activedescendant={open === 'mention' && matches.length ? `mention-${active}` : undefined}
+              aria-controls={open === 'mention' ? 'mention-list' : open === 'issue' ? 'issue-list' : undefined}
+              aria-activedescendant={
+                open === 'mention' && matches.length
+                  ? `mention-${active}`
+                  : open === 'issue' && issueMatches.length
+                    ? `issue-${active}`
+                    : undefined
+              }
               aria-autocomplete="list"
-              placeholder={working ? 'Otto is working…' : reply ? 'Reply to Otto…' : 'Message Otto. Type @ to mention a repo.'}
+              placeholder={
+                working
+                  ? 'Otto is working…'
+                  : reply
+                    ? reply.repo
+                      ? 'Reply to Otto. Type # to pick an issue.'
+                      : 'Reply to Otto…'
+                    : target
+                      ? 'Message Otto. Type # to pick an issue.'
+                      : 'Message Otto. Type @ to mention a repo.'
+              }
               onChange={(e) => onChange(e.target.value, e.target.selectionStart)}
               onKeyDown={onKeyDown}
               className="max-h-[220px] min-w-[120px] flex-[1_1_180px] resize-none border-0 bg-transparent py-0.5 text-base leading-[1.55] text-text outline-none focus-visible:outline-none"

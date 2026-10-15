@@ -96,3 +96,8 @@ async def test_each_turn_gets_the_facts_of_that_moment(monkeypatch):
     system = requests[0]["messages"][0]["content"]
     assert "workers are online" in system and "workers are offline" not in system
     assert [m["content"] for m in requests[0]["messages"][1:]] == ["hi", "hello", "are the workers up?"]
+
+
+def test_plain_chats_know_about_the_issue_picker():
+    p = prompts.chat_system(ONLINE, None)
+    assert "type # and pick one of its open issues" in p and '"Fixes #12"' in p

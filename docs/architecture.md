@@ -140,7 +140,8 @@ final message, `finish` in `brain/loop.py` runs ordinary bus actions:
 1. `git.status`: is anything uncommitted, is `otto/<id>` ahead of the remote?
 2. Commit what's uncommitted, with a message from the turn's request.
 3. Push if the branch is ahead.
-4. With no PR open: `pr.proposed {title, body, head, base, additions, deletions, files, tests}`.
+4. With no PR open: `pr.proposed {title, body, head, base, additions, deletions, files, tests, issues?}`.
+   A chat that linked issues (`#12` in the composer) gets `Fixes #12` at the end of the body.
    The title is one short model call (plain sentence case, at most 60 characters, conventional
    commit prefixes stripped); if that call fails, it's the trimmed task. With a PR already open,
    the push updated it: `pr.updated`.
@@ -168,7 +169,7 @@ then streams. A client that reconnects passes the last seq it has and misses not
 | `llm.key_rotated` | `{provider, from_index, to_index, reason}` (indexes, never keys) | brain |
 | `bus.action` | `{action_id, kind, payload}` | brain |
 | `bus.result` | `{action_id, ok, payload}` | brain |
-| `pr.proposed` | `{title, body, head, base, additions, deletions, files, tests}` | brain |
+| `pr.proposed` | `{title, body, head, base, additions, deletions, files, tests, issues?}`: issues, `[{number, url}]`, the linked issues the body says `Fixes #N` for | brain |
 | `pr.updated` | `{number, url, additions, deletions, files}` | brain |
 | `pr.opened` | `{number, html_url}` | gateway |
 | `pr.declined` | `{}` | gateway |

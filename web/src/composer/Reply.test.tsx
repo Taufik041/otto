@@ -50,7 +50,7 @@ it('while Otto works: Stop instead of Send, and Enter sends nothing', async () =
 
 it('between turns: a follow-up posts the text and clears the box', async () => {
   const { calls, ids, onSending } = setup()
-  expect(box()).toHaveAttribute('placeholder', 'Reply to Otto…')
+  expect(box()).toHaveAttribute('placeholder', 'Reply to Otto. Type # to pick an issue.')
   expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument()
   await userEvent.type(box(), 'also add a test for exactly 11 units{Enter}')
   await waitFor(() => expect(calls).toEqual([{ path: 'messages', body: { text: 'also add a test for exactly 11 units' } }]))
@@ -164,4 +164,20 @@ it('a follow-up that fails is taken back out of the chat, and the next try gets 
   await waitFor(() => expect(calls).toHaveLength(2))
   expect(ids[1]).not.toBe(ids[0])
   expect(onSending).toHaveBeenCalledTimes(2)
+})
+
+it("a follow-up's # picks an issue of the chat's repo", async () => {
+  const { calls } = setup()
+  server.use(
+    http.get(`${API}/repos/Taufik041/otto_test/issues`, () =>
+      HttpResponse.json([{ number: 12, title: 'Login button does nothing', labels: [], updated_at: null }]),
+    ),
+  )
+  await userEvent.type(box(), 'now #')
+  await userEvent.click(await screen.findByRole('option', { name: /Login button does nothing/ }))
+  await userEvent.type(box(), 'fix it{Enter}')
+
+  await waitFor(() => expect(calls).toHaveLength(1))
+  expect(calls[0]!.body).toMatchObject({ text: 'now fix it', issue: 12 })
+  expect(screen.queryByRole('button', { name: 'Remove issue #12' })).not.toBeInTheDocument() // cleared once sent
 })

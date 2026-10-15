@@ -7,6 +7,7 @@ export const keys = {
   health: ['health'] as const,
   models: ['models'] as const,
   repos: ['repos'] as const,
+  issues: (repo: string) => ['repos', repo, 'issues'] as const,
   github: ['github'] as const,
   usage: ['usage'] as const,
   sessions: ['sessions'] as const,
@@ -19,6 +20,9 @@ export const useHealth = () =>
   useQuery({ queryKey: keys.health, queryFn: api.health, staleTime: 15_000, refetchInterval: 30_000 })
 export const useModels = () => useQuery({ queryKey: keys.models, queryFn: api.models, staleTime: 5 * 60_000 })
 export const useRepos = () => useQuery({ queryKey: keys.repos, queryFn: api.repos, staleTime: 60_000 })
+/** A repo's open issues for the # picker: asked for once the picker opens on that repo. */
+export const useIssues = (repo: string | null) =>
+  useQuery({ queryKey: keys.issues(repo ?? ''), queryFn: () => api.issues(repo!), enabled: !!repo, staleTime: 60_000, retry: false })
 export const useGitHub = () => useQuery({ queryKey: keys.github, queryFn: api.github })
 export const useUsage = () => useQuery({ queryKey: keys.usage, queryFn: api.usage })
 export const useSession = (id: string) => useQuery({ queryKey: keys.session(id), queryFn: () => api.session(id) })
