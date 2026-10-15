@@ -196,7 +196,7 @@ In the App's settings on GitHub:
   signed-in user whose GitHub account can access the installation, and only refreshes its caches.
 - **Expire user authorization tokens:** either; Otto uses the user token once and doesn't keep it.
 - **Client secret:** generate one for `GITHUB_CLIENT_SECRET`.
-- **Permissions:** repository contents and pull requests read & write, metadata read, and for CI
+- **Permissions:** repository contents and pull requests read & write, metadata read, issues read, and for CI
   checks, commit statuses and actions read; under account permissions, "Email addresses" read. A GitHub sign-up reads the user's verified emails
   (`GET /user/emails`): a new account gets the verified primary one, and none of them may belong to
   a confirmed Otto account. Without the permission, only the profile email (`GET /user`) is used.
