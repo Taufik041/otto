@@ -3,11 +3,19 @@ import json
 
 import pytest
 
-from shared.bus import SESSIONS_QUEUE, chat_job, make_result, resume_job, results_queue, retry_job, start_job
+from brain import providers, worker
+from shared.bus import (
+    SESSIONS_QUEUE,
+    chat_job,
+    make_result,
+    results_queue,
+    resume_job,
+    retry_job,
+    start_job,
+)
 from shared.events import load_events
 from shared.sessions import create_session, get_session, transition
-from brain import loop, providers, worker
-from tests.fakes import FakeChannel, FakeConnection, llm_tool_calls, llm_final
+from tests.fakes import FakeChannel, FakeConnection, llm_final, llm_tool_calls
 
 
 def fake_llm(monkeypatch, scripts, delay=0.01):

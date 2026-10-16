@@ -80,7 +80,7 @@ def test_sign_in_creates_a_user(client, fake_github):
     r = callback(client, code="c1", state=start(client))
 
     assert r.status_code in (302, 307) and r.headers["location"] == "http://localhost:5173/auth/callback"
-    header = [v for k, v in r.headers.multi_items() if k == "set-cookie" and v.startswith("otto_refresh=")][0]
+    header = next(v for k, v in r.headers.multi_items() if k == "set-cookie" and v.startswith("otto_refresh="))
     assert "httponly" in header.lower() and "path=/auth" in header.lower()
     me = client.get("/me").json()
     assert (me["name"], me["github_login"], me["avatar_url"]) == (

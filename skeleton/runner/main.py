@@ -5,7 +5,6 @@ import traceback
 
 from aio_pika import Message, connect_robust
 
-from handlers import handle_execution
 
 async def main():
     bus_url = os.environ.get("BUS_URL", "amqp://guest:guest@localhost/")

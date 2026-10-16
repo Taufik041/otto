@@ -39,8 +39,8 @@ def test_invalid_session_ids_raise_before_touching_k8s(batch, sid):
 
 # --- GitHub token injection ---------------------------------------------------
 
-from shared import config
 from gateway import github_app
+from shared import config
 
 TOKEN = "ghs_MintedInstallationToken42"
 

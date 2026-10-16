@@ -3,9 +3,17 @@ import shutil
 import pytest
 from fastapi.testclient import TestClient
 
-from shared import config, db as shared_db
 from brain import providers as providers_module
-from tests.fakes import FakeChannel, FakeConnection, FakeOrchestrator, FakeRunners, use_env
+from shared import config
+from shared import db as shared_db
+from tests.fakes import (
+    FakeChannel,
+    FakeConnection,
+    FakeOrchestrator,
+    FakeResend,
+    FakeRunners,
+    use_env,
+)
 
 ORIGIN = "http://localhost:5173"  # in the default CORS_ORIGINS
 
@@ -86,6 +94,7 @@ def providers(monkeypatch):
 def accounts(monkeypatch):
     """A known signing secret and limits, whatever .env says; cheap argon2 so signups are fast."""
     from argon2 import PasswordHasher
+
     from gateway import auth, tokens
 
     cheap = PasswordHasher(time_cost=1, memory_cost=8, parallelism=1)
@@ -114,6 +123,9 @@ def launch_settings(monkeypatch):
     monkeypatch.setattr(config, "LANDING_ORIGINS", [])
     monkeypatch.setattr(config, "PRODUCTION", False)
     monkeypatch.setattr(config, "GITHUB_CALLBACK_URL", "")
+    monkeypatch.setattr(config, "REVIEW_REACTION", False)
+    monkeypatch.setattr(config, "REVIEW_MODEL", "")  # reviews on the user's default; tests set it
+    monkeypatch.setattr(config, "REVIEW_MAX_TOKENS", 2000)
     limits.reset()
     # no email goes anywhere: no key (development prints); tests that send install a fake
     from shared import email
@@ -122,7 +134,7 @@ def launch_settings(monkeypatch):
     monkeypatch.setattr(config, "OTTO_NOTIFY_TO", None)
 
     def no_network(payload):
-        raise AssertionError("a test tried to call Resend; use the resend fixture in tests/test_email.py")
+        raise AssertionError("a test tried to call Resend; use the resend fixture")
 
     monkeypatch.setattr(email, "post", no_network)
 
@@ -130,7 +142,8 @@ def launch_settings(monkeypatch):
 @pytest.fixture
 def env(monkeypatch):
     """The gateway with a fake bus, fake runners and a fake orchestrator."""
-    from gateway import app as gateway_app, workers
+    from gateway import app as gateway_app
+    from gateway import workers
     from orchestrator import sandbox
 
     ch = FakeChannel()
@@ -156,3 +169,16 @@ def client(env):
 
     with TestClient(gateway_app.app) as c:
         yield c
+
+
+@pytest.fixture
+def resend(monkeypatch):
+    """Stands in for Resend: what would have been sent is in resend.sent."""
+    from shared import email
+
+    fake = FakeResend()
+    monkeypatch.setattr(config, "RESEND_API_KEY", "re_test")
+    monkeypatch.setattr(config, "OTTO_NOTIFY_TO", "taufik@example.com")
+    monkeypatch.setattr(config, "EMAIL_FROM", "Otto <noreply@taufi.dev>")
+    monkeypatch.setattr(email, "post", fake)
+    return fake

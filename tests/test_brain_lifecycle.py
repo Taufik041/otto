@@ -1,12 +1,13 @@
 import pytest
 
+from brain import loop
+from brain import main as brain_main
+from brain.prompts import SYSTEM
 from shared import config
 from shared.bus import results_queue
 from shared.events import load_events
 from shared.sessions import create_session, get_session, set_status
-from brain import loop, main as brain_main
-from brain.prompts import SYSTEM
-from tests.fakes import FakeChannel, auto_reply, llm_tool_calls, llm_final
+from tests.fakes import FakeChannel, auto_reply, llm_final, llm_tool_calls
 from tests.test_brain_loop import fake_client
 
 

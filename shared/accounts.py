@@ -15,8 +15,20 @@ from typing import NamedTuple
 from sqlmodel import delete, func, or_, select, update
 
 from shared.db import get_db
-from shared.models import (AccessRequest, EmailVerification, Installation, PasswordReset, RefreshToken, Session,
-                           SessionEvent, Usage, User, utcnow)
+from shared.models import (
+    AccessRequest,
+    AutoReview,
+    EmailVerification,
+    Installation,
+    PasswordReset,
+    PrReview,
+    RefreshToken,
+    Session,
+    SessionEvent,
+    Usage,
+    User,
+    utcnow,
+)
 from shared.sessions import ACTIVE, set_status
 
 UNCONFIRMED_TTL = timedelta(days=7)  # an email sign-up nobody confirmed is deleted after this
@@ -40,6 +52,8 @@ def _delete_data(s, user_id):
     s.exec(delete(SessionEvent).where(SessionEvent.session_id.in_(sessions)))
     s.exec(delete(Session).where(Session.user_id == user_id))
     s.exec(delete(Installation).where(Installation.user_id == user_id))
+    s.exec(delete(PrReview).where(PrReview.user_id == user_id))
+    s.exec(delete(AutoReview).where(AutoReview.user_id == user_id))
     s.exec(delete(PasswordReset).where(PasswordReset.user_id == user_id))
     s.exec(delete(EmailVerification).where(EmailVerification.user_id == user_id))
     s.exec(delete(RefreshToken).where(RefreshToken.user_id == user_id))
@@ -127,7 +141,8 @@ def deactivate(user_id, now=None) -> Deactivated | None:
         s.add(user)
         s.exec(update(RefreshToken).where(RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None))
                .values(revoked_at=now, revoked_reason="deleted"))
-        for model in (Installation, PasswordReset, EmailVerification):
+        # AutoReview: its repos' new pull requests stop being reviewed on this account
+        for model in (Installation, PasswordReset, EmailVerification, AutoReview):
             s.exec(delete(model).where(model.user_id == user_id))
     for sid in active:
         set_status(sid, "stopped")  # a worker on it ends after its current step

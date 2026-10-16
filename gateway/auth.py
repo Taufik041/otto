@@ -13,7 +13,9 @@ An email sign-up isn't signed in: it gets a "Confirm your email" link (VERIFY_TT
 signs it in. Until then it can log in but not chat (403 {"error": "email_unverified"}), and its
 address is anyone's to take (shared.accounts.unconfirmed).
 """
-import re, secrets, uuid
+import re
+import secrets
+import uuid
 from datetime import timedelta
 
 import jwt
@@ -21,7 +23,12 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import (
+    HTTPAuthorizationCredentials,
+    HTTPBearer,
+    OAuth2PasswordBearer,
+    OAuth2PasswordRequestForm,
+)
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select, update

@@ -8,7 +8,9 @@ delete does what Settings → Account → "Delete account" does: the account is 
 login free to sign up again), "Your Otto account has been deleted" is emailed, and its data is
 purged within 30 days. Run it where the gateway runs: it needs the database and the bus.
 """
-import argparse, asyncio, sys
+import argparse
+import asyncio
+import sys
 
 from gateway import app as gateway_app
 from shared import config

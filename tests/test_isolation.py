@@ -34,9 +34,8 @@ def ws(client, sid=SID, origin=ORIGIN, query=None):
 
 
 def close_code(client, **kw) -> int:
-    with pytest.raises(WebSocketDisconnect) as e:
-        with ws(client, **kw) as s:
-            s.receive_json()
+    with pytest.raises(WebSocketDisconnect) as e, ws(client, **kw) as s:
+        s.receive_json()
     return e.value.code
 
 

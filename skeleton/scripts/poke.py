@@ -1,8 +1,9 @@
 import asyncio
-from aio_pika import Message, connect, DeliveryMode
+import json
 import sys
-import json, uuid, os
+import uuid
 
+from aio_pika import DeliveryMode, Message, connect
 
 
 async def main():

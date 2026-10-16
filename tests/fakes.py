@@ -352,6 +352,13 @@ class FakeGitHub:
         self.issues = {}               # full name -> issues (a pull request has a pull_request key)
         self.comments = {}             # (full name, issue number) -> comments, oldest first
         self.issues_error = None       # (status, body): what the issue endpoints answer instead
+        self.prs = {}                  # (full name, number) -> GET .../pulls/{n}
+        self.pr_files = {}             # (full name, number) -> GET .../pulls/{n}/files (paged)
+        self.reactions = []            # (full name, comment id, content) posted
+        self.reaction_error = None     # (status, body): what POST .../reactions answers instead
+        self.pr_comments = []          # (full name, number, body) posted on pull requests
+        self.reviews = []              # (full name, number, payload) posted
+        self.review_errors = []        # (status, body) answers POST .../reviews gives first, one per call
 
     def add_user(self, code, gid, login, emails=None, **extra):
         """emails: [(address, verified)] for GET /user/emails."""
@@ -420,6 +427,8 @@ class FakeGitHub:
             if iid is None:
                 return FakeResponse(401, {"message": "Bad credentials"})
             return self._page(url, self.repos[iid], "repositories", params)
+        if path.startswith("/repos/") and (found := self._review_api(url, method, path, token, json, params)):
+            return found
         if path.startswith("/repos/") and "/issues" in path:
             return self._issues(path, token, params)
         if path.startswith("/repos/") and path.endswith("/pulls"):
@@ -482,6 +491,65 @@ class FakeGitHub:
             return FakeResponse(200, self.comments[(full_name, found["number"])][(page - 1) * size: page * size])
         return FakeResponse(200, found)
 
+    def add_pr(self, full_name, number, files, title="Add a widget", body="It adds a widget.", draft=False,
+               head_sha="c0ffee", **extra):
+        """A pull request and its changed files ({filename, status, additions, deletions, patch})."""
+        self.prs[(full_name, number)] = {
+            "number": number, "title": title, "body": body, "draft": draft, "state": "open",
+            "html_url": f"https://github.com/{full_name}/pull/{number}", "user": {"login": "contributor"},
+            "head": {"ref": "feature", "sha": head_sha}, "base": {"ref": "main"}, "changed_files": len(files),
+            "additions": sum(f.get("additions", 0) for f in files), "deletions": sum(f.get("deletions", 0) for f in files),
+            **extra}
+        self.pr_files[(full_name, number)] = list(files)
+        return self.prs[(full_name, number)]
+
+    def _review_api(self, url, method, path, token, body, params):
+        """Reviews' calls: 👀 on a comment, a comment on a pull request, a pull request, its files,
+        and posting a review. None for any other path."""
+        parts = path.split("/")  # "", repos, owner, name, ...
+        if len(parts) < 6:
+            return None
+        full_name, rest = f"{parts[2]}/{parts[3]}", parts[4:]
+        route = (method, rest[0], *["{}" if r.isdigit() else r for r in rest[1:]])
+        routes = {("POST", "issues", "comments", "{}", "reactions"), ("POST", "issues", "{}", "comments"),
+                  ("GET", "pulls", "{}"), ("GET", "pulls", "{}", "files"), ("POST", "pulls", "{}", "reviews"),
+                  ("GET", "pulls", "{}", "reviews")}
+        if route not in routes:
+            return None
+        if not token.startswith("ghs_inst"):
+            return FakeResponse(401, {"message": "Bad credentials"})
+        if route[-1] == "reactions":
+            if self.reaction_error:
+                return FakeResponse(*self.reaction_error)
+            self.reactions.append((full_name, int(rest[2]), body["content"]))
+            return FakeResponse(201, {"id": len(self.reactions), "content": body["content"]})
+        number = int(rest[1])
+        if route[1] == "issues":
+            self.pr_comments.append((full_name, number, body["body"]))
+            return FakeResponse(201, {"id": 7000 + len(self.pr_comments), "body": body["body"]})
+        pr = self.prs.get((full_name, number))
+        if pr is None:
+            return FakeResponse(404, {"message": "Not Found"})
+        if route == ("GET", "pulls", "{}"):
+            return FakeResponse(200, pr)
+        if route[-1] == "files":
+            files, page = self.pr_files[(full_name, number)], int((params or {}).get("page", 1))
+            chunk = files[(page - 1) * self.page_size: page * self.page_size]
+            more = page * self.page_size < len(files)
+            return FakeResponse(200, chunk, {"next": {"url": url.split("?")[0] + f"?page={page + 1}"}} if more else {})
+        if route == ("GET", "pulls", "{}", "reviews"):
+            return FakeResponse(200, [{"id": 9001 + i, "body": b.get("body"), "html_url": f"{pr['html_url']}#pullrequestreview-{9001 + i}"}
+                                      for i, (n, num, b) in enumerate(self.reviews) if (n, num) == (full_name, number)])
+        if self.review_errors:
+            status, answer, *went_through = self.review_errors.pop(0)
+            if went_through:  # GitHub took it, but the answer never came back (a timeout, say)
+                self.reviews.append((full_name, number, body))
+            return FakeResponse(status, answer)
+        self.reviews.append((full_name, number, body))
+        n = len(self.reviews)
+        return FakeResponse(200, {"id": 9000 + n, "state": "COMMENTED",
+                                  "html_url": f"https://github.com/{full_name}/pull/{number}#pullrequestreview-{9000 + n}"})
+
     def _pulls(self, method, full_name, token, body, params):
         """POST: open a PR (422 if one is open for the head already); GET: list by head/state."""
         if not token.startswith("ghs_inst"):
@@ -516,3 +584,14 @@ def connect_github(fake_github, user_id, iid=555, repos=("Taufik041/otto_test",)
 def repo(full_name, private=True, updated_at="2026-09-01T00:00:00Z", default_branch="main"):
     return {"full_name": full_name, "name": full_name.split("/")[1], "private": private,
             "updated_at": updated_at, "default_branch": default_branch}
+
+
+class FakeResend:
+    """Stands in for email.post: records each message Resend would send."""
+
+    def __init__(self, status=200):
+        self.sent, self.status = [], status
+
+    def __call__(self, payload):
+        self.sent.append(payload)
+        return type("R", (), {"status_code": self.status, "text": "{}"})()

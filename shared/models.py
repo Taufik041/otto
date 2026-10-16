@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
@@ -12,12 +12,12 @@ TITLE_LENGTH = 60
 
 
 def utcnow():
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def as_utc(ts):
     """ts as an aware UTC datetime: SQLite hands back naive ones (they were stored as UTC)."""
-    return ts.replace(tzinfo=timezone.utc) if ts is not None and ts.tzinfo is None else ts
+    return ts.replace(tzinfo=UTC) if ts is not None and ts.tzinfo is None else ts
 
 
 class Session(SQLModel, table=True):
@@ -41,6 +41,8 @@ class Session(SQLModel, table=True):
     head_sha: str | None = Field(default=None, index=True)
     # the first message's id from the client that sent it: posting it again returns this chat
     client_message_id: str | None = None
+    # "chat", or "review": a pull request review asked for on GitHub (shared/review.py)
+    kind: str = Field(default="chat", sa_column_kwargs={"server_default": "chat"})
     created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
     updated_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
 
@@ -182,6 +184,39 @@ class WebhookDelivery(SQLModel, table=True):
     id: str = Field(primary_key=True)  # GitHub's delivery GUID
     event: str  # X-GitHub-Event
     received_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True), index=True)
+
+
+REVIEW_STATES = ("claimed", "queued", "posting", "posted", "failed", "limited", "ignored")
+
+
+class PrReview(SQLModel, table=True):
+    """One review Otto was asked for on GitHub: "@<app> review" in a pull request's comment, or a
+    pull request opened in a repo with auto-review on. Its key is taken once, so a webhook
+    delivered again never reviews (or posts) twice."""
+    __tablename__ = "pr_reviews"
+
+    key: str = Field(primary_key=True)  # "comment:<id>", or "auto:<owner/name>#<number>@<head sha>"
+    user_id: str = Field(foreign_key="users.id", index=True)  # whose quota and installation it uses
+    session_id: str | None = Field(default=None, index=True)  # its chat, once made
+    repo: str  # "owner/name"
+    number: int
+    trigger: str  # "mention" or "auto"
+    comment_id: int | None = Field(default=None, sa_type=sa.BigInteger)  # the comment that asked
+    state: str = "claimed"  # one of REVIEW_STATES
+    review_id: int | None = Field(default=None, sa_type=sa.BigInteger)  # GitHub's, once posted
+    created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
+    updated_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
+
+
+class AutoReview(SQLModel, table=True):
+    """A repo whose new pull requests Otto reviews by itself (Settings → GitHub), on the quota of
+    the user who turned it on. Off: no row."""
+    __tablename__ = "auto_reviews"
+
+    repo_key: str = Field(primary_key=True)  # the full name, lower-cased
+    full_name: str  # "owner/name", as GitHub spells it
+    user_id: str = Field(foreign_key="users.id", index=True)
+    created_at: datetime = Field(default_factory=utcnow, sa_type=sa.DateTime(timezone=True))
 
 
 ACCESS_STATUSES = ("pending", "approved")

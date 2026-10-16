@@ -1,19 +1,25 @@
 import asyncio
 import json
-
 from types import SimpleNamespace as NS
 
-import pytest
-
 import httpx2
+import pytest
 from openai import RateLimitError
 
+from brain import loop, providers
 from shared import config
 from shared.bus import results_queue
 from shared.events import load_events
 from shared.sessions import create_session, get_session
-from brain import loop, providers
-from tests.fakes import FakeChannel, auto_reply, fake_clock, fake_openai, llm_tool_calls, llm_final, use_env
+from tests.fakes import (
+    FakeChannel,
+    auto_reply,
+    fake_clock,
+    fake_openai,
+    llm_final,
+    llm_tool_calls,
+    use_env,
+)
 
 
 def fake_client(monkeypatch, responses, delay=0):
@@ -156,7 +162,7 @@ async def test_session_fails_with_an_error_event_after_six_empty_responses(monke
     waits = fake_clock(monkeypatch)
     ch = FakeChannel()
     results = ch.queue(results_queue("s1"))
-    calls, state = fake_client(monkeypatch, [*EMPTY, NS(choices=[]),
+    calls, _state = fake_client(monkeypatch, [*EMPTY, NS(choices=[]),
                                              NS(choices=None, error={"message": "no capacity"})])
 
     with pytest.raises(loop.LLMError):

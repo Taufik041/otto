@@ -5,22 +5,36 @@ from sqlmodel import delete, select, update
 
 from shared.db import get_db
 from shared.events import append_event, redact
-from shared.models import STATUSES, Session, SessionEvent, Usage, as_utc, make_title, utcnow
+from shared.models import (
+    STATUSES,
+    PrReview,
+    Session,
+    SessionEvent,
+    Usage,
+    as_utc,
+    make_title,
+    utcnow,
+)
 
 ACTIVE = ("provisioning", "queued", "running")  # a sandbox or a worker is (about to be) busy with it
 STALE_AGE = timedelta(minutes=30)     # crash sweep: only sessions older than this...
 STALE_QUIET = timedelta(minutes=10)   # ...with no events for this long
 
 
-def create_session(sid, task, repo, model, status="pending", user_id=None, client_message_id=None) -> Session:
-    """A new session. repo is "owner/name", or None for a plain chat; the title comes from task. A
-    user's client_message_id names one session at most (IntegrityError for a second)."""
+def create_session(sid, task, repo, model, status="pending", user_id=None, client_message_id=None, kind="chat",
+                   title=None) -> Session:
+    """A new session. repo is "owner/name", or None for a plain chat; the title comes from task,
+    unless one is given (it's then never auto-titled). kind: "chat", or "review" (a pull request
+    review's chat). A user's client_message_id names one session at most (IntegrityError for a
+    second)."""
     task = redact(task)
-    row = Session(id=sid, task=task, title=make_title(task), repo=repo, model=model, status=status,
-                  user_id=user_id, client_message_id=client_message_id)
+    row = Session(id=sid, task=task, title=make_title(title or task), repo=repo, model=model, status=status,
+                  user_id=user_id, client_message_id=client_message_id, kind=kind,
+                  title_source="generated" if title else "auto")
     with get_db() as s:
         s.add(row)
-    append_event(sid, "session.created", {"task": task, "repo": repo, "model": model})
+    append_event(sid, "session.created", {"task": task, "repo": repo, "model": model,
+                                          **({"kind": kind} if kind != "chat" else {})})
     return row
 
 
@@ -38,9 +52,10 @@ def session_for_client_message(user_id, client_message_id) -> Session | None:
 
 def delete_session(sid):
     """Delete the session and its events. Its usage stays (without the session): it still counts
-    against the user's daily limit."""
+    against the user's daily limit; so does a review request it held (a redelivery still finds it)."""
     with get_db() as s:
         s.exec(update(Usage).where(Usage.session_id == sid).values(session_id=None))
+        s.exec(update(PrReview).where(PrReview.session_id == sid).values(session_id=None))
         s.exec(delete(SessionEvent).where(SessionEvent.session_id == sid))
         s.exec(delete(Session).where(Session.id == sid))
 

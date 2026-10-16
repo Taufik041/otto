@@ -1,4 +1,5 @@
 import base64
+
 import requests
 
 from gateway.github_app import mint_token

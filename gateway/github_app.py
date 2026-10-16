@@ -25,13 +25,18 @@ The callback is a page a person sees, so it never answers JSON: whatever goes wr
 the browser goes back to the frontend with ?error=<code> (see Failed), to Settings → GitHub for a
 link or an install, else to the sign-in dialog.
 """
-import hashlib, json, jwt, secrets, time, traceback, uuid
+import hashlib
+import json
+import secrets
+import time
+import traceback
+import uuid
 from datetime import timedelta
+from typing import Literal
 from urllib.parse import urlencode
 
+import jwt
 import requests
-from typing import Literal
-
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
@@ -122,7 +127,8 @@ def make_jwt():
     if not (config.GITHUB_APP_ID and config.GITHUB_APP_KEY_PATH):
         raise GitHubError("the GitHub App isn't configured: set GITHUB_APP_ID and GITHUB_APP_KEY_PATH")
     try:
-        key = open(config.GITHUB_APP_KEY_PATH).read()
+        with open(config.GITHUB_APP_KEY_PATH) as f:
+            key = f.read()
     except OSError as e:
         raise GitHubError(f"can't read GITHUB_APP_KEY_PATH: {e}") from None
     now = int(time.time())
@@ -565,5 +571,11 @@ def unlink_installation(installation_id: int, user: User = Depends(auth.current_
 
 @router.get("/repos")
 def repos(user: User = Depends(auth.current_user)):
-    """The user's repos across their installations, for the @ mention: newest first."""
-    return user_repos(user.id)
+    """The user's repos across their installations, for the @ mention: newest first. auto_review:
+    who turned on reviewing its new pull requests ({by, mine}), or None while it's off."""
+    from gateway.reviews import setting_json
+    from shared.review import auto_reviews
+
+    found = user_repos(user.id)
+    on = auto_reviews([r["full_name"] for r in found])
+    return [{**r, "auto_review": setting_json(on.get(r["full_name"].lower()), user)} for r in found]

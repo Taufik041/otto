@@ -7,8 +7,8 @@ from brain import loop, prompts
 from brain.tools import AGENT
 from shared import config
 from shared.sessions import create_session
-from tests.test_brain_chat import fake_llm, messages
 from tests.fakes import llm_final, use_env
+from tests.test_brain_chat import fake_llm, messages
 
 ONLINE = {"workers": "online", "repos": ["Taufik041/otto_test", "some-org/API"]}
 
@@ -101,3 +101,17 @@ async def test_each_turn_gets_the_facts_of_that_moment(monkeypatch):
 def test_plain_chats_know_about_the_issue_picker():
     p = prompts.chat_system(ONLINE, None)
     assert "type # and pick one of its open issues" in p and '"Fixes #12"' in p
+
+
+def test_plain_chats_know_how_to_ask_for_a_review_and_what_it_does():
+    p = prompts.chat_system(ONLINE, "Otto Free")
+    for fact in (" review\"", "owner, members and collaborators", "never approves", "Review: <PR title>",
+                 "can't change code yet", "Review new pull requests automatically", "off by default"):
+        assert fact in p, fact
+    assert "{app_slug}" not in p
+
+
+def test_a_review_chat_is_told_what_it_is_and_that_it_cant_change_code():
+    p = prompts.chat_system({**ONLINE, "review": {"repo": "Taufik041/otto_test", "number": 7}}, "Otto Free")
+    assert "review of pull request #7 in Taufik041/otto_test" in p and "can't change the code" in p
+    assert "review of pull request" not in prompts.chat_system(ONLINE, "Otto Free")

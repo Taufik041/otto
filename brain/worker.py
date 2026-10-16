@@ -1,16 +1,34 @@
-import asyncio, json, sys, traceback
+import asyncio
+import json
+import sys
+import traceback
 
-from aio_pika import connect_robust
+from aio_pika import DeliveryMode, Message, connect_robust
 
-from shared import config
-from shared.bus import CI_QUEUE, SESSIONS_QUEUE, actions_queue, connect_with_backoff, results_queue
-from shared.sessions import get_session, transition
-from brain.loop import chat_session, has_conversation, resume_session, retry_chat, start_session
+from brain.loop import (
+    chat_session,
+    has_conversation,
+    resume_session,
+    retry_chat,
+    start_session,
+)
 from brain.main import connect_db
+from brain.review import review_session
+from shared import config
+from shared.bus import (
+    CI_QUEUE,
+    REVIEWS_QUEUE,
+    SESSIONS_QUEUE,
+    actions_queue,
+    connect_with_backoff,
+    results_queue,
+    reviewed_job,
+)
+from shared.sessions import get_session, transition
 
 
 def parse_job(body) -> dict | None:
-    """{"type": "start"|"resume"|"chat"|"retry", "session_id": ..., "text": ... (resume; chat
+    """{"type": "start"|"resume"|"chat"|"retry"|"review", "session_id": ..., "text": ... (resume; chat
     follow-ups), "facts": {...} (plain chats: the live facts for the prompt)}, or None if malformed.
     Facts that aren't an object are dropped."""
     try:
@@ -22,7 +40,7 @@ def parse_job(body) -> dict | None:
     kind, text = job.get("type"), job.get("text")
     if not isinstance(job.get("facts", {}), dict):
         job.pop("facts")
-    if kind in ("start", "retry") or (kind == "resume" and isinstance(text, str)) \
+    if kind in ("start", "retry", "review") or (kind == "resume" and isinstance(text, str)) \
             or (kind == "chat" and (text is None or isinstance(text, str))):
         return job
     return None
@@ -32,6 +50,9 @@ async def run_job(conn, job):
     """Run one session turn on its own channel, with the same loop functions as the CLI."""
     sid = job["session_id"]
     row = get_session(sid)
+    if job["type"] == "review":
+        await run_review(conn, sid)
+        return
     if job["type"] == "chat" or (job["type"] == "retry" and row is not None and row.repo is None):
         # a plain chat: no sandbox, so no bus
         if job["type"] == "chat":
@@ -49,6 +70,19 @@ async def run_job(conn, job):
             await resume_session(ch, results, sid, job.get("text"))
     finally:
         # the runner and its queues stay: the sandbox is kept warm for follow-ups
+        await ch.close()
+
+
+async def run_review(conn, sid):
+    """A review chat's first turn (no sandbox), then the outcome on otto.reviews: the gateway posts
+    the review on GitHub (or says the daily limit stopped it)."""
+    outcome = await review_session(sid)
+    ch = await conn.channel()
+    try:
+        await ch.default_exchange.publish(
+            Message(json.dumps(reviewed_job(sid, outcome)).encode(), delivery_mode=DeliveryMode.PERSISTENT),
+            routing_key=REVIEWS_QUEUE)
+    finally:
         await ch.close()
 
 
@@ -113,6 +147,7 @@ async def main():
         await ch.set_qos(prefetch_count=config.WORKER_CONCURRENCY)
         queue = await ch.declare_queue(SESSIONS_QUEUE, durable=True)
         await ch.declare_queue(CI_QUEUE, durable=True)  # pushes are announced on it (brain.loop)
+        await ch.declare_queue(REVIEWS_QUEUE, durable=True)  # reviews to post (run_review)
         print(f"[worker] consuming {SESSIONS_QUEUE}, up to {config.WORKER_CONCURRENCY} sessions at once",
               flush=True)
         await consume(conn, queue, config.WORKER_CONCURRENCY)

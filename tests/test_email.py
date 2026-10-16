@@ -1,37 +1,13 @@
 """Email through Resend: password resets, and "bring it back up" requests (POST /wake-requests)."""
-import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from sqlmodel import select
 
-from gateway import app as gateway_app
 from shared import config, email
 from shared.db import get_db
 from shared.models import PasswordReset
 from tests.fakes import sign_out, signup
-
-
-class FakeResend:
-    """Stands in for email.post: records each message Resend would send."""
-
-    def __init__(self, status=200):
-        self.sent, self.status = [], status
-
-    def __call__(self, payload):
-        self.sent.append(payload)
-        return type("R", (), {"status_code": self.status, "text": "{}"})()
-
-
-@pytest.fixture
-def resend(monkeypatch):
-    fake = FakeResend()
-    monkeypatch.setattr(config, "RESEND_API_KEY", "re_test")
-    monkeypatch.setattr(config, "OTTO_NOTIFY_TO", "taufik@example.com")
-    monkeypatch.setattr(config, "EMAIL_FROM", "Otto <noreply@taufi.dev>")
-    monkeypatch.setattr(email, "post", fake)
-    return fake
-
 
 # --- the client ------------------------------------------------------------------------------
 
@@ -68,7 +44,7 @@ def test_header_injection_and_lists_are_not_addresses(bad):
 
 
 def test_the_wake_email_names_who_and_escapes_everything():
-    when = datetime(2026, 10, 8, 18, 45, tzinfo=timezone.utc)
+    when = datetime(2026, 10, 8, 18, 45, tzinfo=UTC)
     subject, text, html = email.wake_email("v@example.com", "<script>alert(1)</script> hi", "app", "Mozilla <b>", when)
     assert subject == "Someone wants to try Otto"
     assert "v@example.com" in text and "<script>alert(1)</script> hi" in text  # plain text, as written

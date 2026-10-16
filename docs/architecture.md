@@ -17,7 +17,7 @@ and settings in full; `web/README.md` has the frontend.
 | Postgres | | Users, chats, the event log, usage, refresh tokens, provider health. `LISTEN/NOTIFY` carries new-event signals to the gateway. |
 | RabbitMQ | | The session queue (gateway → brain) and each chat's action and result queues (brain ↔ runner). |
 | Kubernetes | | One Job per working chat (kind locally). |
-| GitHub | | Sign-in, the App's installations, clone and push with short-lived installation tokens, pull requests, issues (read-only), and the CI of Otto's pushes (webhooks and polling, read-only). |
+| GitHub | | Sign-in, the App's installations, clone and push with short-lived installation tokens, pull requests, issues, pull request reviews (`gateway/reviews.py`), and the CI of Otto's pushes (webhooks and polling, read-only). |
 
 ```mermaid
 flowchart LR
@@ -27,7 +27,7 @@ flowchart LR
   G -- "Jobs" --> K8S[Kubernetes]
   G -- "OAuth, installs, issues, CI, PRs" --> GH[GitHub]
   GH -- "webhooks" --> G
-  G <-- "otto.ci" --> MQ
+  G <-- "otto.ci, otto.reviews" --> MQ
   W[Brain worker] --> PG
   W -- "pushed" --> MQ
   MQ -- "turns" --> W
@@ -153,6 +153,17 @@ The finish is skipped for plain chats, stopped turns, and turns that ran nothing
 the workspace. A failed step ends the turn `failed` with `error {stage: "finish", step}`, and
 Retry runs it again.
 
+## Pull request reviews
+
+"@<app> review" on a pull request (or auto-review on a new one) reaches `POST /github/webhook`,
+goes on `otto.reviews`, and the gateway (`gateway/reviews.py`) checks who asked, claims the
+request once (`pr_reviews`), reacts 👀, reads the pull request and its diff, and makes a chat of
+kind `review` holding them (`review.requested`). A brain worker runs the `review` job
+(`brain/review.py`): one call, no tools, the diff framed as untrusted data in an `<untrusted>`
+block, JSON out (`review.drafted`), then `drafted` on `otto.reviews`, and the gateway posts one
+`COMMENT` review (`review.posted`). Follow-ups in the chat are plain-chat turns. The shared rules
+(file caps, framing, checking the answer) are in `shared/review.py`.
+
 ## Issues and CI
 
 Both are read by the gateway with the installation's token, never by the brain, and both reach the
@@ -231,6 +242,7 @@ then streams. A client that reconnects passes the last seq it has and misses not
 | `llm.key_rotated` | `{provider, from_index, to_index, reason}` (indexes, never keys) | brain |
 | `bus.action` | `{action_id, kind, payload}` | brain |
 | `bus.result` | `{action_id, ok, payload}` | brain |
+| `review.requested` / `review.drafted` / `review.posted` / `review.failed` | the pull request and its trimmed diff / `{summary, comments: [{path, line, body, excerpt}], dropped}` / `{review_id, url, comments}` / `{message}` | gateway / brain / gateway / gateway |
 | `pr.proposed` | `{title, body, head, base, additions, deletions, files, tests, issues?}`: issues, `[{number, url}]`, the linked issues the body says `Fixes #N` for | brain |
 | `pr.updated` | `{number, url, additions, deletions, files}` | brain |
 | `pr.opened` | `{number, html_url}` | gateway |
@@ -255,6 +267,8 @@ mid-step) gets a synthetic "interrupted" result, so the history stays valid for 
 | `otto.<id>.actions` | brain (and the gateway's control messages) → the chat's runner | `{session_id, action_id, kind, payload}` |
 | `otto.<id>.results` | runner → brain | `{session_id, action_id, kind: "<kind>.result", ok, payload}` |
 | `otto.ci` | brain and the webhook → the gateway | `{type: "pushed", session_id, sha}`, `{type: "webhook", repo, sha, checks, ...}` |
+| `otto.reviews` | the webhook and the brain → the gateway | `{type: "mention", repo, number, comment_id, author_id, association, ...}`, `{type: "auto", repo, number, head_sha}`; from the brain `{type: "drafted"/"limited"/"failed", session_id}` |
+| `otto.reviews` | the webhook and brain → the gateway | `{type: "mention", repo, number, comment_id, author_id, association, ...}`, `{type: "auto", repo, number, head_sha}`; from the brain `{type: "drafted" \| "limited" \| "failed", session_id}` |
 
 Action kinds: `shell.exec`, `fs.read`, `fs.write`, `fs.replace`, `code.search`, `git.status`,
 `git.diff`, `git.commit`, `git.push` (and `git.open_pr`, which nothing calls any more), plus

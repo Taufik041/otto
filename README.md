@@ -26,6 +26,9 @@
   line counts and the test result. Nothing is opened on GitHub until you click Create.
 - **Follow up weeks later.** A follow-up continues the same chat on the same branch, in the warm
   sandbox or a new one rebuilt from the branch, and updates the open PR.
+- **Code review on GitHub.** Comment `@ottoci review` on a pull request; Otto posts
+  one review with inline comments, and the review shows up as a chat you can ask about.
+  Per repo, it can review new pull requests automatically.
 - **Fix GitHub issues.** Type `#` to pick one of the repo's open issues; Otto reads it, works on
   it, and the PR it proposes ends with `Fixes #12`, so merging closes the issue.
 - **Reads CI on its pull requests.** The PR card shows the CI of Otto's latest push, and when it

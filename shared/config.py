@@ -1,4 +1,6 @@
-import json, os
+import json
+import os
+
 from dotenv import load_dotenv
 
 load_dotenv(override=False)
@@ -78,6 +80,9 @@ def _entry(m) -> dict:
     return entry
 
 
+ROUTER = "openrouter:openrouter/free"  # OpenRouter's router over its free models: "Otto" in the picker
+
+
 def model_catalog(env) -> list[dict]:
     """The models users can pick from: OTTO_MODELS (a JSON list) if set, otherwise built from the env."""
     if env.get("OTTO_MODELS"):
@@ -92,8 +97,12 @@ def model_catalog(env) -> list[dict]:
         if len(set(ids)) != len(ids):
             raise ValueError(f"OTTO_MODELS has duplicate ids: {ids}")
         return models
-    models = [{"id": "openrouter:openrouter/free", "provider": "openrouter", "model": "openrouter/free",
+    models = [{"id": ROUTER, "provider": "openrouter", "model": "openrouter/free",
                "label": "Otto", "description": "Good for small tasks"}]
+    # more OpenRouter models by name (OpenRouter's ids, e.g. "vendor/model:free"), say for OTTO_REVIEW_MODEL
+    for name in (n.strip() for n in env.get("OTTO_OPENROUTER_MODELS", "").split(",")):
+        if name and f"openrouter:{name}" != ROUTER:
+            models.append({"id": f"openrouter:{name}", "provider": "openrouter", "model": name, "label": name})
     for name in (n.strip() for n in env.get("OTTO_OPENAI_MODELS", "").split(",")):
         if name:
             models.append({"id": f"openai:{name}", "provider": "openai", "model": name, "label": f"OpenAI {name}"})
@@ -132,6 +141,19 @@ def resolve_model(model_id) -> dict:
         # a bare model name, stored before providers existed: it ran on OTTO_BASE_URL (default OpenRouter)
         provider, name = ("custom" if PROVIDER_KEYS.get("custom") else "openrouter"), model_id
     return {"id": model_id, "provider": provider, "model": name, "label": model_id}
+
+# pull request reviews (shared/review.py): the model every review runs on, whatever the user's
+# default (empty: the user's default, else DEFAULT_MODEL). The default is a catalog model that
+# keeps to JSON-only answers and doesn't spend its budget reasoning; one that isn't available
+# (no key, not in the catalog) falls back the same way as empty
+REVIEW_MODEL = os.environ.get("OTTO_REVIEW_MODEL", "openai:gpt-4.1-mini").strip()
+REVIEW_MAX_TOKENS = int(os.environ.get("OTTO_REVIEW_MAX_TOKENS", "2000"))  # each review answer's output, at most
+# providers whose API takes response_format {"type": "json_object"}: reviews ask them for JSON
+# (OpenRouter passes it to models that have it and drops it for the rest)
+JSON_MODE_PROVIDERS = ("openai", "openrouter")
+# OTTO_REVIEW_MODEL rate-limited (429): wait this long and try once more, then the review goes to
+# the router (ROUTER)
+REVIEW_RATE_LIMIT_WAIT = float(os.environ.get("OTTO_REVIEW_RATE_LIMIT_WAIT", "5"))
 
 # orchestrator
 # a model call's total waiting on cooled-down keys; past it the call fails ("the model didn't respond")
@@ -211,8 +233,8 @@ def model_prices(env) -> dict[str, dict[str, float]]:
         raw = json.loads(env["MODEL_PRICES"])
     except ValueError as e:
         raise ValueError(f"MODEL_PRICES is not valid JSON: {e}") from None
-    if not isinstance(raw, dict):
-        raise ValueError('MODEL_PRICES must be a JSON object: {"<model id>": {"input_per_1m": 0.15, '
+    if not isinstance(raw, dict):  # a bad setting, so a ValueError like the others
+        raise ValueError('MODEL_PRICES must be a JSON object: {"<model id>": {"input_per_1m": 0.15, '  # noqa: TRY004
                          '"output_per_1m": 0.6}}')
     prices = {}
     for model, p in raw.items():
@@ -236,5 +258,8 @@ GITHUB_APP_SLUG = os.environ.get("GITHUB_APP_SLUG")            # github.com/apps
 # the App's webhook secret: POST /github/webhook takes only deliveries signed with it (CI results).
 # Unset: the webhook is refused, and CI is read by polling alone
 GITHUB_WEBHOOK_SECRET = os.environ.get("OTTO_GITHUB_WEBHOOK_SECRET", "").strip() or None
+# 👀 on a "@<app> review" comment. Off by default: it needs the App's Issues permission at Read and
+# write (GitHub files reactions on a pull request's comments under Issues), which Otto doesn't ask for
+REVIEW_REACTION = flag(os.environ, "OTTO_REVIEW_REACTION")
 # the gateway's /auth/github/callback as GitHub reaches it; sent as redirect_uri when set
 GITHUB_CALLBACK_URL = os.environ.get("OTTO_GITHUB_CALLBACK_URL", "").strip()

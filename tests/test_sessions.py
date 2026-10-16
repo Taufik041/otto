@@ -4,7 +4,13 @@ from sqlmodel import select
 from shared.db import get_db
 from shared.events import append_event, load_events
 from shared.models import Usage, make_title
-from shared.sessions import attach_repo, create_session, delete_session, get_session, set_status
+from shared.sessions import (
+    attach_repo,
+    create_session,
+    delete_session,
+    get_session,
+    set_status,
+)
 
 
 def test_create_session_writes_row_and_created_event(db):

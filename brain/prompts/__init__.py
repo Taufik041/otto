@@ -5,16 +5,18 @@ import re
 from pathlib import Path
 
 from brain.tools import AGENT
+from shared import config
 
 MARKER = "<!-- plain chats only -->"
 MAX_REPOS = 30  # repo names listed; the rest are counted
 
 
 def _clean(text) -> str:
-    return re.sub(r"<!--.*?-->\n?", "", text, flags=re.S).strip()
+    return re.sub(r"<!--.*?-->\n?", "", text, flags=re.DOTALL).strip()
 
 
-_ABOUT = (Path(__file__).parent / "otto_about.md").read_text()
+# {app_slug}: the GitHub App's name, as people mention it ("@<slug> review")
+_ABOUT = (Path(__file__).parent / "otto_about.md").read_text().replace("{app_slug}", config.GITHUB_APP_SLUG or "<app>")
 IDENTITY = _clean(_ABOUT.split(MARKER)[0])
 ABOUT = _clean(_ABOUT)
 SYSTEM = f"{IDENTITY}\n\n{AGENT}"  # repo chats
@@ -33,6 +35,11 @@ def facts_text(facts: dict, model_label: str | None) -> str:
         lines.append(OFFLINE)
     if model_label:
         lines.append(f"The model answering is {model_label}.")
+    if isinstance(review := facts.get("review"), dict):
+        lines.append(f"This chat is Otto's review of pull request #{review.get('number')} in {review.get('repo')}; "
+                     "the review above is what Otto posted on GitHub. Answer questions about it. You can't change "
+                     "the code or post to GitHub from this chat: for changes, the user starts a new chat and "
+                     "mentions the repo with @.")
     repos = facts.get("repos")
     if repos is not None:
         names = ", ".join(repos[:MAX_REPOS]) + (f", and {len(repos) - MAX_REPOS} more" if len(repos) > MAX_REPOS else "")

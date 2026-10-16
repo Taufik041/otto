@@ -1,4 +1,6 @@
-"""CI for the commits Otto pushes, read from GitHub (GitHub runs it; Otto only reads it).
+"""CI for the commits Otto pushes, read from GitHub (GitHub runs it; Otto only reads it). The
+webhook here also takes the review requests (issue_comment, pull_request: gateway/reviews.py),
+which go on otto.reviews instead.
 
 Two ways in, both ending in shared.ci.record:
 
@@ -15,15 +17,19 @@ Two ways in, both ending in shared.ci.record:
 Fix CI (POST /sessions/{id}/ci/fix, in gateway.app) gets the failing jobs' logs here: trimmed to
 the tail and the error regions, LOG_BUDGET bytes in all, and framed as untrusted data.
 """
-import asyncio, hashlib, hmac, json, re
+import asyncio
+import hashlib
+import hmac
+import json
+import re
 
 from aio_pika import DeliveryMode, Message
 from fastapi import APIRouter, Request
 
-from gateway import github_app
+from gateway import github_app, reviews
 from gateway.errors import Refused
 from shared import ci, config
-from shared.bus import CI_QUEUE
+from shared.bus import CI_QUEUE, REVIEWS_QUEUE
 from shared.models import utcnow
 from shared.sessions import get_session
 
@@ -85,7 +91,7 @@ def _bus(app):
 
 @router.post("/github/webhook", status_code=202)
 async def webhook(request: Request):
-    """GitHub's deliveries for the App (CI results). 401 unless signed with
+    """GitHub's deliveries for the App (CI results, review requests). 401 unless signed with
     OTTO_GITHUB_WEBHOOK_SECRET; 503 while it's unset or the bus is down (GitHub can redeliver).
     A delivery taken in already is a duplicate, and nothing happens."""
     secret = config.GITHUB_WEBHOOK_SECRET
@@ -97,7 +103,7 @@ async def webhook(request: Request):
     event, delivery = request.headers.get("x-github-event", ""), request.headers.get("x-github-delivery", "")
     if event == "ping":
         return {"ok": True}
-    if event not in EVENTS:
+    if event not in EVENTS + reviews.EVENTS:
         return {"ignored": True}
     if not delivery or len(delivery) > 100:
         raise Refused(400, "bad_delivery", "X-GitHub-Delivery is missing.")
@@ -105,7 +111,8 @@ async def webhook(request: Request):
         payload = json.loads(body)
     except ValueError:
         raise Refused(400, "bad_payload", "The webhook's body isn't JSON.") from None
-    job = normalize(event, payload) if isinstance(payload, dict) else None
+    read, queue = (reviews.normalize, REVIEWS_QUEUE) if event in reviews.EVENTS else (normalize, CI_QUEUE)
+    job = read(event, payload) if isinstance(payload, dict) else None
     if job is None:
         return {"ignored": True}
     ch = _bus(request.app)
@@ -113,7 +120,7 @@ async def webhook(request: Request):
         return {"duplicate": True}
     try:
         await ch.default_exchange.publish(Message(json.dumps(job).encode(), delivery_mode=DeliveryMode.PERSISTENT),
-                                          routing_key=CI_QUEUE)
+                                          routing_key=queue)
     except Exception as e:
         await asyncio.to_thread(ci.release_delivery, delivery)  # a redelivery may try again
         print(f"[ci] couldn't queue delivery {delivery}: {type(e).__name__}: {e}", flush=True)
@@ -302,8 +309,8 @@ def fix_prompt(snap, logs, branch) -> str:
              UNTRUSTED]
     for l in logs:
         body = (l["log"] or "(no log available for this check: see its link)").replace("</ci-log", "<\\/ci-log")
-        parts += ["", f'<ci-log check="{_attr(l["name"])}" conclusion="{_attr(l["conclusion"])}" '
-                      f'url="{_attr(l["html_url"])}">', body, "</ci-log>"]
+        parts += ["", (f'<ci-log check="{_attr(l["name"])}" conclusion="{_attr(l["conclusion"])}" '
+                       f'url="{_attr(l["html_url"])}">'), body, "</ci-log>"]
     return "\n".join(parts)
 
 

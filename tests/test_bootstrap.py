@@ -62,7 +62,7 @@ def test_apt_get_runs_without_a_prompt_or_stdin(tmp_path):
     fake.chmod(0o755)
     script = f"{prelude()}\napt_get install something\n"
     r = subprocess.run(["bash", "-c", script], input="y\ny\ny\n", capture_output=True, text=True,
-                       env={"PATH": f"{tmp_path}:/usr/bin:/bin"}, timeout=10)
+                       env={"PATH": f"{tmp_path}:/usr/bin:/bin"}, timeout=10, check=False)
     assert r.returncode == 0, r.stderr
     out = r.stdout
     assert "args: -y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install something" in out

@@ -110,8 +110,9 @@ def test_set_a_password_emails_a_link_and_then_email_login_works(client, fake_gi
 def test_the_set_password_link_lasts_an_hour_and_works_once(client, fake_github, capsys):
     from datetime import timedelta
 
-    from shared.models import PasswordReset, as_utc, utcnow
     from sqlmodel import select
+
+    from shared.models import PasswordReset, as_utc, utcnow
 
     github_sign_up(client, fake_github, emails=[("taufik@example.com", True)])
     capsys.readouterr()

@@ -1,6 +1,11 @@
-import os, subprocess, base64
-import asyncio, json, traceback
-from aio_pika import message, connect_robust
+import asyncio
+import base64
+import json
+import os
+import subprocess
+import traceback
+
+from aio_pika import connect_robust, message
 
 WS = "/workspace"
 CAP = 10_000

@@ -5,7 +5,8 @@ from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import event, inspect
-from sqlmodel import Session as DbSession, create_engine
+from sqlmodel import Session as DbSession
+from sqlmodel import create_engine
 
 from shared import config
 

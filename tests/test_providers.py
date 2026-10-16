@@ -1,12 +1,19 @@
 import json
+from datetime import UTC, datetime
 from email.utils import format_datetime
-from datetime import datetime, timezone
 from types import SimpleNamespace as NS
 
 import httpx2
 import pytest
-from openai import (APIConnectionError, APIStatusError, AuthenticationError, InternalServerError, NotFoundError,
-                    PermissionDeniedError, RateLimitError)
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    AuthenticationError,
+    InternalServerError,
+    NotFoundError,
+    PermissionDeniedError,
+    RateLimitError,
+)
 
 from brain import providers
 from brain.providers import LLMError, ProviderUnusable
@@ -250,7 +257,7 @@ def test_clients_are_cached_per_key_and_the_sdk_does_not_retry(monkeypatch):
 def test_reset_delay(monkeypatch):
     monkeypatch.setattr(providers, "now", lambda: T0)
     delay = providers.reset_delay
-    at = datetime.fromtimestamp(T0 + 90, timezone.utc)
+    at = datetime.fromtimestamp(T0 + 90, UTC)
     assert delay(rate_limited(headers={"retry-after-ms": "1500"})) == 1.5
     assert delay(rate_limited(headers={"retry-after": "12"})) == 12
     assert delay(rate_limited(headers={"retry-after": format_datetime(at, usegmt=True)})) == 90
@@ -362,6 +369,7 @@ async def test_a_call_stops_waiting_once_its_budget_is_used_up(monkeypatch, cloc
 
 def test_the_wait_budget_and_timeout_default_to_120s(monkeypatch):
     import importlib
+
     from shared import config
     for name in ("MODEL_WAIT_BUDGET_SECONDS", "OTTO_LLM_TIMEOUT"):
         monkeypatch.delenv(name, raising=False)

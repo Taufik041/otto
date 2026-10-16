@@ -5,7 +5,7 @@ import { Route, Routes } from 'react-router'
 import type { SessionEvent } from '@/chat/reduce'
 import { HEADER_HEIGHT } from '@/components/layers'
 import { AppShell } from '@/shell/AppShell'
-import { log, mainRun } from '@/test/events'
+import { log, mainRun, reviewRun } from '@/test/events'
 import { models, session } from '@/test/fixtures'
 import { renderSignedIn } from '@/test/render'
 import { API, server } from '@/test/server'
@@ -89,6 +89,22 @@ it('shows a finished run: the message, the collapsed block, the reply and the PR
   await userEvent.click(toggle)
   expect(toggle).toHaveAttribute('aria-expanded', 'true')
   expect(screen.getByText('2 failed, 7 passed')).toBeInTheDocument()
+})
+
+it('a review chat: the PR header card and the review, never the diff it read', async () => {
+  backend(reviewRun().events, { kind: 'review', title: 'Review: Add a widget', repo: null })
+  const pr = await screen.findByRole('region', { name: 'Pull request #7' })
+  expect(within(pr).getByText('Review requested by @taufik')).toBeInTheDocument()
+  expect(within(pr).getByText('Posted on GitHub')).toBeInTheDocument()
+  expect(within(pr).getByText('1 of 2 files reviewed · 2,060 tokens')).toBeInTheDocument()
+  expect(within(pr).getByRole('link', { name: /Open pull request/ })).toHaveAttribute('href', 'https://github.com/Taufik041/otto_test/pull/7')
+  const review = screen.getByRole('region', { name: 'Review' })
+  expect(within(review).getByText('One problem.')).toBeInTheDocument()
+  expect(within(review).getByRole('listitem', { name: 'app/widget.py:3' })).toHaveTextContent('return w.size')
+  expect(within(review).getByRole('link', { name: 'See it on GitHub ›' })).toBeInTheDocument()
+  expect(screen.queryByText(/untrusted/)).not.toBeInTheDocument()
+  expect(screen.queryByText('Review #7')).not.toBeInTheDocument()
+  expect(screen.queryByText("Mention a repo with @ and I'll work on it.")).not.toBeInTheDocument()
 })
 
 it('the chat header and the workspace header are the same height, so their hairlines line up', async () => {

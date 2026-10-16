@@ -1,4 +1,5 @@
-import asyncio, uuid
+import asyncio
+import uuid
 
 RECONNECT_MAX = 30  # seconds between first-connect attempts, at most
 
@@ -51,7 +52,20 @@ def retry_job(sid: str) -> dict:
     return {"type": "retry", "session_id": sid}
 
 
+def review_job(sid: str) -> dict:
+    """Write the review a review chat holds the pull request for (shared/review.py)."""
+    return {"type": "review", "session_id": sid}
+
+
 CI_QUEUE = "otto.ci"  # -> the gateway: commits to read CI for, and GitHub's webhooks to apply
+# -> the gateway: review requests from GitHub's webhooks, and the brain's reviews to post
+REVIEWS_QUEUE = "otto.reviews"
+
+
+def reviewed_job(sid: str, outcome: str) -> dict:
+    """The brain is done with a review chat: outcome "drafted" (post it), "limited" (the daily
+    limit stopped it) or "failed"."""
+    return {"type": outcome, "session_id": sid}
 
 
 def pushed_job(sid: str, sha: str) -> dict:

@@ -1,11 +1,19 @@
 import pytest
 
-from shared import config, db as shared_db
+from brain import main as brain_main
+from shared import config
+from shared import db as shared_db
 from shared.bus import results_queue
 from shared.events import append_event, load_events
 from shared.sessions import create_session, get_session
-from brain import main as brain_main
-from tests.fakes import FakeChannel, FakeConnection, auto_reply, llm_tool_calls, llm_final, use_env
+from tests.fakes import (
+    FakeChannel,
+    FakeConnection,
+    auto_reply,
+    llm_final,
+    llm_tool_calls,
+    use_env,
+)
 from tests.test_brain_loop import fake_client
 
 

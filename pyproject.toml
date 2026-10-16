@@ -35,3 +35,16 @@ shared = ["migrations/*.py", "migrations/*.mako", "migrations/versions/*.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+extend-exclude = ["skeleton"]  # the first prototype, kept for reference
+force-exclude = true  # pre-commit names files directly; skip skeleton/ then too
+
+[tool.ruff.lint]
+# the broad excepts are deliberate: a service logs and carries on (bus reconnects, background
+# tasks, best-effort announcements) rather than dying on one bad call
+ignore = ["BLE001"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Header", "fastapi.Body"]

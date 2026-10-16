@@ -1,11 +1,10 @@
 import asyncio
-import json
 import uuid
 
 import pytest
 
-from shared.bus import actions_queue, results_queue, make_result
 from brain.bus import bus_call, start_consumer, stop_consumer
+from shared.bus import actions_queue, make_result, results_queue
 from tests.fakes import FakeChannel
 
 

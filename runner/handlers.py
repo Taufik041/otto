@@ -1,5 +1,11 @@
-import base64, difflib, json, os, subprocess
-import urllib.error, urllib.parse, urllib.request
+import base64
+import difflib
+import json
+import os
+import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 
 from shared import config
 from shared.github import API, parse_repo
@@ -25,7 +31,8 @@ def _run(cmd, timeout=60) -> dict:
         env=_child_env(),
         capture_output=True,
         text=True,
-        timeout=timeout
+        timeout=timeout,
+        check=False,
     )
     return {
         "exit_code": result.returncode,
@@ -44,7 +51,8 @@ def _run_argv(argv, timeout=60, env=None) -> dict:
             stdin=subprocess.DEVNULL,  # rg would otherwise search an inherited stdin pipe
             capture_output=True,
             text=True,
-            timeout=timeout
+            timeout=timeout,
+            check=False,
         )
     except FileNotFoundError as e:
         return {"exit_code": 127, "stdout": "", "stderr": str(e)}

@@ -1,4 +1,6 @@
-import asyncio, json
+import asyncio
+import json
+
 from aio_pika import Message
 
 from shared.bus import actions_queue, make_action

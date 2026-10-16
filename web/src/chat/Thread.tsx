@@ -12,6 +12,7 @@ import { Glyph, IC } from './icons'
 import { Markdown } from './Markdown'
 import { PrCard } from './PrCard'
 import { ProposalCard } from './ProposalCard'
+import { ReviewCard, ReviewPrCard } from './ReviewCards'
 import type { IssueRef, Item, Step } from './reduce'
 import { WorkBlock } from './WorkBlock'
 
@@ -246,6 +247,18 @@ export function Thread(p: ThreadProps) {
             return (
               <Otto key={it.id} avatar={false} spinning={false}>
                 <PrCard pr={it.pr} ci={it.ci} sessionId={p.sessionId} live={p.live} onSeeChanges={() => p.onSeeChanges(it.pr.firstFile!)} />
+              </Otto>
+            )
+          case 'reviewPr':
+            return (
+              <Otto key={it.id} avatar={false} spinning={false}>
+                <ReviewPrCard pr={it.pr} state={it.state} tokens={it.tokens} />
+              </Otto>
+            )
+          case 'review':
+            return (
+              <Otto key={it.id} avatar spinning={false}>
+                <ReviewCard review={it.review} />
               </Otto>
             )
           case 'model':

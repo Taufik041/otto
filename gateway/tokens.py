@@ -15,7 +15,10 @@ A WebSocket ticket is a random, single-use string good for TICKET_TTL seconds on
 WebSocket, so access tokens never go into URLs (and server logs). Tickets live in this process's
 memory: fine for one gateway.
 """
-import hashlib, secrets, time, uuid
+import hashlib
+import secrets
+import time
+import uuid
 from datetime import timedelta
 
 import jwt
@@ -156,8 +159,8 @@ def revoke_all(user_id, s=None, *, reason):
     transaction s, if given."""
     if s is not None:
         return _revoke(s, reason, RefreshToken.user_id == user_id)
-    with get_db() as s:
-        _revoke(s, reason, RefreshToken.user_id == user_id)
+    with get_db() as db:
+        _revoke(db, reason, RefreshToken.user_id == user_id)
 
 
 def prune_refresh() -> int:

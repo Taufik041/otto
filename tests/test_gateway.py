@@ -1,4 +1,6 @@
-import asyncio, json, time
+import asyncio
+import json
+import time
 from datetime import timedelta
 from types import SimpleNamespace as NS
 
@@ -6,17 +8,17 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from gateway import app as gateway_app
+from gateway import live
 from orchestrator import sandbox
-from shared import config
-from shared.bus import SESSIONS_QUEUE, actions_queue, make_result, results_queue
+from shared import config, usage
+from shared.bus import SESSIONS_QUEUE, actions_queue, results_queue
 from shared.db import get_db
 from shared.events import append_event, load_events
-from shared import usage
 from shared.models import Session, SessionEvent, Usage, utcnow
 from shared.sessions import create_session, get_session, set_status
-from gateway import app as gateway_app, live
 from tests.conftest import ORIGIN
-from tests.fakes import FakeChannel, connect_github, make_user, signup, use_env
+from tests.fakes import connect_github, make_user, signup, use_env
 
 REPO = "Taufik041/otto_test"
 REPO_URL = "https://github.com/Taufik041/otto_test"
@@ -113,7 +115,7 @@ def test_the_cluster_wide_sandbox_cap_is_429(client, env, monkeypatch):
 
 
 def test_the_caps_apply_to_follow_ups_that_need_a_sandbox(client, env, monkeypatch):
-    ch, orch, _ = env
+    _ch, orch, _ = env
     monkeypatch.setattr(config, "MAX_ACTIVE_SESSIONS", 1)
     chat_id = client.post("/sessions", json={"message": "hi"}).json()["id"]
     agent = finished_session(client.user_id)
@@ -257,7 +259,7 @@ def test_list_get_and_events(client, env):
 
     listed = client.get("/sessions").json()
     assert [s["id"] for s in listed] == [b, a]
-    assert set(listed[0]) == {"id", "title", "status", "repo", "model", "pr_url", "updated_at", "attention", "ci"}
+    assert set(listed[0]) == {"id", "title", "status", "repo", "model", "pr_url", "updated_at", "attention", "ci", "kind"}
     assert (listed[0]["title"], listed[0]["repo"]) == ("second", REPO)
 
     one = client.get(f"/sessions/{a}").json()
@@ -360,7 +362,7 @@ def test_stop_session(client, env):
 
 
 def test_stop_without_a_sandbox(client, env):
-    ch, orch, _ = env
+    ch, _orch, _ = env
     sid = finished_session(client.user_id)
     assert client.post(f"/sessions/{sid}/stop").status_code == 200
     assert actions(ch, sid) == []  # nothing to shut down
@@ -406,7 +408,7 @@ def test_delete_a_plain_chat(client, env):
 
 
 def test_a_sandbox_that_wont_stop_keeps_the_session(client, env, monkeypatch):
-    ch, orch, _ = env
+    _ch, _orch, _ = env
     sid = finished_session(client.user_id)
 
     def fail(sid):
@@ -607,9 +609,8 @@ def test_ws_stream_error_closes_with_1011(client, monkeypatch):
         raise RuntimeError("db down")
 
     monkeypatch.setattr(gateway_app, "load_events", broken)
-    with pytest.raises(WebSocketDisconnect) as e:
-        with connect(client) as ws:
-            ws.receive_json()
+    with pytest.raises(WebSocketDisconnect) as e, connect(client) as ws:
+        ws.receive_json()
     assert e.value.code == 1011
     assert WS not in live._subscribers
 

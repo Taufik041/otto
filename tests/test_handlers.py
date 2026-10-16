@@ -1,12 +1,13 @@
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
-from shared import config
 from runner import handlers
 from runner.handlers import REGISTRY, _resolve
+from shared import config
 
 
 @pytest.fixture(autouse=True)
@@ -74,7 +75,7 @@ def test_fs_write_new_file(ws):
     r = call("fs.write", {"path": "new.txt", "content": "hello\n"})
     assert r["exit_code"] == 0
     assert "wrote 6 bytes" in r["stdout"]
-    assert open(os.path.join(ws, "new.txt")).read() == "hello\n"
+    assert Path(os.path.join(ws, "new.txt")).read_text() == "hello\n"
 
 
 def test_fs_write_shrink_guard_refuses(ws):
@@ -83,14 +84,14 @@ def test_fs_write_shrink_guard_refuses(ws):
     assert r["exit_code"] == 1
     assert "refusing to write" in r["stderr"]
     assert "fs_replace" in r["stderr"]
-    assert open(p).read() == "x" * 100
+    assert Path(p).read_text() == "x" * 100
 
 
 def test_fs_write_allows_half_size(ws):
     p = write(ws, "f.txt", "x" * 100)
     r = call("fs.write", {"path": "f.txt", "content": "y" * 50})
     assert r["exit_code"] == 0
-    assert open(p).read() == "y" * 50
+    assert Path(p).read_text() == "y" * 50
 
 
 def test_fs_replace_zero_matches(ws):
@@ -105,7 +106,7 @@ def test_fs_replace_one_match(ws):
     r = call("fs.replace", {"path": "f.txt", "old_str": "b = 2", "new_str": "b = 3"})
     assert r["exit_code"] == 0
     assert "replaced 1 occurrence" in r["stdout"]
-    assert open(p).read() == "a = 1\nb = 3\n"
+    assert Path(p).read_text() == "a = 1\nb = 3\n"
 
 
 def test_fs_replace_two_matches(ws):
@@ -113,7 +114,7 @@ def test_fs_replace_two_matches(ws):
     r = call("fs.replace", {"path": "f.txt", "old_str": "x", "new_str": "y"})
     assert r["exit_code"] == 1
     assert "appears 2 times" in r["stderr"]
-    assert open(p).read() == "x\nx\n"
+    assert Path(p).read_text() == "x\nx\n"
 
 
 def test_resolve_rejects_escape():
@@ -142,7 +143,7 @@ def test_git_commit(ws):
     r = call("git.commit", {"message": "it's a test"})
     assert r["exit_code"] == 0, r
     log = subprocess.run(["git", "log", "--format=%an <%ae>|%s"], cwd=ws,
-                         capture_output=True, text=True).stdout.strip()
+                         capture_output=True, text=True, check=True).stdout.strip()
     assert log == "Otto <otto@local>|it's a test"
     assert call("git.status", {})["exit_code"] == 0
 
@@ -158,7 +159,7 @@ def test_fs_replace_large_file_keeps_every_byte(ws):
     p = write(ws, "big.txt", text)
     r = call("fs.replace", {"path": "big.txt", "old_str": "line 00500 ", "new_str": "LINE-500 "})
     assert r["exit_code"] == 0, r
-    assert open(p).read() == text.replace("line 00500 ", "LINE-500 ")
+    assert Path(p).read_text() == text.replace("line 00500 ", "LINE-500 ")
 
 
 def test_fs_replace_finds_match_past_10k(ws):
@@ -172,7 +173,7 @@ def test_fs_replace_preserves_crlf(ws):
     with open(p, "wb") as f:
         f.write(b"a\r\nb\r\n")
     call("fs.replace", {"path": "crlf.txt", "old_str": "b", "new_str": "c"})
-    assert open(p, "rb").read() == b"a\r\nc\r\n"
+    assert Path(p).read_bytes() == b"a\r\nc\r\n"
 
 
 def test_fs_read_range_past_10k(ws):
@@ -225,7 +226,7 @@ def test_resolve_tolerates_trailing_slash_in_workspace(ws, monkeypatch):
 def test_fs_write_path_with_space_creates_parent_dirs(ws):
     r = call("fs.write", {"path": "my dir/sub dir/new file.txt", "content": "hi\n"})
     assert r["exit_code"] == 0, r
-    assert open(os.path.join(ws, "my dir", "sub dir", "new file.txt")).read() == "hi\n"
+    assert Path(os.path.join(ws, "my dir", "sub dir", "new file.txt")).read_text() == "hi\n"
 
 
 def test_fs_write_shrink_guard_path_with_space(ws):
@@ -233,7 +234,7 @@ def test_fs_write_shrink_guard_path_with_space(ws):
     r = call("fs.write", {"path": "a file.txt", "content": "y"})
     assert r["exit_code"] == 1
     assert "is 100 bytes" in r["stderr"]
-    assert open(p).read() == "x" * 100
+    assert Path(p).read_text() == "x" * 100
 
 
 def test_fs_write_error_is_returned_not_raised(ws):
@@ -247,7 +248,7 @@ def test_fs_read_and_replace_path_with_space(ws):
     p = write(ws, "a file.txt", "one\ntwo\n")
     assert call("fs.read", {"path": "a file.txt"})["stdout"] == "one\ntwo\n"
     assert call("fs.replace", {"path": "a file.txt", "old_str": "two", "new_str": "2"})["exit_code"] == 0
-    assert open(p).read() == "one\n2\n"
+    assert Path(p).read_text() == "one\n2\n"
 
 
 @pytest.mark.skipif(shutil.which("rg") is None or shutil.which("git") is None, reason="needs git and ripgrep")
@@ -304,7 +305,7 @@ def test_git_commit_message_is_not_shell_expanded(ws):
     write(ws, "f.txt", "hi\n")
     msg = "it's $(touch pwned) `id` \"q\""
     assert call("git.commit", {"message": msg})["exit_code"] == 0
-    log = subprocess.run(["git", "log", "--format=%s"], cwd=ws, capture_output=True, text=True).stdout
+    log = subprocess.run(["git", "log", "--format=%s"], check=False, cwd=ws, capture_output=True, text=True).stdout
     assert log.strip() == msg
     assert not os.path.exists(os.path.join(ws, "pwned"))
 

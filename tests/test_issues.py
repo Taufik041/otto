@@ -5,12 +5,12 @@ import asyncio
 
 import pytest
 
+from brain import loop
 from gateway import issues
 from gateway.errors import Refused
 from shared.bus import SESSIONS_QUEUE
 from shared.events import load_events
 from shared.sessions import create_session, get_session, set_status
-from brain import loop
 from tests.fakes import FakeChannel, connect_github, llm_final, llm_tool_calls, signup
 from tests.test_brain_finish import EDIT, Runner, proposals
 from tests.test_brain_loop import fake_client
@@ -227,7 +227,7 @@ def turn(monkeypatch, responses):
 
 @pytest.mark.asyncio
 async def test_the_first_turn_works_from_the_stored_issue_message_and_the_pr_fixes_it(monkeypatch):
-    ch, results, runner, calls = turn(monkeypatch, [llm_tool_calls(EDIT), llm_final("Fixed the login button."),
+    ch, results, _runner, calls = turn(monkeypatch, [llm_tool_calls(EDIT), llm_final("Fixed the login button."),
                                                     llm_final("Fix the login button")])
     create_session("s1", task="fix issue #12", repo="o/r", model="m", status="running")
     linked("s1")
@@ -244,7 +244,7 @@ async def test_the_first_turn_works_from_the_stored_issue_message_and_the_pr_fix
 
 @pytest.mark.asyncio
 async def test_follow_ups_keep_the_link(monkeypatch):
-    ch, results, runner, calls = turn(monkeypatch, [llm_tool_calls(EDIT), llm_final("Done."), llm_final("Title"),
+    ch, results, _runner, _calls = turn(monkeypatch, [llm_tool_calls(EDIT), llm_final("Done."), llm_final("Title"),
                                                     llm_tool_calls(EDIT), llm_final("Also the tests."), llm_final("Title")])
     create_session("s1", task="fix issue #12", repo="o/r", model="m", status="running")
     linked("s1")

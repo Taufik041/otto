@@ -114,7 +114,7 @@ def test_the_quota_and_limits_fit_the_configured_sandboxes():
 def runner_permissions() -> dict[str, str]:
     """configure / write / read, as deploy/compose/runner_user.sh sets them"""
     text = (ROOT / "deploy/compose/runner_user.sh").read_text()
-    return {k: re.search(rf"^{k.upper()}_RE='([^']+)'", text, re.M).group(1) for k in ("configure", "write", "read")}
+    return {k: re.search(rf"^{k.upper()}_RE='([^']+)'", text, re.MULTILINE).group(1) for k in ("configure", "write", "read")}
 
 
 def test_the_runner_user_may_use_only_the_sessions_queues():
@@ -149,7 +149,10 @@ def test_ci_builds_the_sandbox_image_for_every_commit_on_main():
 
 
 def test_production_defaults_to_the_published_sandbox_image(monkeypatch):
-    import dotenv, importlib
+    import importlib
+
+    import dotenv
+
     from shared import config
 
     monkeypatch.setattr(dotenv, "load_dotenv", lambda **kw: None)
@@ -178,14 +181,16 @@ def test_workers_show_offline_within_30_seconds_of_the_node_going_down():
 
 def test_the_runners_rabbitmq_password_is_required():
     env = (ROOT / "deploy/compose/.env.prod.example").read_text()
-    assert re.search(r"^RABBITMQ_RUNNER_PASSWORD=$", env, re.M)
-    assert re.search(r"^# SANDBOX_IMAGE=$", env, re.M)  # optional now: production has a default
+    assert re.search(r"^RABBITMQ_RUNNER_PASSWORD=$", env, re.MULTILINE)
+    assert re.search(r"^# SANDBOX_IMAGE=$", env, re.MULTILINE)  # optional now: production has a default
 
 
 def rendered(**env) -> dict[tuple[str, str], dict]:
     """`setup.sh render`'s output: what it would apply (it changes nothing, and needs no root)."""
-    import os, subprocess
+    import os
+    import subprocess
     run = subprocess.run(["bash", str(NODE / "setup.sh"), "render"], capture_output=True, text=True,
+                        check=False,
                          env={"PATH": os.environ["PATH"], "SERVER_TS_IP": "100.90.80.70",
                               "NODE_TS_IP": "100.101.102.103", "NODE_NAME": "otto-sandbox", **env})
     assert run.returncode == 0, run.stderr
@@ -208,10 +213,11 @@ def test_the_quota_is_one_sandbox_by_default_and_grows_with_the_slots():
 
 
 def test_render_refuses_bad_settings():
-    import os, subprocess
+    import os
+    import subprocess
     for env in ({"SERVER_TS_IP": "10.0.0.5"}, {"SERVER_TS_IP": ""}, {"SANDBOX_SLOTS": "0"},
                 {"OTTO_SANDBOX_MEMORY_LIMIT": "1G"}, {"OTTO_SANDBOX_CPU_REQUEST": "2", "OTTO_SANDBOX_CPU_LIMIT": "1"}):
-        run = subprocess.run(["bash", str(NODE / "setup.sh"), "render"], capture_output=True, text=True,
+        run = subprocess.run(["bash", str(NODE / "setup.sh"), "render"], capture_output=True, text=True,check=False,
                              env={"PATH": os.environ["PATH"], "SERVER_TS_IP": "100.90.80.70",
                                   "NODE_TS_IP": "100.101.102.103", "NODE_NAME": "n", **env})
         assert run.returncode != 0 and "error:" in run.stderr, env
@@ -221,8 +227,9 @@ SHA_A, SHA_B = "a" * 40, "0123456789abcdef" * 2 + "01234567"
 
 
 def pin(env_file: Path, sha: str):
-    import os, subprocess
-    return subprocess.run(["bash", str(ROOT / "deploy/aws/pin_images.sh"), str(env_file), sha],
+    import os
+    import subprocess
+    return subprocess.run(["bash", str(ROOT / "deploy/aws/pin_images.sh"), str(env_file), sha], check=False,
                           capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
 
 

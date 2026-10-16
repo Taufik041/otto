@@ -25,7 +25,7 @@ AGENT = (
 
 TOOLS = [
     { # shell_exec
-        "type": "function", 
+        "type": "function",
         "function": {
             "name": "shell_exec",
             "description": "Run a shell command in the repo at /workspace. Non interactive commands only",

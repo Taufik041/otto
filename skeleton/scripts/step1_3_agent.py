@@ -1,8 +1,12 @@
-from openai import OpenAI
-import sys, json, os, uuid
-from dotenv import load_dotenv
-import base64, asyncio
+import asyncio
+import json
+import os
+import sys
+import uuid
+
 from aio_pika import Message, connect
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv(override=True)
 
@@ -35,7 +39,7 @@ SYSTEM = (
 
 TOOLS = [
     { # shell_exec
-        "type": "function", 
+        "type": "function",
         "function": {
             "name": "shell_exec",
             "description": "Run a shell command in the repo at /workspace. Non interactive commands only",
@@ -157,7 +161,7 @@ KIND = {
     "git_status": "git.status",
     "git_diff": "git.diff",
     "git_commit": "git.commit",
-    "fs_replace": "fs.replace",    
+    "fs_replace": "fs.replace",
 }
 
 
@@ -224,7 +228,7 @@ async def execute_task(ch, results):
             print(f"[exit {result.get('exit_code')}] {(result.get('stdout') or result.get('stderr') or '')[:200]}")
             messages.append({"role": "tool", "tool_call_id": tc.id,
                              "content": json.dumps(result)[:20000]})
-                
+
 
     print("[stopped] iteration cap")
 

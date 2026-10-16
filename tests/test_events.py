@@ -84,7 +84,7 @@ def test_nul_characters_are_made_storable():
 
 
 def test_append_to_unknown_session_fails(db):
-    with pytest.raises(Exception):
+    with pytest.raises(IntegrityError):
         append_event("ghost", "x", {})
 
 

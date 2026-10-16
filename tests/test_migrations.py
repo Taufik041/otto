@@ -79,6 +79,34 @@ def test_postgres_upgrade_head_from_scratch(monkeypatch):
     engine.dispose()
 
 
+@pytest.mark.skipif(not PG_URL, reason="set OTTO_TEST_POSTGRES_URL to a scratch Postgres database")
+def test_postgres_0022_upgrades_and_downgrades(monkeypatch):
+    """0021 -> 0022 keeps a chat (it becomes kind "chat") and adds the review tables; back to 0021
+    drops them again, and up once more lands on head with no schema drift."""
+    engine = create_engine(PG_URL)
+    with engine.begin() as c:
+        c.execute(text("DROP SCHEMA public CASCADE; CREATE SCHEMA public"))
+    cfg = alembic_config()
+    with engine.begin() as conn:
+        cfg.attributes["connection"] = conn
+        command.upgrade(cfg, "0021")
+        conn.execute(text("INSERT INTO sessions (id, title, task, status, model, created_at, updated_at) "
+                          "VALUES ('old', 'Fix it', 'fix it', 'done', 'm', now(), now())"))
+        command.upgrade(cfg, "0022")
+        assert conn.execute(text("SELECT kind FROM sessions WHERE id = 'old'")).scalar() == "chat"
+        assert {"pr_reviews", "auto_reviews"} <= set(inspect(conn).get_table_names())
+        command.downgrade(cfg, "0021")
+        assert not {"pr_reviews", "auto_reviews"} & set(inspect(conn).get_table_names())
+        assert "kind" not in {c["name"] for c in inspect(conn).get_columns("sessions")}
+        assert conn.execute(text("SELECT task FROM sessions WHERE id = 'old'")).scalar() == "fix it"
+    monkeypatch.setattr(shared_db, "_engine", None)
+    init_db(PG_URL)
+    pg = get_engine()
+    assert version(pg) == head_revision() == "0022" and schema_diff(pg) == []
+    pg.dispose()
+    engine.dispose()
+
+
 def test_0005_turns_repo_urls_into_repos_and_titles_old_sessions(tmp_path, monkeypatch):
     url = f"sqlite:///{tmp_path / 'old.db'}"
     monkeypatch.setattr(shared_db, "_engine", None)

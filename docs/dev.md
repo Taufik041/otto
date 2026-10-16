@@ -157,6 +157,11 @@ Stop the gateway and workers first, since they hold connections.
 | `AUTH_SECRET` | (required) | Signs access tokens and GitHub OAuth state. At least 32 characters: `python -c 'import secrets; print(secrets.token_urlsafe(48))'`. The gateway won't start without it. |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | none | The GitHub App's user OAuth (App settings, "Client ID" and a generated client secret). Needed for GitHub sign-in and for connecting installations. |
 | `GITHUB_APP_SLUG` | none | The App's name in `github.com/apps/<slug>`: `ottoci`. |
+| `OTTO_REVIEW_MODEL` | `openai:gpt-4.1-mini` | The model reviews run on, whatever the user's default; empty: the user's default. Unavailable: the user's default, with a log line. |
+| `OTTO_OPENROUTER_MODELS` | none | OpenRouter models to offer besides the router, by OpenRouter's id, comma-separated (`openrouter:<id>` in `/models`). |
+| `OTTO_REVIEW_RATE_LIMIT_WAIT` | `5` | Seconds before a rate-limited review model's one retry; then the router. |
+| `OTTO_REVIEW_MAX_TOKENS` | `2000` | Output tokens per review answer. |
+| `OTTO_REVIEW_REACTION` | `false` | React 👀 to "@<app> review" comments. Needs the App's Issues permission at Read and write. |
 | `OTTO_GITHUB_WEBHOOK_SECRET` | none | The App's webhook secret. `POST /github/webhook` takes only deliveries signed with it (CI results); unset, it answers 503 and CI is read by polling. |
 | `ACCESS_TOKEN_MINUTES` | `15` | How long an access token (the Bearer JWT) lasts. |
 | `REFRESH_TOKEN_DAYS` | `30` | How long a refresh token (the `otto_refresh` cookie) lasts unused; each refresh swaps it for a new one. Rows that expired over a week ago are deleted when the gateway starts. |
@@ -200,6 +205,8 @@ In the App's settings on GitHub:
   checks, commit statuses and actions read; under account permissions, "Email addresses" read. A GitHub sign-up reads the user's verified emails
   (`GET /user/emails`): a new account gets the verified primary one, and none of them may belong to
   a confirmed Otto account. Without the permission, only the profile email (`GET /user`) is used.
+- **Reviews** (`@<slug> review` on a pull request) come only through the webhook: to try them
+  locally, point the App's webhook at a tunnel and subscribe to Issue comment and Pull request.
 - **Webhook:** off (uncheck "Active") locally, where GitHub can't reach the gateway: CI is read
   by polling. In production it's on, with the events Check run, Check suite, Status and Workflow
   run (`docs/deploy.md`, "CI results").

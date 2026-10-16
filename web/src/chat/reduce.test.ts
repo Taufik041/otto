@@ -1,5 +1,5 @@
 import { emptyState, errorCopy, reduce, sending, testSummary, unsend, view, type Item, type SessionEvent, type Step } from './reduce'
-import { call, DIFF, log, mainRun, PYTEST_FAIL, PYTEST_OK } from '@/test/events'
+import { call, DIFF, log, mainRun, PYTEST_FAIL, PYTEST_OK, REVIEW_PR, reviewRun } from '@/test/events'
 
 const v = (events: SessionEvent[]) => view(reduce(emptyState(), events))
 const kinds = (items: Item[]) => items.map((i) => i.kind)
@@ -700,5 +700,64 @@ describe('a message that links an issue', () => {
   it('a proposal without issues closes none', () => {
     const l = log().created('fix').status('running').msg('assistant', 'Done.').add('pr.proposed', { ...PROPOSAL, issues: undefined }).status('done')
     expect(v(l.events).items.find((i) => i.kind === 'proposal')).toMatchObject({ proposal: { issues: [] } })
+  })
+})
+
+describe('a pull request review chat', () => {
+  it('while Otto reviews: the PR header, then thinking; no user message, and the diff is never shown', () => {
+    const l = log()
+      .add('session.created', { task: 'Review Taufik041/otto_test#7: Add a widget', repo: null, model: 'm', kind: 'review' })
+      .add('review.requested', REVIEW_PR).status('running')
+      .add('llm.message', { message: { role: 'user', content: '<untrusted>diff</untrusted>' }, review_request: true, display: 'Review #7' })
+    const view_ = v(l.events)
+    expect(kinds(view_.items)).toEqual(['reviewPr', 'thinking'])
+    expect(view_.items[0]).toMatchObject({ tokens: null }) // not written yet
+    expect(view_.kind).toBe('review')
+    expect(view_.items[0]).toMatchObject({
+      kind: 'reviewPr', state: 'reviewing',
+      pr: { repo: 'Taufik041/otto_test', number: 7, title: 'Add a widget', url: REVIEW_PR.url, head: 'feature', base: 'main',
+        requestedBy: 'taufik', totalFiles: 2, reviewedFiles: 1 },
+    })
+  })
+
+  it('the review: the summary and each inline comment with its excerpt; its text message stays hidden', () => {
+    const items = v(reviewRun(false).events).items
+    expect(kinds(items)).toEqual(['reviewPr', 'review'])
+    expect(items[0]).toMatchObject({ state: 'reviewed', tokens: 2060 })
+    expect(items[1]).toMatchObject({
+      kind: 'review',
+      review: { summary: 'Adds a widget. **One problem.**', postedUrl: null, failed: null, comments: [
+        { path: 'app/widget.py', line: 3, body: 'This can be `None`.', excerpt: [
+          { line: 2, text: 'w = get()', added: true }, { line: 3, text: 'return w.size', added: true }] }] },
+    })
+  })
+
+  it('posted on GitHub: the header says so and the review links to it', () => {
+    const items = v(reviewRun().events).items
+    expect(items[0]).toMatchObject({ state: 'posted' })
+    expect(items[1]).toMatchObject({ review: { postedUrl: 'https://github.com/Taufik041/otto_test/pull/7#pullrequestreview-9001' } })
+  })
+
+  it('GitHub refused it: the review says why', () => {
+    const items = v(reviewRun(false).add('review.failed', { message: "GitHub didn't take the review." }).events).items
+    expect(items[0]).toMatchObject({ state: 'failed' })
+    expect(items[1]).toMatchObject({ review: { failed: "GitHub didn't take the review.", postedUrl: null } })
+  })
+
+  it('follow-ups are a plain chat after the review, with no nudge to mention a repo', () => {
+    const l = reviewRun().status('queued').msg('user', 'why None?').status('running').msg('assistant', 'get() can return None.').status('done')
+    expect(kinds(v(l.events).items)).toEqual(['reviewPr', 'review', 'user', 'prose'])
+  })
+
+  it('a plain chat still gets its nudge, and is kind chat', () => {
+    const view_ = v(log().created('hi', null).status('running').msg('assistant', 'Hello.').status('done').events)
+    expect(view_.kind).toBe('chat')
+    expect(kinds(view_.items)).toEqual(['user', 'prose', 'nudge'])
+  })
+
+  it('a malformed review comment is left out, not a crash', () => {
+    const l = reviewRun(false).add('review.drafted', { summary: 's', comments: [{ path: 'a.py' }, 'x', { path: 'b.py', line: 2 }] })
+    const review = v(l.events).items.find((i) => i.kind === 'review')
+    expect(review).toMatchObject({ review: { comments: [{ path: 'b.py', line: 2, body: '', excerpt: [] }] } })
   })
 })

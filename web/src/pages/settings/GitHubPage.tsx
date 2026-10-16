@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router'
 import { api, goToGitHub } from '@/api'
 import { messageOf } from '@/api/errors'
 import { keys, useGitHub, useRepos } from '@/api/queries'
-import type { Unlinked } from '@/api/types'
+import type { Repo, Unlinked } from '@/api/types'
 import { githubErrorMessage, rememberReturn, takeReturn, useCallbackError, useMe } from '@/auth/auth'
 import { GitHubIcon } from '@/components/brand'
 import { Button } from '@/components/ui/button'
@@ -127,10 +127,57 @@ function Repos() {
               priv={r.private}
               pad="px-5"
               meta={`${r.private ? 'Private' : 'Public'} · ${updatedAgo(r.updated_at)}`}
-            />
+            >
+              <AutoReviewSwitch repo={r} />
+            </RepoRow>
           ))}
         </Card>
       )}
+    </div>
+  )
+}
+
+/** "Review new pull requests automatically": off by default; on, the repo's new pull requests
+ *  (not drafts) get Otto's review on the daily limit of whoever turned it on. */
+function AutoReviewSwitch({ repo }: { repo: Repo }) {
+  const qc = useQueryClient()
+  const on = !!repo.auto_review
+  const toggle = useMutation({
+    mutationFn: () => api.setAutoReview(repo.full_name, !on),
+    onSuccess: (res) => {
+      qc.setQueryData<Repo[]>(keys.repos, (list) =>
+        list?.map((r) => (r.full_name === res.full_name ? { ...r, auto_review: res.auto_review } : r)),
+      )
+    },
+  })
+  const by = repo.auto_review && !repo.auto_review.mine && repo.auto_review.by ? `Turned on by @${repo.auto_review.by}` : null
+  return (
+    <div className="mt-2 flex items-center gap-3 pl-7">
+      <span className="min-w-0 flex-1 text-[13.5px] text-muted">
+        Review new pull requests automatically
+        {by && <span className="block text-xs">{by}</span>}
+        {toggle.isError && (
+          <span role="alert" className="block text-xs text-bad">
+            {messageOf(toggle.error)}
+          </span>
+        )}
+      </span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label={`Review new pull requests automatically in ${repo.full_name}`}
+        disabled={toggle.isPending}
+        onClick={() => toggle.mutate()}
+        className="relative h-[22px] w-[38px] shrink-0 rounded-full border-0 p-0 transition-colors disabled:opacity-60"
+        style={{ background: on ? 'var(--accent)' : 'var(--line)' }}
+      >
+        <span
+          aria-hidden="true"
+          className="absolute top-[2px] size-[18px] rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,.2)] transition-[left]"
+          style={{ left: on ? 18 : 2 }}
+        />
+      </button>
     </div>
   )
 }

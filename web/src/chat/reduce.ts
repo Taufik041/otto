@@ -27,6 +27,12 @@
  * | llm.message (user, Fix CI) | {message, display, ci_fix}                  | the user message shows `display` ("Fix CI: tests"), not the logs |
  * | llm.message (user, issue)  | {message, display, issue}                   | the user message shows `display` and the issue's card, never the issue's text |
  * | pr.proposed                | {title, body, head, base, …, issues?}       | the proposal; with issues, it and its PR card say "Closes #12" |
+ * | session.created (review)   | {task, repo: null, model, kind: "review"}   | a review chat: no user message; its turn opens with the PR header |
+ * | review.requested           | {repo, number, title, url, head, base, …}   | the PR header card (repo, #number, title, link) |
+ * | llm.message (user, review) | {message, review_request, display}          | hidden: the diff Otto reviews, as the model gets it |
+ * | llm.message (assistant, review) | {message, review: true}                | hidden: the review as text, for follow-ups (review.drafted shows it) |
+ * | review.drafted             | {summary, comments: [{path, line, body, excerpt}], dropped, usage} | the review: the summary and each inline comment; its tokens on the PR header |
+ * | review.posted / .failed    | {review_id, url, comments} / {message}      | the review card's link to it on GitHub, or why it isn't there |
  */
 
 export type SessionEvent = { seq: number; ts: string; type: string; payload: Record<string, unknown> }
@@ -107,6 +113,34 @@ export type PrCard = {
   issues: IssueLink[]
 }
 
+/** review.requested: the pull request a review chat is about (never its text) */
+export type ReviewPr = {
+  repo: string
+  number: number
+  title: string
+  url: string | null
+  head: string | null
+  base: string | null
+  additions: number | null
+  deletions: number | null
+  /** files changed in all, and how many Otto read */
+  totalFiles: number | null
+  reviewedFiles: number
+  /** who asked on GitHub (null: auto-review) */
+  requestedBy: string | null
+}
+export type ExcerptLine = { line: number; text: string; added: boolean }
+export type ReviewComment = { path: string; line: number; body: string; excerpt: ExcerptLine[] }
+/** review.drafted, and what became of it on GitHub */
+export type Review = {
+  summary: string
+  comments: ReviewComment[]
+  /** review.posted: its link; null until posted */
+  postedUrl: string | null
+  /** review.failed: GitHub didn't take it */
+  failed: string | null
+}
+
 /** ci.updated: the CI of the commit Otto pushed last, as GitHub reports it */
 export type CiState = 'queued' | 'running' | 'passed' | 'failed' | 'cancelled' | 'none'
 export type CiCheck = {
@@ -164,6 +198,10 @@ export type Item =
   | { kind: 'model'; id: string; to: string }
   /** CI finished on Otto's push: a quiet divider ("CI failed · tests") */
   | { kind: 'ci'; id: string; state: CiState; text: string }
+  /** a review chat's pull request: the header card. state: Otto reviewing, the review written, posted on GitHub */
+  | { kind: 'reviewPr'; id: string; pr: ReviewPr; state: 'reviewing' | 'reviewed' | 'posted' | 'failed'; tokens: number | null }
+  /** the review Otto wrote: the summary and each inline comment */
+  | { kind: 'review'; id: string; review: Review }
 
 export type FileEntry =
   | { id: string; type: 'diff'; diff: string; truncated: boolean }
@@ -217,6 +255,8 @@ export type View = {
   ci: Ci | null
   /** a new turn is starting and its user message hasn't arrived yet (a follow-up being set up) */
   awaitingUser: boolean
+  /** "review": a pull request review's chat */
+  kind: 'chat' | 'review'
 }
 
 // --- the turn model --------------------------------------------------------------------------
@@ -242,6 +282,9 @@ type Turn = {
   prUpdate: { number: number | null; url: string; additions: number | null; deletions: number | null; files: number | null } | null
   /** CI that finished while this turn was the latest: its dividers */
   ciDone: { id: string; state: CiState; text: string }[]
+  /** a review chat's first turn: the pull request (review.requested) and the review (review.drafted) */
+  reviewPr?: ReviewPr | null
+  review?: { summary: string; comments: ReviewComment[]; tokens: number | null } | null
 }
 
 type State = {
@@ -269,10 +312,18 @@ type State = {
   clientIds: Set<string>
   /** the latest ci.updated */
   ci: Ci | null
+  /** "review": a pull request review's chat (no repo of its own, and it can't change code) */
+  kind: 'chat' | 'review'
+  /** review.posted's link, or review.failed's message */
+  reviewPosted: string | null
+  reviewFailed: string | null
 }
 
 export const emptyState = (): State => ({
   ci: null,
+  kind: 'chat',
+  reviewPosted: null,
+  reviewFailed: null,
   log: [],
   sent: null,
   clientIds: new Set(),
@@ -301,6 +352,43 @@ function issueOf(v: unknown): IssueRef | null {
   if (n === null) return null
   const labels = Array.isArray(r.labels) ? r.labels.filter((l): l is string => typeof l === 'string') : []
   return { number: n, title: str(r.title) ?? '', state: r.state === 'closed' ? 'closed' : 'open', labels, url: str(r.url), repo: str(r.repo) }
+}
+
+function reviewPrOf(p: Record<string, unknown>): ReviewPr | null {
+  const number = num(p.number)
+  const repo = str(p.repo)
+  if (number === null || !repo) return null
+  return {
+    repo,
+    number,
+    title: str(p.title) ?? `#${number}`,
+    url: str(p.url),
+    head: str(p.head),
+    base: str(p.base),
+    additions: num(p.additions),
+    deletions: num(p.deletions),
+    totalFiles: num(p.total_files),
+    reviewedFiles: Array.isArray(p.files) ? p.files.length : 0,
+    requestedBy: str(p.requested_by),
+  }
+}
+
+function reviewOf(p: Record<string, unknown>): { summary: string; comments: ReviewComment[]; tokens: number | null } {
+  const comments = (Array.isArray(p.comments) ? p.comments : []).flatMap((c): ReviewComment[] => {
+    const r = rec(c)
+    const path = str(r.path)
+    const line = num(r.line)
+    if (!path || line === null) return []
+    const excerpt = (Array.isArray(r.excerpt) ? r.excerpt : []).flatMap((x): ExcerptLine[] => {
+      const e = rec(x)
+      const n = num(e.line)
+      return n === null ? [] : [{ line: n, text: str(e.text) ?? '', added: e.added === true }]
+    })
+    return [{ path, line, body: str(r.body) ?? '', excerpt }]
+  })
+  const u = rec(p.usage)
+  const tokens = num(u.prompt_tokens) === null && num(u.completion_tokens) === null ? null : (num(u.prompt_tokens) ?? 0) + (num(u.completion_tokens) ?? 0)
+  return { summary: str(p.summary) ?? '', comments, tokens }
 }
 
 /** pr.proposed's issues: the ones its PR closes. */
@@ -362,7 +450,28 @@ function apply(s: State, e: SessionEvent) {
       s.task = str(p.task)
       s.repo = str(p.repo)
       s.model = str(p.model)
-      newTurn(s, `t${e.seq}`, e.ts, { text: s.task, repo: s.repo, confirmed: false })
+      s.kind = p.kind === 'review' ? 'review' : 'chat'
+      // a review chat opens with the pull request (review.requested), not a message
+      newTurn(s, `t${e.seq}`, e.ts, s.kind === 'review' ? null : { text: s.task, repo: s.repo, confirmed: false })
+      return
+    }
+    case 'review.requested': {
+      const t = current(s)
+      if (t) t.reviewPr = reviewPrOf(p)
+      return
+    }
+    case 'review.drafted': {
+      const t = current(s)
+      if (t) t.review = reviewOf(p)
+      return
+    }
+    case 'review.posted': {
+      s.reviewPosted = str(p.url) ?? ''
+      s.reviewFailed = null
+      return
+    }
+    case 'review.failed': {
+      s.reviewFailed = str(p.message) ?? "GitHub didn't take the review."
       return
     }
     case 'session.model_changed': {
@@ -420,6 +529,8 @@ function apply(s: State, e: SessionEvent) {
       const m = rec(p.message)
       const role = str(m.role)
       const content = str(m.content)
+      // a review's request (the diff) and its answer as text: the cards show them instead
+      if (p.review_request === true || p.review === true) return
       if (role === 'user') {
         const id = str(p.client_message_id)
         if (id) {
@@ -806,7 +917,7 @@ export function view(s: State): View {
 
   // work starting again: a retry reopens the failed turn; a follow-up gets a turn of its own
   // whose message we haven't seen yet (the chat shows what was just sent)
-  const turns = s.turns.map((t, i) =>
+  const turns: Turn[] = s.turns.map((t, i) =>
     i === s.turns.length - 1 && live && s.restart?.afterFailure ? { ...t, outcome: null, endedAt: null, error: null } : t,
   )
   const restart = live && s.restart && !s.restart.afterFailure ? s.restart : null
@@ -845,6 +956,10 @@ export function view(s: State): View {
     const prBefore = s.prs.filter((p) => (turnIndex.get(p.turn) ?? Infinity) < ti).at(-1)
     if (prBefore && !known.pr) known.pr = { number: prBefore.number, url: prBefore.url, title: proposalTitle }
     if (t.switchedTo) items.push({ kind: 'model', id: `${t.id}-model`, to: t.switchedTo })
+    if (t.reviewPr) {
+      const state = s.reviewPosted !== null ? 'posted' : s.reviewFailed !== null && t.review ? 'failed' : t.review ? 'reviewed' : 'reviewing'
+      items.push({ kind: 'reviewPr', id: `${t.id}-review-pr`, pr: t.reviewPr, state, tokens: t.review?.tokens ?? null })
+    }
     if (t.user) items.push({ kind: 'user', id: `${t.id}-u`, text: t.user.text, repo: t.user.repo, issue: t.user.issue ?? null })
     let avatar = true
     const otto = () => {
@@ -1000,6 +1115,10 @@ export function view(s: State): View {
     // Otto speaks again after its work: the reply's first paragraph gets the mark too
     avatar = true
     for (const [i, text] of t.reply.entries()) items.push({ kind: 'prose', id: `${t.id}-r${i}`, text, avatar: otto() })
+    if (t.review) {
+      const review: Review = { summary: t.review.summary, comments: t.review.comments, postedUrl: s.reviewPosted || null, failed: s.reviewFailed }
+      items.push({ kind: 'review', id: `${t.id}-review`, review })
+    }
 
     // Otto's proposal (the latest), where it was made: waiting, declined, or opened by the user
     if (proposal && proposal.turn === t.id && s.repo) {
@@ -1121,9 +1240,9 @@ export function view(s: State): View {
   // a message just sent whose turn hasn't started: it goes last
   if (s.sent && !pending) items.push({ kind: 'user', id: `sent-${s.sent.id}`, text: s.sent.text, repo: s.sent.repo, issue: null })
 
-  // a plain chat that has answered: the gentle nudge to mention a repo
+  // a plain chat that has answered: the gentle nudge to mention a repo (a review chat can't take one)
   const last = items[items.length - 1]
-  if (!s.repo && !live && last?.kind === 'prose') items.push({ kind: 'nudge', id: 'nudge' })
+  if (!s.repo && s.kind === 'chat' && !live && last?.kind === 'prose') items.push({ kind: 'nudge', id: 'nudge' })
 
   return {
     lastSeq: Math.max(0, ...s.seen),
@@ -1138,6 +1257,7 @@ export function view(s: State): View {
     terminal,
     pr: known.pr,
     ci: s.ci,
+    kind: s.kind,
     awaitingUser: s.restart !== null && !s.restart.afterFailure,
   }
 }

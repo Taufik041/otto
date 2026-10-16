@@ -1,4 +1,4 @@
-from brain.tools import TOOLS, KIND
+from brain.tools import KIND, TOOLS
 from runner.handlers import REGISTRY
 
 
