@@ -1,6 +1,10 @@
 """CI awareness, the gateway's part (gateway/ci.py): GitHub's webhooks (signed, taken in once,
 applied through the bus), polling when they don't come, the failing jobs' logs, and Fix CI."""
-import asyncio, hashlib, hmac, json, time
+import asyncio
+import hashlib
+import hmac
+import json
+import time
 from datetime import timedelta
 
 import pytest

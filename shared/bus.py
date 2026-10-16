@@ -1,4 +1,5 @@
-import asyncio, uuid
+import asyncio
+import uuid
 
 RECONNECT_MAX = 30  # seconds between first-connect attempts, at most
 

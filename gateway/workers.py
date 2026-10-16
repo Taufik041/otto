@@ -1,7 +1,9 @@
 """Whether the workers (the sandbox cluster) are reachable, checked at most every
 WORKERS_CHECK_SECONDS. Offline, plain chats still work; agent work is refused up front with
 503 {"error": "workers_offline"}, before anything is created."""
-import asyncio, threading, time
+import asyncio
+import threading
+import time
 
 from gateway.errors import Refused
 from orchestrator import sandbox

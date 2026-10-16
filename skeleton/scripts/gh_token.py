@@ -1,4 +1,7 @@
-import jwt, time, os
+import os
+import time
+
+import jwt
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -11,6 +14,7 @@ def make_jwt():
 
 
 import requests
+
 
 def get_installation_token():
     inst = os.environ["GITHUB_INSTALLATION_ID"]

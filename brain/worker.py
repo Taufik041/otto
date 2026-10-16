@@ -1,14 +1,30 @@
-import asyncio, json, sys, traceback
+import asyncio
+import json
+import sys
+import traceback
 
 from aio_pika import DeliveryMode, Message, connect_robust
 
-from shared import config
-from shared.bus import (CI_QUEUE, REVIEWS_QUEUE, SESSIONS_QUEUE, actions_queue, connect_with_backoff, results_queue,
-                        reviewed_job)
-from shared.sessions import get_session, transition
-from brain.loop import chat_session, has_conversation, resume_session, retry_chat, start_session
-from brain.review import review_session
+from brain.loop import (
+    chat_session,
+    has_conversation,
+    resume_session,
+    retry_chat,
+    start_session,
+)
 from brain.main import connect_db
+from brain.review import review_session
+from shared import config
+from shared.bus import (
+    CI_QUEUE,
+    REVIEWS_QUEUE,
+    SESSIONS_QUEUE,
+    actions_queue,
+    connect_with_backoff,
+    results_queue,
+    reviewed_job,
+)
+from shared.sessions import get_session, transition
 
 
 def parse_job(body) -> dict | None:

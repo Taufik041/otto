@@ -128,6 +128,7 @@ def test_a_github_failure_is_a_clean_502(client, env, fake_github):
 
 def test_github_unreachable_is_a_clean_502(client, env, fake_github, monkeypatch):
     import requests
+
     from gateway import github_app
 
     sid = chat(client)

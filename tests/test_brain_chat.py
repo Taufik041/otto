@@ -5,14 +5,19 @@ import json
 import pytest
 
 from brain import loop, providers, worker
-from brain.resume import rebuild_messages
 from brain.prompts import SYSTEM, chat_system
+from brain.resume import rebuild_messages
 from shared import config
-from shared.bus import SESSIONS_QUEUE, chat_job, resume_job, results_queue
+from shared.bus import SESSIONS_QUEUE, chat_job, results_queue
 from shared.events import load_events
 from shared.sessions import attach_repo, create_session, get_session
-from tests.fakes import FakeChannel, FakeConnection, auto_reply, llm_final, llm_tool_calls
-
+from tests.fakes import (
+    FakeChannel,
+    FakeConnection,
+    auto_reply,
+    llm_final,
+    llm_tool_calls,
+)
 
 # a chat's prompt when its job came without live facts: Otto, and the model answering
 CHAT_SYSTEM = chat_system(None, config.catalog_entry("openrouter:openrouter/free")["label"])
@@ -175,8 +180,8 @@ def test_the_agent_prompt_requires_commit_and_push_before_the_summary_and_no_pr(
 
 @pytest.mark.asyncio
 async def test_each_turn_reads_the_sessions_model_so_a_switch_applies_to_the_next_one(monkeypatch):
-    from tests.fakes import use_env
     from shared.sessions import set_model
+    from tests.fakes import use_env
 
     use_env(monkeypatch, {"OPENROUTER_API_KEY": "or", "OPENAI_API_KEY": "oai", "OTTO_OPENAI_MODELS": "model-a"})
     sid = chat()

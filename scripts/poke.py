@@ -1,10 +1,11 @@
 import asyncio
-from aio_pika import Message, connect, DeliveryMode
-import sys
 import json
+import sys
+
+from aio_pika import DeliveryMode, Message, connect
 
 from shared import config
-from shared.bus import actions_queue, results_queue, make_action
+from shared.bus import actions_queue, make_action, results_queue
 
 
 async def main():

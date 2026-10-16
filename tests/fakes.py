@@ -584,3 +584,14 @@ def connect_github(fake_github, user_id, iid=555, repos=("Taufik041/otto_test",)
 def repo(full_name, private=True, updated_at="2026-09-01T00:00:00Z", default_branch="main"):
     return {"full_name": full_name, "name": full_name.split("/")[1], "private": private,
             "updated_at": updated_at, "default_branch": default_branch}
+
+
+class FakeResend:
+    """Stands in for email.post: records each message Resend would send."""
+
+    def __init__(self, status=200):
+        self.sent, self.status = [], status
+
+    def __call__(self, payload):
+        self.sent.append(payload)
+        return type("R", (), {"status_code": self.status, "text": "{}"})()

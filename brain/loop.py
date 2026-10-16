@@ -1,17 +1,27 @@
-import json, asyncio, re
+import asyncio
+import json
+import re
+
 from aio_pika import DeliveryMode, Message
-from shared import ci, config, health, usage
-from brain.providers import LLMError, ProviderUnusable, Stopped, complete
-from brain.prompts import SYSTEM, chat_system
-from brain.tools import TOOLS, KIND, missing_args
+
 from brain.bus import bus_call, start_consumer, stop_consumer
+from brain.prompts import SYSTEM, chat_system
+from brain.providers import LLMError, ProviderUnusable, Stopped, complete
 from brain.resume import rebuild_messages
+from brain.tools import KIND, TOOLS, missing_args
+from shared import ci, config, health, usage
 from shared.bus import CI_QUEUE, pushed_job
 from shared.events import append_event, load_events
 from shared.github import parse_repo
 from shared.models import TITLE_LENGTH, make_title
-from shared.sessions import (auto_title, create_session, get_session, set_status, transition,
-                             work_branch)
+from shared.sessions import (
+    auto_title,
+    create_session,
+    get_session,
+    set_status,
+    transition,
+    work_branch,
+)
 
 TOOL_CONTENT_LIMIT = 20000
 # the style of every title Otto writes (chat titles, proposal titles)
@@ -348,7 +358,7 @@ def _last_tests(sid) -> dict | None:
         p = e.payload.get("payload") or {}
         found = TEST_SUMMARY.findall(f"{p.get('stdout') or ''}\n{p.get('stderr') or ''}")
         if found:
-            counts = dict((w, int(n)) for n, w in re.findall(r"(\d+) (\w+)", found[-1]))
+            counts = {w: int(n) for n, w in re.findall(r"(\d+) (\w+)", found[-1])}
             passed, failed = counts.get("passed", 0), counts.get("failed", 0) + counts.get("error", 0) + counts.get("errors", 0)
             return {"passed": passed, "failed": failed,
                     "text": ", ".join(x for x in (failed and f"{failed} failed", f"{passed} passed") if x)}

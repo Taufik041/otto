@@ -25,13 +25,18 @@ The callback is a page a person sees, so it never answers JSON: whatever goes wr
 the browser goes back to the frontend with ?error=<code> (see Failed), to Settings → GitHub for a
 link or an install, else to the sign-in dialog.
 """
-import hashlib, json, jwt, secrets, time, traceback, uuid
+import hashlib
+import json
+import secrets
+import time
+import traceback
+import uuid
 from datetime import timedelta
+from typing import Literal
 from urllib.parse import urlencode
 
+import jwt
 import requests
-from typing import Literal
-
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
@@ -122,7 +127,8 @@ def make_jwt():
     if not (config.GITHUB_APP_ID and config.GITHUB_APP_KEY_PATH):
         raise GitHubError("the GitHub App isn't configured: set GITHUB_APP_ID and GITHUB_APP_KEY_PATH")
     try:
-        key = open(config.GITHUB_APP_KEY_PATH).read()
+        with open(config.GITHUB_APP_KEY_PATH) as f:
+            key = f.read()
     except OSError as e:
         raise GitHubError(f"can't read GITHUB_APP_KEY_PATH: {e}") from None
     now = int(time.time())

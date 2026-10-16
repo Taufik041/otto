@@ -1,8 +1,11 @@
-from openai import OpenAI
-import sys, json, os
-from step1_1 import run
-from dotenv import load_dotenv
 import base64
+import json
+import os
+import sys
+
+from dotenv import load_dotenv
+from openai import OpenAI
+from step1_1 import run
 
 load_dotenv(override=True)
 
@@ -15,7 +18,7 @@ MODEL = "openrouter/free"
 
 TOOLS = [
     { # shell_exec
-        "type": "function", 
+        "type": "function",
         "function": {
             "name": "shell_exec",
             "description": "Run a shell command in the repo at /workspace. Non interactive commands only",

@@ -1,12 +1,16 @@
 """Pull request reviews: "@<app> review" on GitHub (or auto-review), the review chat, the brain's
 review, and the one review posted back (shared/review.py, gateway/reviews.py, brain/review.py).
 GitHub is a FakeGitHub and the model a fake: nothing reaches the network."""
-import asyncio, hashlib, hmac, json
+import asyncio
+import hashlib
+import hmac
+import json
 
 import pytest
 from sqlmodel import update
 
-from brain import review as brain_review, worker
+from brain import review as brain_review
+from brain import worker
 from gateway import reviews
 from shared import config, review
 from shared.bus import REVIEWS_QUEUE, SESSIONS_QUEUE
@@ -125,8 +129,10 @@ def test_only_a_new_comment_on_a_pull_request_counts(monkeypatch):
     assert reviews.normalize("issue_comment", comment_event(body="looks good")) is None
 
 
-@pytest.mark.parametrize("who", [dict(kind="Bot", login="helper"), dict(login="helper[bot]"),
-                                 dict(login="ottoci[bot]"), dict(via={"slug": "ottoci"})])
+
+
+@pytest.mark.parametrize("who", [{"kind": "Bot", "login": "helper"}, {"login": "helper[bot]"},
+                                 {"login": "ottoci[bot]"}, {"via":{"slug": "ottoci"}}])
 def test_bots_and_our_own_app_are_ignored(monkeypatch, capsys, who):
     monkeypatch.setattr(config, "GITHUB_APP_SLUG", "ottoci")
     assert reviews.normalize("issue_comment", comment_event(**who)) is None
@@ -592,6 +598,7 @@ def test_retry_after_the_review_was_posted_only_rebuilds_the_chat(client, env, m
     assert len(fake_github.reviews) == 1
     # the turn failed after the review was stored and posted (before its text was): status failed
     from sqlmodel import delete
+
     from shared.models import SessionEvent
     with get_db() as s:
         s.exec(delete(SessionEvent).where(SessionEvent.session_id == sid, SessionEvent.type == "llm.message",
@@ -708,8 +715,8 @@ def test_the_reviews_tokens_are_logged_and_stored(client, env, monkeypatch, caps
 
 # --- OpenRouter alone ---------------------------------------------------------------------------------
 
-from openai import RateLimitError
 import httpx as _httpx
+from openai import RateLimitError
 
 from brain import providers as _providers
 from shared.config import model_catalog

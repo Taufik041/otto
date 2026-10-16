@@ -7,7 +7,13 @@ import pytest
 from shared import ci
 from shared.events import append_event, load_events
 from shared.models import utcnow
-from shared.sessions import attention, create_session, get_session, mark_seen, set_status
+from shared.sessions import (
+    attention,
+    create_session,
+    get_session,
+    mark_seen,
+    set_status,
+)
 
 SHA = "a" * 40
 T0 = utcnow().replace(microsecond=0)

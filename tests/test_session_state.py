@@ -3,8 +3,15 @@ from datetime import timedelta
 from shared.db import get_db
 from shared.events import append_event, load_events
 from shared.models import Session, SessionEvent, utcnow
-from shared.sessions import (ACTIVE, count_active_agents, create_session, get_session, list_sessions,
-                             set_status, sweep_stale_sessions, transition)
+from shared.sessions import (
+    ACTIVE,
+    count_active_agents,
+    create_session,
+    get_session,
+    list_sessions,
+    sweep_stale_sessions,
+    transition,
+)
 from tests.fakes import make_user
 
 

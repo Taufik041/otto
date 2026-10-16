@@ -91,13 +91,13 @@ def test_a_github_only_account_cannot_log_in_with_a_password(client):
 
 def test_the_gateway_refuses_to_start_without_a_strong_auth_secret(env, monkeypatch):
     from fastapi.testclient import TestClient
+
     from gateway import app as gateway_app
 
     for secret in (None, "short"):
         monkeypatch.setattr(config, "AUTH_SECRET", secret)
-        with pytest.raises(RuntimeError, match="AUTH_SECRET"):
-            with TestClient(gateway_app.app):
-                pass
+        with pytest.raises(RuntimeError, match="AUTH_SECRET"), TestClient(gateway_app.app):
+            pass
 
 
 def test_cors_allows_credentials_for_the_frontend(client):

@@ -1,23 +1,30 @@
 """Token usage: recorded per LLM call, the daily limit, GET /usage, and stopping sandboxes."""
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlmodel import select
 
 from brain import loop
 from shared import config, usage
-from shared.bus import SESSIONS_QUEUE, actions_queue, results_queue
+from shared.bus import actions_queue, results_queue
 from shared.db import get_db
 from shared.events import load_events
 from shared.models import Usage, User
 from shared.sessions import create_session, get_session, set_status
-from tests.fakes import (FakeChannel, auto_reply, connect_github, llm_final, llm_tool_calls, make_user,
-                         signup)
+from tests.fakes import (
+    FakeChannel,
+    auto_reply,
+    connect_github,
+    llm_final,
+    llm_tool_calls,
+    make_user,
+    signup,
+)
 from tests.test_brain_chat import fake_llm
 
 REPO = "Taufik041/otto_test"
-NOW = datetime(2026, 9, 30, 15, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 30, 15, 0, tzinfo=UTC)
 
 
 def rows() -> list[Usage]:
@@ -210,7 +217,7 @@ def test_a_limited_session_takes_a_follow_up_once_under_the_limit(client, env, m
 
 
 def test_get_usage(client, env, me, monkeypatch):
-    ch, orch, _ = env
+    _ch, _orch, _ = env
     monkeypatch.setattr(config, "MODEL_PRICES", {"openai:gpt-x": {"input_per_1m": 2.0, "output_per_1m": 8.0}})
     monkeypatch.setattr(usage, "utcnow", lambda: NOW)
     a = client.post("/sessions", json={"message": "a", "repo": REPO}).json()["id"]
@@ -239,7 +246,7 @@ def test_get_usage(client, env, me, monkeypatch):
 
 
 def test_usage_lists_only_live_sandboxes(client, env, me):
-    ch, orch, _ = env
+    _ch, orch, _ = env
     a = client.post("/sessions", json={"message": "a", "repo": REPO}).json()["id"]
     b = client.post("/sessions", json={"message": "b", "repo": REPO}).json()["id"]
     orch.status[b] = "finished"
@@ -267,14 +274,14 @@ def test_stopping_a_sandbox_of_a_finished_session(client, env, me):
 
 
 def test_stopping_the_sandbox_of_a_running_session_stops_it(client, env, me):
-    ch, orch, _ = env
+    _ch, _orch, _ = env
     sid = client.post("/sessions", json={"message": "a", "repo": REPO}).json()["id"]
     assert client.post(f"/sessions/{sid}/sandbox/stop").json()["status"] == "stopped"
     assert get_session(sid).status == "stopped"
 
 
 def test_stopping_someone_elses_sandbox_is_404(client, env, me):
-    ch, orch, _ = env
+    _, orch, _ = env
     create_session("theirs0001", task="t", repo=REPO, model="m", user_id=make_user("u2").id)
     assert client.post("/sessions/theirs0001/sandbox/stop").status_code == 404
     assert orch.calls == []

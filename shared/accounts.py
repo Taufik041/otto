@@ -15,8 +15,20 @@ from typing import NamedTuple
 from sqlmodel import delete, func, or_, select, update
 
 from shared.db import get_db
-from shared.models import (AccessRequest, AutoReview, EmailVerification, Installation, PasswordReset, PrReview,
-                           RefreshToken, Session, SessionEvent, Usage, User, utcnow)
+from shared.models import (
+    AccessRequest,
+    AutoReview,
+    EmailVerification,
+    Installation,
+    PasswordReset,
+    PrReview,
+    RefreshToken,
+    Session,
+    SessionEvent,
+    Usage,
+    User,
+    utcnow,
+)
 from shared.sessions import ACTIVE, set_status
 
 UNCONFIRMED_TTL = timedelta(days=7)  # an email sign-up nobody confirmed is deleted after this

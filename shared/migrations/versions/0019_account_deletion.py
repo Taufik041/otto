@@ -5,8 +5,8 @@ login it had, so the purge can find its access requests
 Revision ID: 0019
 Revises: 0018
 """
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
 revision = "0019"

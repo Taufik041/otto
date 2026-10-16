@@ -1,15 +1,16 @@
 """The end of an agent turn: whatever the model left undone, the brain commits, pushes and opens
 the PR, with ordinary bus actions (so each step is an event row like any other)."""
 import asyncio
+from contextlib import suppress
 
 import pytest
 
+from brain import loop
 from shared import ci
 from shared.bus import CI_QUEUE, make_result, results_queue
 from shared.events import load_events
 from shared.models import make_title
 from shared.sessions import create_session, get_session, record_pr
-from brain import loop
 from tests.fakes import FakeChannel, llm_final, llm_tool_calls
 from tests.test_brain_loop import fake_client
 
@@ -71,10 +72,9 @@ def setup(monkeypatch, responses, **git):
 
 
 async def run(ch, results):
-    try:
+    # a failed turn raises as before; the status and events tell the story
+    with suppress(Exception):
         await asyncio.wait_for(loop.start_session(ch, results, "s1", TASK), 5)
-    except Exception:
-        pass  # a failed turn raises as before; the status and events tell the story
 
 
 def payload(runner, kind):
@@ -115,7 +115,7 @@ async def test_changes_but_no_pr_commit_push_and_propose(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_the_proposal_carries_the_last_test_run(monkeypatch):
-    ch, results, runner = setup(monkeypatch, [
+    ch, results, _runner = setup(monkeypatch, [
         llm_tool_calls(EDIT), llm_tool_calls(("shell_exec", {"cmd": "python -m pytest -q"})), llm_final("Fixed."),
     ], shell=".........                                [100%]\n9 passed in 0.09s\n")
 
@@ -174,7 +174,7 @@ async def test_pushed_but_no_pr_proposes_one(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_later_turn_without_a_pr_proposes_again(monkeypatch):
-    ch, results, runner = setup(monkeypatch, [llm_tool_calls(EDIT), llm_final("First."), llm_final("Fix one thing"),
+    ch, results, _runner = setup(monkeypatch, [llm_tool_calls(EDIT), llm_final("First."), llm_final("Fix one thing"),
                                               llm_tool_calls(EDIT), llm_final("Second."), llm_final("Fix another")])
     await run(ch, results)
     from shared.sessions import transition
@@ -288,7 +288,7 @@ async def test_the_proposal_title_is_written_by_the_model(monkeypatch):
 @pytest.mark.asyncio
 async def test_a_failed_title_call_falls_back_to_the_task(monkeypatch):
     # the script has no answer left for the title call: it fails
-    ch, results, runner = setup(monkeypatch, [llm_tool_calls(EDIT), llm_final("Fixed.")])
+    ch, results, _runner = setup(monkeypatch, [llm_tool_calls(EDIT), llm_final("Fixed.")])
 
     await run(ch, results)
 
@@ -300,9 +300,9 @@ async def test_a_failed_title_call_falls_back_to_the_task(monkeypatch):
 async def test_the_daily_limit_falls_back_to_the_task(monkeypatch):
     from shared import usage
     ch, results, runner = setup(monkeypatch, [llm_tool_calls(EDIT), llm_final("Fixed."), llm_final("Never used")])
-    from shared.sessions import get_session as _gs
     from shared.db import get_db
     from shared.models import Session
+    from shared.sessions import get_session as _gs
     from tests.fakes import make_user
     make_user("u1")
     with get_db() as s:  # the session belongs to a user, so the limit applies
@@ -360,7 +360,7 @@ async def test_a_push_without_a_sha_announces_nothing(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_announcing_a_push_never_fails_the_turn(monkeypatch):
-    ch, results, runner = setup(monkeypatch, [llm_tool_calls(EDIT), llm_final("Fixed."), llm_final("Fix it")], sha=SHA)
+    ch, results, _runner = setup(monkeypatch, [llm_tool_calls(EDIT), llm_final("Fixed."), llm_final("Fix it")], sha=SHA)
 
     def broken(*a, **kw):
         raise RuntimeError("database hiccup")

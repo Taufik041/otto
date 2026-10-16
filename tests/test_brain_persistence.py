@@ -3,13 +3,13 @@ import json
 
 import pytest
 
+from brain import loop
+from brain.prompts import SYSTEM
+from brain.resume import INTERRUPTED, rebuild_messages
 from shared.bus import results_queue
 from shared.events import load_events
 from shared.sessions import get_session
-from brain import loop
-from brain.resume import INTERRUPTED, rebuild_messages
-from brain.prompts import SYSTEM
-from tests.fakes import FakeChannel, auto_reply, llm_tool_calls, llm_final
+from tests.fakes import FakeChannel, auto_reply, llm_final, llm_tool_calls
 from tests.test_brain_loop import fake_client
 
 

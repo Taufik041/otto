@@ -1,8 +1,8 @@
 import pytest
 
-from shared import config
-from shared.bus import actions_queue, results_queue, make_action
 from runner import main as runner_main
+from shared import config
+from shared.bus import actions_queue, make_action, results_queue
 from tests.fakes import FakeChannel, FakeConnection
 
 

@@ -3,18 +3,19 @@ refusing agent work while the workers are offline, and the production settings."
 import asyncio
 
 import pytest
+from sqlmodel import select
 from starlette.requests import Request
 
-from gateway import app as gateway_app, limits, workers
+from gateway import app as gateway_app
+from gateway import limits, workers
 from gateway.errors import Refused
 from shared import config
 from shared.bus import connect_with_backoff
 from shared.db import get_db
 from shared.models import Session, SessionEvent
 from shared.sessions import create_session, get_session
-from sqlmodel import select
 from tests.conftest import ORIGIN
-from tests.fakes import PASSWORD, connect_github, sign_out, signup
+from tests.fakes import connect_github, sign_out, signup
 
 REPO = "Taufik041/otto_test"
 INST = 555
@@ -157,6 +158,7 @@ def test_the_gateway_connects_once_rabbitmq_answers(env, monkeypatch):
     import time
 
     from fastapi.testclient import TestClient
+
     from tests.fakes import FakeConnection
 
     async def slow(url):
@@ -302,7 +304,10 @@ def test_production_needs_https(monkeypatch, frontend, origins, ok):
 
 
 def test_production_defaults(monkeypatch):
-    import dotenv, importlib, os
+    import importlib
+    import os
+
+    import dotenv
 
     monkeypatch.setattr(dotenv, "load_dotenv", lambda **kw: None)  # not .env: just this environment
     for k in list(os.environ):

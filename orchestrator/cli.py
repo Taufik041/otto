@@ -1,4 +1,6 @@
-import argparse, sys, time
+import argparse
+import sys
+import time
 
 from kubernetes.client.exceptions import ApiException
 

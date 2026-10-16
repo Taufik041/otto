@@ -2,12 +2,13 @@ import base64
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
-from shared import config
 from runner import handlers
 from runner.handlers import REGISTRY
+from shared import config
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 
@@ -27,12 +28,12 @@ def repo(tmp_path, monkeypatch):
     ws = os.path.realpath(tmp_path / "ws")
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
     subprocess.run(["git", "clone", "-q", origin.as_uri(), ws], check=True, capture_output=True)
-    open(os.path.join(ws, "a.txt"), "w").write("a\n")
+    Path(os.path.join(ws, "a.txt")).write_text("a\n")
     git("add", "-A", cwd=ws)
     git("commit", "-qm", "base", cwd=ws)
     git("push", "-q", "origin", "HEAD:main", cwd=ws)
     git("checkout", "-qb", "otto/s1", cwd=ws)
-    open(os.path.join(ws, "a.txt"), "w").write("b\n")
+    Path(os.path.join(ws, "a.txt")).write_text("b\n")
     git("commit", "-qam", "fix", cwd=ws)
     monkeypatch.setattr(config, "WORKSPACE", ws)
     monkeypatch.setattr(config, "GITHUB_TOKEN", TOKEN)
@@ -49,7 +50,7 @@ def test_push_sends_the_current_branch_with_upstream(repo):
 
 
 def test_push_without_a_token_fails_clearly(repo, monkeypatch):
-    ws, origin = repo
+    _ws, origin = repo
     monkeypatch.setattr(config, "GITHUB_TOKEN", None)
     r = REGISTRY["git.push"]({})
     assert r["exit_code"] == 1 and "GITHUB_TOKEN" in r["stderr"]
@@ -65,7 +66,7 @@ def test_push_on_detached_head_fails(repo):
 
 
 def test_push_authenticates_per_command_and_never_leaks_the_token(repo, monkeypatch):
-    ws, _ = repo
+    _ws, _ = repo
     seen = []
 
     def chatty_git(argv, timeout=60, env=None):
@@ -90,8 +91,8 @@ def test_push_authenticates_per_command_and_never_leaks_the_token(repo, monkeypa
 def test_token_is_not_written_to_disk(repo):
     ws, _ = repo
     REGISTRY["git.push"]({})
-    found = subprocess.run(["grep", "-rlF", TOKEN, ws], capture_output=True, text=True).stdout
-    found += subprocess.run(["grep", "-rlF", B64, ws], capture_output=True, text=True).stdout
+    found = subprocess.run(["grep", "-rlF", TOKEN, ws], capture_output=True, text=True, check=False).stdout
+    found += subprocess.run(["grep", "-rlF", B64, ws], capture_output=True, text=True, check=False).stdout
     assert found == ""
 
 
@@ -224,15 +225,15 @@ def test_commit_uses_the_repo_identity_when_set(repo):
     ws, _ = repo
     git("config", "user.name", "ottoci[bot]", cwd=ws)
     git("config", "user.email", "ottoci[bot]@users.noreply.github.com", cwd=ws)
-    open(os.path.join(ws, "b.txt"), "w").write("b\n")
+    Path(os.path.join(ws, "b.txt")).write_text("b\n")
     assert REGISTRY["git.commit"]({"message": "m"})["exit_code"] == 0
     assert git("log", "-1", "--format=%an <%ae>", cwd=ws) == \
         "ottoci[bot] <ottoci[bot]@users.noreply.github.com>"
 
 
 def test_push_reports_the_base_and_the_branchs_diffstat(repo):
-    ws, origin = repo
-    open(os.path.join(ws, "b.txt"), "w").write("1\n2\n")
+    ws, _origin = repo
+    Path(os.path.join(ws, "b.txt")).write_text("1\n2\n")
     git("add", "-A", cwd=ws)
     git("commit", "-qm", "more", cwd=ws)
     git("remote", "set-head", "origin", "main", cwd=ws)
@@ -268,7 +269,7 @@ def test_status_reports_dirty_and_ahead_before_any_push(repo):
     # one commit on otto/s1, no upstream yet: ahead of origin/main by 1, the branch's work is 1
     assert (r["dirty"], r["ahead"], r["work"], r["base"]) == (False, 1, 1, "main")
 
-    open(os.path.join(ws, "new.txt"), "w").write("x\n")
+    Path(os.path.join(ws, "new.txt")).write_text("x\n")
     assert REGISTRY["git.status"]({})["dirty"] is True
 
 

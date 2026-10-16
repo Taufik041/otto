@@ -1,6 +1,6 @@
 import uuid
 
-from shared.bus import actions_queue, results_queue, make_action, make_result
+from shared.bus import actions_queue, make_action, make_result, results_queue
 
 
 def test_queue_names():

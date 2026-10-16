@@ -12,7 +12,7 @@ MAX_REPOS = 30  # repo names listed; the rest are counted
 
 
 def _clean(text) -> str:
-    return re.sub(r"<!--.*?-->\n?", "", text, flags=re.S).strip()
+    return re.sub(r"<!--.*?-->\n?", "", text, flags=re.DOTALL).strip()
 
 
 # {app_slug}: the GitHub App's name, as people mention it ("@<slug> review")

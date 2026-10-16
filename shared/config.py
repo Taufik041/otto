@@ -1,4 +1,6 @@
-import json, os
+import json
+import os
+
 from dotenv import load_dotenv
 
 load_dotenv(override=False)
@@ -231,8 +233,8 @@ def model_prices(env) -> dict[str, dict[str, float]]:
         raw = json.loads(env["MODEL_PRICES"])
     except ValueError as e:
         raise ValueError(f"MODEL_PRICES is not valid JSON: {e}") from None
-    if not isinstance(raw, dict):
-        raise ValueError('MODEL_PRICES must be a JSON object: {"<model id>": {"input_per_1m": 0.15, '
+    if not isinstance(raw, dict):  # a bad setting, so a ValueError like the others
+        raise ValueError('MODEL_PRICES must be a JSON object: {"<model id>": {"input_per_1m": 0.15, '  # noqa: TRY004
                          '"output_per_1m": 0.6}}')
     prices = {}
     for model, p in raw.items():

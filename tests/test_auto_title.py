@@ -7,7 +7,7 @@ from shared.events import load_events
 from shared.sessions import create_session, get_session, set_title
 from tests.fakes import llm_final, llm_tool_calls
 from tests.test_brain_chat import fake_llm
-from tests.test_brain_finish import EDIT, PR_URL, run, setup
+from tests.test_brain_finish import EDIT, run, setup
 
 
 def titled(sid):
@@ -20,7 +20,7 @@ def usages(sid):
 
 @pytest.mark.asyncio
 async def test_an_agent_chat_with_a_proposal_takes_its_title(monkeypatch):
-    ch, results, runner = setup(monkeypatch, [
+    ch, results, _runner = setup(monkeypatch, [
         llm_tool_calls(EDIT), llm_final("Done."), llm_final("Fix bulk discount threshold"),  # the proposal's title
     ])
 
@@ -128,7 +128,7 @@ def test_prompts_ask_for_that_style():
 
 @pytest.mark.asyncio
 async def test_a_prefixed_proposal_title_is_cleaned(monkeypatch):
-    ch, results, runner = setup(monkeypatch, [
+    ch, results, _runner = setup(monkeypatch, [
         llm_tool_calls(EDIT), llm_final("Done."), llm_final("feat(pricing): Fix Bulk Discount Threshold."),
     ])
     await run(ch, results)

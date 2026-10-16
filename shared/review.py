@@ -18,7 +18,8 @@ again never reviews or posts twice.
     review.posted     {review_id, url, comments}
     review.failed     {message}
 """
-import json, re
+import json
+import re
 
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import delete, select, update
@@ -46,11 +47,11 @@ LOCKFILES = {"package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock
              "poetry.lock", "pipfile.lock", "uv.lock", "pdm.lock", "cargo.lock", "gemfile.lock", "composer.lock",
              "go.sum", "mix.lock", "podfile.lock", "pubspec.lock", "packages.lock.json", "flake.lock"}
 GENERATED = re.compile(r"(^|/)(dist|build|vendor|node_modules|__generated__|generated)/|"
-                       r"(_pb2(_grpc)?\.pyi?|\.pb\.go|\.pb\.(cc|h)|\.generated\.\w+|\.g\.dart|\.snap)$", re.I)
-MINIFIED = re.compile(r"\.min\.(js|css|mjs)$|\.(js|css)\.map$|\.map$", re.I)
+                       r"(_pb2(_grpc)?\.pyi?|\.pb\.go|\.pb\.(cc|h)|\.generated\.\w+|\.g\.dart|\.snap)$", re.IGNORECASE)
+MINIFIED = re.compile(r"\.min\.(js|css|mjs)$|\.(js|css)\.map$|\.map$", re.IGNORECASE)
 BINARY = re.compile(r"\.(png|jpe?g|gif|bmp|ico|webp|avif|tiff?|psd|pdf|zip|gz|tgz|bz2|xz|7z|rar|jar|war|"
                     r"class|so|dylib|dll|exe|bin|o|a|wasm|woff2?|ttf|otf|eot|mp3|mp4|mov|avi|webm|ogg|wav|"
-                    r"flac|sqlite3?|db|pyc|lockb)$", re.I)
+                    r"flac|sqlite3?|db|pyc|lockb)$", re.IGNORECASE)
 
 
 def skip_reason(path, patch) -> str | None:
@@ -146,7 +147,7 @@ def excerpt(patch, line, size=EXCERPT_LINES) -> list[dict]:
 
 # --- the model's input, framed ---------------------------------------------------------------------
 
-TAG = re.compile(r"<\s*(/?)\s*untrusted", re.I)
+TAG = re.compile(r"<\s*(/?)\s*untrusted", re.IGNORECASE)
 
 
 def inert(text) -> str:
@@ -184,7 +185,7 @@ def frame(req, comment=None) -> str:
 
 # --- the model's answer ----------------------------------------------------------------------------
 
-FENCE = re.compile(r"^\s*```(?:json)?\s*\n?(.*?)\n?\s*```\s*$", re.S | re.I)
+FENCE = re.compile(r"^\s*```(?:json)?\s*\n?(.*?)\n?\s*```\s*$", re.DOTALL | re.IGNORECASE)
 
 
 def _json(text):

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
@@ -12,12 +12,12 @@ TITLE_LENGTH = 60
 
 
 def utcnow():
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def as_utc(ts):
     """ts as an aware UTC datetime: SQLite hands back naive ones (they were stored as UTC)."""
-    return ts.replace(tzinfo=timezone.utc) if ts is not None and ts.tzinfo is None else ts
+    return ts.replace(tzinfo=UTC) if ts is not None and ts.tzinfo is None else ts
 
 
 class Session(SQLModel, table=True):

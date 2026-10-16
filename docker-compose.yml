@@ -12,7 +12,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-  
+
   rabbitmq:
     image: rabbitmq:3-management-alpine
     ports:

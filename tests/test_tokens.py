@@ -106,7 +106,7 @@ def test_a_retry_within_the_grace_window_gets_a_sibling_and_the_family_lives(use
     user_id, sibling = tokens.rotate_refresh(old)
 
     assert user_id == "u1" and sibling not in (old, new)
-    first, second, third = rows()
+    first, _second, third = rows()
     assert third.family_id == first.family_id and third.revoked_at is None
     assert tokens.refresh_user(new) == "u1" and tokens.refresh_user(sibling) == "u1"
     assert reasons() == ["rotated", None, None]

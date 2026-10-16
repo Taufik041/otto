@@ -5,7 +5,8 @@ Each limit is a sliding window kept in this process's memory: one gateway proces
 whole picture; a restart forgets it. The client's IP is the connection's, or Cloudflare's
 CF-Connecting-IP when OTTO_TRUST_PROXY=1 (only then: anyone can send the header).
 """
-import threading, time
+import threading
+import time
 from collections import deque
 
 from fastapi import Request

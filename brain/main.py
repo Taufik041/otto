@@ -1,15 +1,18 @@
-import argparse, asyncio, json, sys
-from datetime import timezone
+import argparse
+import asyncio
+import json
+import sys
+from datetime import UTC
 
 from aio_pika import connect
 from sqlalchemy.exc import OperationalError
 
+from brain.loop import resume_session, run_session
 from shared import config
 from shared.bus import actions_queue, results_queue
 from shared.db import get_engine, init_db
 from shared.events import load_events
 from shared.sessions import delete_session, get_session
-from brain.loop import resume_session, run_session
 
 SUMMARY_WIDTH = 110
 
@@ -43,7 +46,7 @@ def connect_db():
 
 def _fmt_ts(ts):
     if ts.tzinfo is not None:
-        ts = ts.astimezone(timezone.utc)
+        ts = ts.astimezone(UTC)
     return ts.strftime("%Y-%m-%d %H:%M:%S")
 
 

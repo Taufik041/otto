@@ -20,7 +20,10 @@ GitHub call, with the App's installation token.
   carries a hidden marker with the request's key, which is looked for on GitHub before posting
   (a post that went through but was recorded as failed, a timeout say, is found, not repeated).
 """
-import asyncio, json, re, uuid
+import asyncio
+import json
+import re
+import uuid
 
 import requests
 from aio_pika import DeliveryMode, Message
@@ -55,7 +58,7 @@ def mention(slug) -> re.Pattern | None:
     """"@<slug> review" as whole words, any case."""
     if not slug:
         return None
-    return re.compile(rf"(?<![\w@/-])@{re.escape(slug)}\s+review(?![\w-])", re.I)
+    return re.compile(rf"(?<![\w@/-])@{re.escape(slug)}\s+review(?![\w-])", re.IGNORECASE)
 
 
 def asks_for_review(body, slug) -> bool:
@@ -384,7 +387,6 @@ def _failed(row, sid, why):
     log(f"{row.key}: couldn't post: {why}")
     append_event(sid, review.EVENT_FAILED, {"message": "GitHub didn't take the review. Retry, or ask again on GitHub."})
     review.move(row.key, "failed")
-    return None
 
 
 def rebuild(sid) -> bool:

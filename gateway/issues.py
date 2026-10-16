@@ -10,7 +10,8 @@
 The pull request Otto proposes then says "Fixes #12" (brain.loop.propose), so merging it closes the
 issue; GitHub shows the PR on the issue's page by itself, so Otto never writes to issues.
 """
-import asyncio, math
+import asyncio
+import math
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException
@@ -169,11 +170,11 @@ def agent_message(text, issue) -> str:
     """The turn's message for the agent: the user's words, then the issue framed as untrusted data."""
     closed = " It is closed on GitHub; the user asked for it anyway." if issue["state"] == "closed" else ""
     parts = [text, "",
-             f"The user linked issue #{issue['number']} of {issue['repo']}.{closed} Work on it in the "
-             f"repository. The pull request will say \"Fixes #{issue['number']}\", so merging it closes the issue.",
+             (f"The user linked issue #{issue['number']} of {issue['repo']}.{closed} Work on it in the "
+              f"repository. The pull request will say \"Fixes #{issue['number']}\", so merging it closes the issue."),
              "", UNTRUSTED, "",
-             f'<issue number="{issue["number"]}" state="{_attr(issue["state"])}" '
-             f'labels="{_attr(", ".join(issue["labels"]))}" author="{_attr(issue["author"])}" url="{_attr(issue["url"])}">',
+             (f'<issue number="{issue["number"]}" state="{_attr(issue["state"])}" '
+              f'labels="{_attr(", ".join(issue["labels"]))}" author="{_attr(issue["author"])}" url="{_attr(issue["url"])}">'),
              f"Title: {_inert(issue['title'])}", "", _inert(issue["body"]) or "(no description)"]
     if issue.get("omitted"):
         parts += ["", f"[{issue['omitted']} older comment(s) left out]"]

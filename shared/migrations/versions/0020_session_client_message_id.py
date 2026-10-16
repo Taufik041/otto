@@ -4,8 +4,8 @@ a new chat again (a retry, a double click) returns the first one
 Revision ID: 0020
 Revises: 0019
 """
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "0020"
 down_revision = "0019"

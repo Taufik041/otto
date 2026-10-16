@@ -4,9 +4,11 @@ The cluster is the one in OTTO_SANDBOX_KUBECONFIG (a file), and Jobs go to OTTO_
 Without a kubeconfig the workers are offline in production; in development the default
 kubeconfig (kind) is used. The gateway needs only the RBAC in docs/deploy.md.
 """
-import re, time
+import re
+import time
 
-from kubernetes import client, config as k8s_config
+from kubernetes import client
+from kubernetes import config as k8s_config
 from kubernetes.client.exceptions import ApiException
 
 from gateway import github_app

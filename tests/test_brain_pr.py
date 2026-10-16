@@ -2,14 +2,15 @@ import json
 
 import pytest
 
+from brain import loop
+from brain import main as brain_main
+from brain.prompts import SYSTEM
+from brain.tools import KIND, TOOLS
 from shared import config
 from shared.bus import make_result, results_queue
 from shared.events import load_events
 from shared.sessions import get_session
-from brain import loop, main as brain_main
-from brain.prompts import SYSTEM
-from brain.tools import KIND, TOOLS
-from tests.fakes import FakeChannel, llm_tool_calls, llm_final
+from tests.fakes import FakeChannel, llm_final, llm_tool_calls
 from tests.test_brain_loop import fake_client
 
 TOKEN = "ghs_LeakedInstallationToken99"

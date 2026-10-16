@@ -6,7 +6,8 @@
 
 An approved request lets that GitHub login or email sign up (OTTO_SIGNUP_MODE=allowlist).
 """
-import argparse, sys
+import argparse
+import sys
 
 from shared import access
 from shared.db import init_db

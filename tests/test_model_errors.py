@@ -1,12 +1,12 @@
 """Provider errors that no wait fixes end the turn at once, with a reason the chat can explain."""
 import pytest
+from openai import AuthenticationError
 
 from brain import loop
 from shared.events import load_events
 from shared.sessions import create_session, get_session
 from tests.fakes import fake_clock, fake_openai, llm_final, use_env
 from tests.test_providers import no_quota, status_error
-from openai import AuthenticationError
 
 KEYS = {"OPENROUTER_API_KEY": "orkey-one", "OPENROUTER_API_KEY2": "orkey-two"}
 

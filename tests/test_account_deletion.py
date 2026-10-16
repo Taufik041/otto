@@ -5,21 +5,31 @@ from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
 from sqlmodel import func, select
+from starlette.websockets import WebSocketDisconnect
 
-from gateway import app as gateway_app, auth, live
+from gateway import app as gateway_app
+from gateway import auth, live
 from scripts import accounts as accounts_cli
 from shared import access, email
 from shared.accounts import PURGE_AFTER, deactivate, purge_deleted
 from shared.db import get_db
 from shared.events import append_event
-from shared.models import (AccessRequest, EmailVerification, Installation, PasswordReset, RefreshToken, Session,
-                           SessionEvent, Usage, User, utcnow)
+from shared.models import (
+    AccessRequest,
+    EmailVerification,
+    Installation,
+    PasswordReset,
+    RefreshToken,
+    Session,
+    SessionEvent,
+    Usage,
+    User,
+    utcnow,
+)
 from shared.sessions import create_session, get_session, set_status
 from tests.conftest import ORIGIN
 from tests.fakes import PASSWORD, connect_github, make_user, sign_out, signup
-from tests.test_email import resend  # noqa: F401 (a fixture)
 from tests.test_github_signin import callback, start
 from tests.test_usage import spend
 
@@ -98,7 +108,7 @@ def test_it_needs_a_login(client):
 # --- what happens at once ------------------------------------------------------------------------
 
 def test_deleting_deactivates_the_account_at_once(client, env, fake_github):
-    ch, orch, runners = env
+    _ch, orch, runners = env
     other = signup(client, email="other@example.com")["id"]
     create_session("keep000001", task="theirs", repo=None, model="m", user_id=other)
     sign_out(client)
@@ -319,7 +329,7 @@ async def _never():
 
 @pytest.mark.parametrize("who", [EMAIL, "Taufik@Example.com", "Taufik041", "@taufik041"])
 def test_the_cli_deletes_by_email_or_github_login(client, env, fake_github, who, capsys):
-    ch, orch, runners = env
+    _ch, orch, runners = env
     ids = busy_account(client, fake_github)
     runners.alive.add(ids["agent"])
     orch.calls.clear()

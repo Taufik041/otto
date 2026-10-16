@@ -7,8 +7,8 @@ from brain import loop, prompts
 from brain.tools import AGENT
 from shared import config
 from shared.sessions import create_session
-from tests.test_brain_chat import fake_llm, messages
 from tests.fakes import llm_final, use_env
+from tests.test_brain_chat import fake_llm, messages
 
 ONLINE = {"workers": "online", "repos": ["Taufik041/otto_test", "some-org/API"]}
 

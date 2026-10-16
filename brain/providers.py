@@ -3,10 +3,18 @@
 One pool per provider per worker process, shared by every session it runs. A session only ever
 uses the provider and model it was created with: keys rotate within that provider, never across.
 """
-import asyncio, re, time
+import asyncio
+import re
+import time
 from email.utils import parsedate_to_datetime
 
-from openai import APIConnectionError, APIStatusError, AsyncOpenAI, InternalServerError, RateLimitError
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    AsyncOpenAI,
+    InternalServerError,
+    RateLimitError,
+)
 
 from shared import config
 

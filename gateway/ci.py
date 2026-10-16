@@ -17,7 +17,11 @@ Two ways in, both ending in shared.ci.record:
 Fix CI (POST /sessions/{id}/ci/fix, in gateway.app) gets the failing jobs' logs here: trimmed to
 the tail and the error regions, LOG_BUDGET bytes in all, and framed as untrusted data.
 """
-import asyncio, hashlib, hmac, json, re
+import asyncio
+import hashlib
+import hmac
+import json
+import re
 
 from aio_pika import DeliveryMode, Message
 from fastapi import APIRouter, Request
@@ -305,8 +309,8 @@ def fix_prompt(snap, logs, branch) -> str:
              UNTRUSTED]
     for l in logs:
         body = (l["log"] or "(no log available for this check: see its link)").replace("</ci-log", "<\\/ci-log")
-        parts += ["", f'<ci-log check="{_attr(l["name"])}" conclusion="{_attr(l["conclusion"])}" '
-                      f'url="{_attr(l["html_url"])}">', body, "</ci-log>"]
+        parts += ["", (f'<ci-log check="{_attr(l["name"])}" conclusion="{_attr(l["conclusion"])}" '
+                       f'url="{_attr(l["html_url"])}">'), body, "</ci-log>"]
     return "\n".join(parts)
 
 

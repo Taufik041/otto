@@ -7,7 +7,7 @@ refuses (EmailUnavailable), so the caller can say so.
 """
 import html as html_lib
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import requests
 
@@ -113,8 +113,8 @@ def set_password_email(link: str, address: str) -> tuple[str, str, str]:
             f"If you didn't ask, ignore this email: you keep signing in with GitHub.\n")
     e = html_lib.escape
     html = _html([
-        f"Someone (hopefully you) asked to set a password on your Otto account, so you can also log in "
-        f"with {e(address)} and a password.",
+        (f"Someone (hopefully you) asked to set a password on your Otto account, so you can also log in "
+         f"with {e(address)} and a password."),
         f'<a href="{e(link, quote=True)}">Choose a password</a>. The link expires in 1 hour and works once.',
         "If you didn't ask, ignore this email: you keep signing in with GitHub.",
     ])
@@ -143,7 +143,7 @@ def deleted_email(uninstall_urls: list[str]) -> tuple[str, str, str]:
 
 def wake_email(who: str, message: str, page: str, user_agent: str, when: datetime | None = None) -> tuple[str, str, str]:
     """(subject, text, html) asking Taufik to bring Otto up. Everything in the HTML is escaped."""
-    when = (when or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    when = (when or datetime.now(UTC)).astimezone(UTC)
     utc = when.strftime("%Y-%m-%d %H:%M UTC")
     ist = when.astimezone(IST).strftime("%Y-%m-%d %H:%M IST")
     fields = [("From", who), ("Message", message or "(none)"), ("Time", f"{utc} ({ist})"), ("Page", page),

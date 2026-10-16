@@ -1,9 +1,12 @@
-import asyncio, json, traceback
-from aio_pika import message, connect_robust
+import asyncio
+import json
+import traceback
 
-from shared import config
-from shared.bus import actions_queue, results_queue, make_result
+from aio_pika import connect_robust, message
+
 from runner.handlers import REGISTRY
+from shared import config
+from shared.bus import actions_queue, make_result, results_queue
 
 CONNECT_ATTEMPTS = 30
 CONNECT_DELAY = 2  # seconds; ~60s in total

@@ -323,7 +323,7 @@ def test_resetting_the_password_voids_every_token_and_signs_this_device_in(api, 
     other_device = api.cookies["otto_refresh"]
     api.cookies.clear()
     api.post("/auth/forgot", json={"email": EMAIL})
-    line = [l for l in capsys.readouterr().out.splitlines() if "reset-password?token=" in l][0]
+    line = next(l for l in capsys.readouterr().out.splitlines() if "reset-password?token=" in l)
     token = line.split("reset-password?token=")[1].split()[0]
 
     r = api.post("/auth/reset", json={"token": token, "password": "a brand new password"})

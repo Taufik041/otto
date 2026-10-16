@@ -105,7 +105,7 @@ def test_an_agent_job_carries_no_facts(client, env):
 
 
 def test_a_plain_chat_has_no_sandbox_to_ask_about_or_stop(client, env):
-    ch, orch, _ = env
+    _ch, orch, _ = env
     sid = chat(client)
     assert client.get(f"/sessions/{sid}").json()["sandbox_status"] is None
     assert client.post(f"/sessions/{sid}/stop").status_code == 200
@@ -148,7 +148,7 @@ def test_attaching_a_repo_later_creates_the_sandbox_on_its_installation(client, 
 
 
 def test_a_different_repo_than_the_chats_is_409(client, env):
-    ch, orch, _ = env
+    _ch, orch, _ = env
     sid = client.post("/sessions", json={"message": "fix it", "repo": REPO}).json()["id"]
     set_status(sid, "done")
     orch.calls.clear()
@@ -167,7 +167,7 @@ def test_naming_the_chats_own_repo_again_is_fine(client, env):
 
 
 def test_attaching_a_repo_the_user_cant_reach_is_403(client, env):
-    ch, orch, _ = env
+    _ch, orch, _ = env
     sid = chat(client)
     set_status(sid, "done")
     r = client.post(f"/sessions/{sid}/messages", json={"text": "fix", "repo": "stranger/repo"})
@@ -250,7 +250,7 @@ def test_a_follow_up_is_an_event_as_soon_as_it_is_posted_and_the_worker_does_not
 
 
 def test_a_follow_up_that_attaches_a_repo_is_stored_after_the_attachment(client, env):
-    ch, _, _ = env
+    _ch, _, _ = env
     sid = chat(client)
     set_status(sid, "done")
 

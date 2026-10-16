@@ -8,7 +8,10 @@ is a plain chat: no sandbox, and the model answers without tools. The gateway ow
 the orchestrator) and the session queues (via the bus); brain workers run the sessions it
 enqueues on otto.sessions.
 """
-import asyncio, json, re, uuid
+import asyncio
+import json
+import re
+import uuid
 from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
 from importlib import metadata
@@ -18,25 +21,65 @@ from aio_pika import DeliveryMode, Message, connect_robust
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from starlette.websockets import WebSocketDisconnect
 from kubernetes.client.exceptions import ApiException
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.exc import IntegrityError
+from starlette.websockets import WebSocketDisconnect
 
 from brain.bus import bus_call, start_consumer, stop_consumer
-from gateway import auth, ci as gci, errors, github_app, issues, limits, live, reviews, tokens, workers
+from gateway import (
+    auth,
+    errors,
+    github_app,
+    issues,
+    limits,
+    live,
+    reviews,
+    tokens,
+    workers,
+)
+from gateway import ci as gci
 from orchestrator import sandbox
 from shared import ci, config, email, health, review, usage
 from shared.accounts import deactivate, prune_unconfirmed, purge_deleted
-from shared.bus import (CI_QUEUE, REVIEWS_QUEUE, SESSIONS_QUEUE, actions_queue, chat_job, connect_with_backoff,
-                        results_queue, resume_job, retry_job, review_job, reviewed_job, start_job)
+from shared.bus import (
+    CI_QUEUE,
+    REVIEWS_QUEUE,
+    SESSIONS_QUEUE,
+    actions_queue,
+    chat_job,
+    connect_with_backoff,
+    results_queue,
+    resume_job,
+    retry_job,
+    review_job,
+    reviewed_job,
+    start_job,
+)
 from shared.db import get_db, get_engine, init_db
 from shared.events import append_event, client_message_seq, load_events, redact
 from shared.models import User, as_utc, utcnow
-from shared.sessions import (ACTIVE, attach_repo, attention, end_seqs, mark_seen, count_active_agents, create_session, delete_session, get_session,
-                             list_sessions, record_pr, repo_sessions_since, set_model, set_status, set_title,
-                             session_for_client_message, sweep_stale_sessions,
-                             transition, work_branch)
+from shared.sessions import (
+    ACTIVE,
+    attach_repo,
+    attention,
+    count_active_agents,
+    create_session,
+    delete_session,
+    end_seqs,
+    get_session,
+    list_sessions,
+    mark_seen,
+    record_pr,
+    repo_sessions_since,
+    session_for_client_message,
+    set_model,
+    set_status,
+    set_title,
+    sweep_stale_sessions,
+    transition,
+    work_branch,
+)
 
 PING_TIMEOUT = 5  # seconds to wait for a warm runner to answer control.ping / control.shutdown
 PING_INTERVAL = 20  # seconds between WebSocket heartbeats
@@ -740,11 +783,11 @@ async def follow_up(sid: str, body: FollowUp, user: User = Depends(auth.verified
         await _enqueue(ch, sid, chat_job(sid, body.text))
         return {"id": sid, "status": "queued", "repo": None}
     attaching = row.repo is None
-    if attaching and not attach_repo(sid, repo["full_name"]):
-        # another follow-up attached a repo between our read and our claim
-        if get_session(sid).repo.lower() != repo["full_name"].lower():
-            transition(sid, row.status, {"provisioning"})
-            raise HTTPException(409, NEW_REPO)
+    # another follow-up may have attached a repo between our read and our claim
+    if (attaching and not attach_repo(sid, repo["full_name"])
+            and get_session(sid).repo.lower() != repo["full_name"].lower()):
+        transition(sid, row.status, {"provisioning"})
+        raise HTTPException(409, NEW_REPO)
     _switch_model(sid, body.model)
     text = _store_follow_up(sid, body, issue)  # after repo.attached, so the message belongs to the agent's turn
     try:

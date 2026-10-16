@@ -5,7 +5,16 @@ from sqlmodel import delete, select, update
 
 from shared.db import get_db
 from shared.events import append_event, redact
-from shared.models import STATUSES, PrReview, Session, SessionEvent, Usage, as_utc, make_title, utcnow
+from shared.models import (
+    STATUSES,
+    PrReview,
+    Session,
+    SessionEvent,
+    Usage,
+    as_utc,
+    make_title,
+    utcnow,
+)
 
 ACTIVE = ("provisioning", "queued", "running")  # a sandbox or a worker is (about to be) busy with it
 STALE_AGE = timedelta(minutes=30)     # crash sweep: only sessions older than this...

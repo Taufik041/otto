@@ -1,5 +1,5 @@
 """Token usage: one row per LLM call, each user's daily limit (UTC days), and estimated costs."""
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func
 from sqlmodel import select
@@ -12,11 +12,11 @@ DAILY_DAYS = 14  # the chart on the Usage page
 
 
 def utcnow():
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def day_start(now) -> datetime:
-    return now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    return now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def resets_at(now=None) -> str:
